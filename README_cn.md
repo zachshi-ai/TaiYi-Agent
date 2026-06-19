@@ -1,6 +1,8 @@
 # Agent Architecture
 
 > 一次 GitHub 上传踩坑，引发的 AI Agent 工程化底层思考。
+>
+> English version: [`README.md`](./README.md)
 
 ## 关于
 
@@ -24,7 +26,8 @@
 
 ## 目录
 
-- [`Agent架构思考.md`](./Agent架构思考.md) — 完整文章
+- [`cn/Agent架构思考.md`](./cn/Agent架构思考.md) — 中文完整文章
+- [`en/Agent_Architecture_Thoughts.md`](./en/Agent_Architecture_Thoughts.md) — 英文完整文章
 
 ## 核心观点
 
