@@ -39,8 +39,8 @@ Eventually, I derived a **production-grade Agent engineering framework**, broken
 
 ## 目录 / Contents
 
-- [`cn/article.md`](./cn/article.md) — 中文原文（Markdown 版）
-- [`en/article.md`](./en/article.md) — English Translation
+- [`cn/Agent架构思考.md`](./cn/Agent架构思考.md) — 中文原文（Markdown 版）
+- [`en/Agent_Architecture_Thoughts.md`](./en/Agent_Architecture_Thoughts.md) — English Translation
 
 ## 核心观点 / Key Takeaways
 
