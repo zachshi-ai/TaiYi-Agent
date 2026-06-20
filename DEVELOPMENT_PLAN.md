@@ -40,7 +40,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M1** | **Governance Core (rules-as-data)** | ✅ **Done** | L2 | No |
 | **M2** | **Scheduler + governance boundary** | ✅ **Done** | L2 | No |
 | **M3** | **Task Runtime (PDCA loop + state machine)** | ✅ **Done** | L2 | No |
-| M4 | Real LLM provider layer | Planned | L2 | **Yes (API keys)** |
+| **M4** | **LLM provider layer (offline-first)** | ✅ **Done** | L2 | No (live = opt-in) |
 | M5 | Tool Runtime (sandbox, credential isolation, SSRF) | Planned | L2 | No |
 | M6 | Validation Engine (L4, per-task checklists) | Planned | L3 | Partly |
 | M7 | Memory (5-layer: SQLite/FTS5/vector/Honcho) | Planned | L3 | Partly |
@@ -139,14 +139,29 @@ and the chain verifies after runs.
 > tamper-evident trajectory. M4 makes the planner/executor real (and starts
 > spending money); M5 makes execution real and sandboxed.
 
-### M4 — Real LLM provider layer  💲
-**Goal.** Replace `MockLLM` with a real provider abstraction (default: latest
-Claude; also OpenAI-compatible and Ollama) and a tool-call loop. **Answers the
-key Phase 0 open question:** can a real LLM bypass governance? (It must not.)
-**Budget note.** First module that spends tokens. Ships with a recorded/offline
-mode so CI and local dev cost nothing; live keys only for integration runs.
-**Acceptance.** LLM-proposed tool calls still pass through the permit gate; a
-prompt-injection attempt to run a red-line action is denied.
+### M4 — LLM provider layer (offline-first) ✅ Done
+**Goal.** A provider-agnostic LLM interface and an LLM-driven planner, proving the
+key Phase 0 open question — **a model cannot bypass governance** — at zero cost.
+Built offline-first per the budget decision; live providers are a later opt-in.
+
+**Delivered.**
+- `taiyi.llm.base` — `LLMProvider` interface + `LLMMessage` / `LLMResponse` /
+  `ToolCall`, and `DEFAULT_LIVE_MODEL` (documentation for the future live seam).
+- `taiyi.llm.offline` — `ScriptedProvider` (deterministic replay; used to
+  simulate an adversarial/injected model) and `KeywordOfflineProvider`.
+- `taiyi.scheduler.LLMPlanner` — implements the same `Planner` interface, so the
+  model's proposed tool calls flow through the unchanged governance gate.
+- 8 tests + `examples/llm_offline_demo.py`.
+
+**Acceptance (met).** A model proposing an identity override or `rm -rf /` is
+**denied** (`REJECTED`, nothing executed); a benign proposed plan completes; the
+property holds regardless of provider.
+
+**Deferred to a live opt-in (needs API key + budget).** Real Anthropic /
+OpenAI-compatible / Ollama providers implementing `LLMProvider`, and the iterative
+agent loop that feeds real tool results back to the model (meaningful once M5
+makes execution real). Flip this on by supplying a key; governance behaviour does
+not change.
 **Depends on.** M3.
 
 ### M5 — Tool Runtime (sandbox + credential isolation + SSRF)

@@ -30,19 +30,22 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 
 ## Current status
 
-**Modules 1–3 are built — a runnable single-task engine.** M1 (Governance Core):
-rules-as-data, deterministic gates, fail-closed verdicts, tamper-evident audit
-log. M2 (Scheduler + boundary): plans tool sequences but holds no execution
-capability — every step clears a permit through a swappable boundary. M3 (Task
-Runtime): the PDCA loop + state machine that gates each step, executes only
-cleared steps (mock executor), and archives a replayable trajectory. See the
-roadmap for what's next. (Phase 0's demo remains under `demo/` as reference.)
+**Modules 1–4 are built.** M1 (Governance Core): rules-as-data, deterministic
+gates, fail-closed verdicts, tamper-evident audit log. M2 (Scheduler + boundary):
+plans tool sequences but holds no execution capability — every step clears a
+permit through a swappable boundary. M3 (Task Runtime): the PDCA loop + state
+machine that gates each step, executes only cleared steps (mock executor), and
+archives a replayable trajectory. M4 (LLM layer, offline-first): a
+provider-agnostic interface + LLM-driven planner proving a model **cannot bypass
+governance** — at zero cost; live providers are an opt-in. See the roadmap for
+what's next. (Phase 0's demo remains under `demo/` as reference.)
 
 ```bash
-# Run whole tasks through the PDCA loop end-to-end
-python3 examples/runtime_demo.py
+# A model proposes tool calls; a prompt-injected one is still denied (no tokens)
+python3 examples/llm_offline_demo.py
 
-# Or see the layers individually:
+# Whole tasks through the PDCA loop, and the layers individually:
+python3 examples/runtime_demo.py
 python3 examples/governance_demo.py   # the governance engine on the founding cases
 python3 examples/scheduler_demo.py    # planning + the governance boundary
 

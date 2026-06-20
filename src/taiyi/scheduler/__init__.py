@@ -13,6 +13,7 @@ from taiyi.scheduler.planner import (
     Planner,
 )
 from taiyi.scheduler.engine import PlanClearance, SchedulerEngine
+from taiyi.scheduler.llm_planner import LLMPlanner
 
 __all__ = [
     "ExecutionPlan",
@@ -21,4 +22,5 @@ __all__ = [
     "Planner",
     "PlanClearance",
     "SchedulerEngine",
+    "LLMPlanner",
 ]
