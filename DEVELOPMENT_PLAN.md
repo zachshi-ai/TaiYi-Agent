@@ -41,7 +41,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M2** | **Scheduler + governance boundary** | ✅ **Done** | L2 | No |
 | **M3** | **Task Runtime (PDCA loop + state machine)** | ✅ **Done** | L2 | No |
 | **M4** | **LLM provider layer (offline-first)** | ✅ **Done** | L2 | No (live = opt-in) |
-| M5 | Tool Runtime (sandbox, credential isolation, SSRF) | Planned | L2 | No |
+| **M5** | **Tool Runtime (sandbox, credential isolation, SSRF)** | ✅ **Done** | L2 | No |
 | M6 | Validation Engine (L4, per-task checklists) | Planned | L3 | Partly |
 | M7 | Memory (5-layer: SQLite/FTS5/vector/Honcho) | Planned | L3 | Partly |
 | M8 | Scenario + Skill engine (quality gates) | Planned | L3 | No |
@@ -164,13 +164,34 @@ makes execution real). Flip this on by supplying a key; governance behaviour doe
 not change.
 **Depends on.** M3.
 
-### M5 — Tool Runtime (sandbox + credential isolation + SSRF)
-**Goal.** Real execution backends (local + Docker), credential filtering (child
-processes get only safe env vars), and SSRF protection (URL allowlist, private-IP
-deny, fail-closed). The high-risk execution layer the gates were protecting.
-**Acceptance.** Secrets never reach tool subprocesses; internal IPs are refused;
-the git-identity case is verified end-to-end against a real sandboxed repo.
-**Depends on.** M4. *(M1–M5 = a trustworthy single-task vertical slice.)*
+### M5 — Tool Runtime (sandbox + credential isolation + SSRF) ✅ Done
+**Goal.** Real, constrained execution: the high-risk layer the gates protect.
+
+**Delivered.**
+- `taiyi.tools.credentials` — default-deny `safe_environment`: subprocesses inherit
+  only an allowlist of safe vars, and anything matching a sensitive pattern is
+  dropped even if explicitly allowlisted.
+- `taiyi.tools.ssrf` — `SSRFGuard`: rejects loopback/private/link-local/reserved
+  address space, enforces an optional host allowlist, resolves hostnames to catch
+  DNS rebinding, and fails closed.
+- `taiyi.tools.sandbox` — `SandboxExecutor` (a real `Executor`): runs shell and
+  file I/O inside a sandbox dir with a scrubbed environment, screens URL tools
+  through the SSRF guard, blocks path traversal, and marks not-yet-connected
+  business tools as deferred rather than faking side effects.
+- Runtime now treats a failed real execution as terminal `FAILED`.
+- 17 tests + `examples/sandbox_demo.py`.
+
+**Acceptance (met).** Secrets never reach tool subprocesses (verified by scrubbing
+the env of a real `env` call); loopback/private/rebinding URLs are refused;
+**the founding case is real** — a normal commit runs in a genuine git repo and
+records the *local* identity, while the override attempt is denied and produces
+no commit at all.
+**Depends on.** M4.
+
+> **M1–M5 are the trustworthy single-task vertical slice.** A request is planned
+> (rule- or LLM-driven), gated step-by-step, executed for real but sandboxed only
+> when cleared, and archived to a tamper-evident, replayable trajectory. The only
+> remaining money decision is the *live* LLM opt-in (M4's deferred half).
 
 ### M6 — Validation Engine (L4, per-task checklists)
 **Goal.** Objective checks selected by `(task_type, scenario)` from a checklist

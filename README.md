@@ -30,17 +30,20 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 
 ## Current status
 
-**Modules 1–4 are built.** M1 (Governance Core): rules-as-data, deterministic
-gates, fail-closed verdicts, tamper-evident audit log. M2 (Scheduler + boundary):
-plans tool sequences but holds no execution capability — every step clears a
-permit through a swappable boundary. M3 (Task Runtime): the PDCA loop + state
-machine that gates each step, executes only cleared steps (mock executor), and
-archives a replayable trajectory. M4 (LLM layer, offline-first): a
-provider-agnostic interface + LLM-driven planner proving a model **cannot bypass
-governance** — at zero cost; live providers are an opt-in. See the roadmap for
-what's next. (Phase 0's demo remains under `demo/` as reference.)
+**Modules 1–5 are built — the trustworthy single-task vertical slice.** A request
+is planned (rule- or LLM-driven), gated step-by-step by governance, executed for
+real but sandboxed only when cleared, and archived to a tamper-evident, replayable
+trajectory. M1 Governance Core (rules-as-data, fail-closed, audit log); M2
+Scheduler + boundary (no execution capability; permits only); M3 Task Runtime
+(PDCA loop + state machine); M4 LLM layer offline-first (a model **cannot bypass
+governance**; live providers are an opt-in); M5 Tool Runtime (sandboxed execution,
+credential isolation, SSRF). See the roadmap for what's next. (Phase 0's demo
+remains under `demo/` as reference.)
 
 ```bash
+# The founding case, for real: a governed commit in a throwaway git repo
+python3 examples/sandbox_demo.py
+
 # A model proposes tool calls; a prompt-injected one is still denied (no tokens)
 python3 examples/llm_offline_demo.py
 

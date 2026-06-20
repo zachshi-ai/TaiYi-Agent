@@ -124,6 +124,11 @@ class TaskRuntime:
             self.audit.append(
                 "step_executed", task_id=ctx.task_id, tool=step.tool, ok=result.ok
             )
+            if not result.ok:
+                ctx.error = f"step failed: {step.tool}: {result.output}"
+                ctx.touch(TaskState.FAILED)
+                self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+                return
 
     # --- C + A ---------------------------------------------------------------
     def _check_and_act(self, ctx: TaskContext) -> None:
