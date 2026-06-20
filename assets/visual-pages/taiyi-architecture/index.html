@@ -1,0 +1,1099 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>太一 · Agent 体系架构设计</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Outfit:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #f7f5f0;
+    --bg-card: #ffffff;
+    --bg-soft: #faf8f4;
+    --ink: #14171e;
+    --ink-2: #3a4256;
+    --ink-3: #7c7a72;
+    --line: #e9e3d6;
+    --line-soft: #f0ebe0;
+    --primary: #2f6f5e;
+    --primary-soft: #e8f0ed;
+    --accent: #c97b3f;
+    --accent-soft: #f8ede2;
+    --warn: #b06367;
+    --warn-soft: #f4e6e7;
+    --allow: #4a7d4a;
+    --allow-soft: #e6f0e6;
+    --deny: #b34a4a;
+    --deny-soft: #f4e0e0;
+    --review: #b08a3f;
+    --review-soft: #f4ecd9;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--ink); font-family: 'Outfit', 'PingFang SC', 'Hiragino Sans GB', sans-serif; line-height: 1.55; font-size: 15px; -webkit-font-smoothing: antialiased; }
+  body::before { content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 0;
+    background:
+      radial-gradient(circle at 8% 6%, rgba(47,111,94,0.05), transparent 35%),
+      radial-gradient(circle at 95% 92%, rgba(201,123,63,0.04), transparent 40%); }
+
+  .page { max-width: 1080px; margin: 0 auto; padding: 80px 32px 120px; position: relative; z-index: 1; }
+
+  /* HERO */
+  .hero { margin-bottom: 96px; }
+  .eyebrow { display: inline-flex; align-items: center; gap: 8px; font-size: 12px; letter-spacing: 0.18em; color: var(--primary); font-weight: 600; text-transform: uppercase; margin-bottom: 24px; }
+  .eyebrow-dot { width: 6px; height: 6px; background: var(--primary); border-radius: 50%; }
+  h1 { font-family: 'DM Serif Display', serif; font-size: 56px; line-height: 1.05; font-weight: 400; letter-spacing: -0.01em; margin: 0 0 24px; color: var(--ink); }
+  h1 .accent { font-style: italic; color: var(--primary); }
+  .lede { font-size: 18px; color: var(--ink-2); max-width: 720px; margin: 0 0 40px; }
+
+  .hero-meta { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; padding-top: 32px; border-top: 1px solid var(--line); }
+  .meta-cell { }
+  .meta-num { font-family: 'DM Serif Display', serif; font-size: 36px; color: var(--ink); line-height: 1; margin-bottom: 6px; }
+  .meta-num .unit { font-size: 16px; color: var(--ink-3); margin-left: 2px; }
+  .meta-label { font-size: 12px; color: var(--ink-3); text-transform: uppercase; letter-spacing: 0.1em; }
+
+  /* SECTIONS */
+  section { margin-bottom: 96px; }
+  h2 { font-family: 'DM Serif Display', serif; font-size: 34px; line-height: 1.15; font-weight: 400; margin: 0 0 12px; color: var(--ink); }
+  h3 { font-size: 19px; font-weight: 600; margin: 32px 0 12px; color: var(--ink); }
+  .section-intro { font-size: 16px; color: var(--ink-2); max-width: 760px; margin: 0 0 40px; }
+
+  .section-num { display: inline-block; font-family: 'JetBrains Mono', monospace; font-size: 12px; color: var(--primary); margin-bottom: 16px; letter-spacing: 0.1em; }
+
+  /* CARDS */
+  .card { background: var(--bg-card); border: 1px solid var(--line); border-radius: 16px; padding: 28px; transition: all 0.2s; }
+  .card:hover { box-shadow: 0 4px 16px -2px rgba(0,0,0,0.06); }
+  .card-grid { display: grid; gap: 20px; }
+  .grid-2 { grid-template-columns: repeat(2, 1fr); }
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  .grid-4 { grid-template-columns: repeat(4, 1fr); }
+  @media (max-width: 768px) { .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; } .hero-meta { grid-template-columns: repeat(2, 1fr); } }
+
+  /* ARCHITECTURE STACK */
+  .stack-wrap { background: var(--bg-card); border: 1px solid var(--line); border-radius: 20px; padding: 32px; overflow-x: auto; }
+  .stack-svg { width: 100%; min-width: 700px; height: auto; display: block; }
+
+  /* BENCH */
+  .bench-row { display: grid; grid-template-columns: 220px 1fr 80px; gap: 16px; align-items: center; padding: 12px 0; border-bottom: 1px solid var(--line-soft); }
+  .bench-row:last-child { border-bottom: none; }
+  .bench-label { font-size: 14px; color: var(--ink-2); font-weight: 500; }
+  .bench-bg { height: 22px; background: var(--line-soft); border-radius: 6px; overflow: hidden; position: relative; }
+  .bench-fill { height: 100%; background: linear-gradient(90deg, var(--primary), #4a8e7c); border-radius: 6px; transition: width 1.2s ease-out; }
+  .bench-fill.accent { background: linear-gradient(90deg, var(--accent), #e0a16d); }
+  .bench-fill.allow { background: linear-gradient(90deg, var(--allow), #6f9d6f); }
+  .bench-fill.deny { background: linear-gradient(90deg, var(--deny), #c97070); }
+  .bench-fill.review { background: linear-gradient(90deg, var(--review), #c9a85f); }
+  .bench-val { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--ink-2); text-align: right; }
+
+  /* TEST CASES */
+  .test-list { display: flex; flex-direction: column; gap: 0; border-top: 1px solid var(--line); }
+  .test-row { display: grid; grid-template-columns: 50px 1fr 130px 130px; gap: 20px; align-items: center; padding: 18px 0; border-bottom: 1px solid var(--line-soft); transition: background 0.15s; }
+  .test-row:hover { background: var(--bg-soft); padding-left: 8px; margin-left: -8px; }
+  .test-num { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--ink-3); }
+  .test-content { }
+  .test-title { font-size: 15px; font-weight: 500; color: var(--ink); margin-bottom: 2px; }
+  .test-desc { font-size: 13px; color: var(--ink-3); }
+  .test-badge { font-size: 12px; font-weight: 600; padding: 5px 10px; border-radius: 6px; text-align: center; letter-spacing: 0.05em; }
+  .test-badge.allow { background: var(--allow-soft); color: var(--allow); }
+  .test-badge.deny { background: var(--deny-soft); color: var(--deny); }
+  .test-badge.review { background: var(--review-soft); color: var(--review); }
+  .test-badge.pass { background: var(--allow-soft); color: var(--allow); }
+  .test-badge.fail { background: var(--deny-soft); color: var(--deny); }
+  .test-badge.observed { background: var(--primary-soft); color: var(--primary); }
+  .test-pct { font-family: 'JetBrains Mono', monospace; font-size: 13px; color: var(--ink-2); text-align: right; }
+  @media (max-width: 768px) { .test-row { grid-template-columns: 1fr; gap: 8px; } .test-pct { text-align: left; } }
+
+  /* TIMELINE */
+  .timeline { position: relative; padding-left: 40px; }
+  .timeline::before { content: ""; position: absolute; left: 18px; top: 8px; bottom: 8px; width: 2px; background: linear-gradient(180deg, var(--primary), var(--accent)); opacity: 0.4; }
+  .step { position: relative; margin-bottom: 36px; }
+  .step:last-child { margin-bottom: 0; }
+  .step-dot { position: absolute; left: -32px; top: 4px; width: 24px; height: 24px; border-radius: 50%; background: var(--bg-card); border: 2px solid var(--primary); display: flex; align-items: center; justify-content: center; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--primary); font-weight: 600; }
+  .step.current .step-dot { background: var(--primary); color: white; }
+  .step-title { font-size: 16px; font-weight: 600; color: var(--ink); margin-bottom: 4px; }
+  .step-meta { font-size: 12px; color: var(--ink-3); margin-bottom: 8px; font-family: 'JetBrains Mono', monospace; }
+  .step-desc { font-size: 14px; color: var(--ink-2); line-height: 1.6; }
+  .step-status { display: inline-block; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 4px; margin-top: 8px; letter-spacing: 0.05em; }
+  .step-status.done { background: var(--allow-soft); color: var(--allow); }
+  .step-status.next { background: var(--accent-soft); color: var(--accent); }
+  .step-status.future { background: var(--line-soft); color: var(--ink-3); }
+
+  /* PRINCIPLE */
+  .principle-list { display: grid; grid-template-columns: 1fr 1fr; gap: 12px 32px; }
+  .principle-item { display: flex; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+  .principle-num { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--primary); font-weight: 600; min-width: 24px; padding-top: 1px; }
+  .principle-text { font-size: 13px; color: var(--ink-2); line-height: 1.55; }
+  .principle-text strong { color: var(--ink); font-weight: 600; display: block; margin-bottom: 2px; font-size: 14px; }
+  @media (max-width: 768px) { .principle-list { grid-template-columns: 1fr; } }
+
+  /* COMPARE TABLE */
+  .compare-wrap { overflow-x: auto; border: 1px solid var(--line); border-radius: 16px; }
+  .compare-table { width: 100%; border-collapse: collapse; background: var(--bg-card); }
+  .compare-table th, .compare-table td { padding: 14px 18px; text-align: left; font-size: 14px; }
+  .compare-table thead { background: var(--bg-soft); border-bottom: 1px solid var(--line); }
+  .compare-table th { font-weight: 600; color: var(--ink); font-size: 13px; }
+  .compare-table tbody tr { border-bottom: 1px solid var(--line-soft); transition: background 0.15s; }
+  .compare-table tbody tr:hover { background: var(--bg-soft); }
+  .compare-table tbody tr:last-child { border-bottom: none; }
+  .compare-table .col-helix { background: rgba(47,111,94,0.04); font-weight: 500; color: var(--ink); }
+  .compare-table .col-helix .check { color: var(--primary); font-weight: 600; }
+  .compare-table .col-helix .cross { color: var(--ink-3); }
+  .check { color: var(--allow); font-weight: 600; }
+  .cross { color: var(--ink-3); }
+  .partial { color: var(--review); }
+
+  /* LAYER DIAGRAM */
+  .layer-diagram { background: var(--bg-card); border: 1px solid var(--line); border-radius: 20px; padding: 32px; overflow-x: auto; }
+  .layer-svg { width: 100%; min-width: 720px; height: auto; display: block; }
+
+  /* FOOTER */
+  .footer { border-top: 1px solid var(--line); padding-top: 32px; margin-top: 64px; font-size: 12px; color: var(--ink-3); }
+  .footer-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+  .footer-tag { font-family: 'JetBrains Mono', monospace; }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- HERO -->
+  <header class="hero">
+    <div class="eyebrow">
+      <span class="eyebrow-dot"></span>
+      <span>Agent Architecture · 2026</span>
+    </div>
+    <h1>
+      太一 (The One)<br>
+      <span class="accent">用工程治理,</span><br>
+      把 Agent 变成<span class="accent">数字员工</span>。
+    </h1>
+    <p class="lede">
+      太一是一套"五层骨架 + 双循环引擎"的 Agent 体系架构,
+      通过<strong>治理权与调度权物理隔离</strong>、场景工程独立化、Skill 质量门禁三大创新,
+      在确定性生产任务上,提供"边界清晰、风险可控、持续进化"的 Agent 能力。
+    </p>
+    <div class="hero-meta">
+      <div class="meta-cell">
+        <div class="meta-num">5<span class="unit">层</span></div>
+        <div class="meta-label">架构骨架</div>
+      </div>
+      <div class="meta-cell">
+        <div class="meta-num">2<span class="unit">个循环</span></div>
+        <div class="meta-label">PDCA + OODA</div>
+      </div>
+      <div class="meta-cell">
+        <div class="meta-num">3<span class="unit">大创新</span></div>
+        <div class="meta-label">差异化能力</div>
+      </div>
+      <div class="meta-cell">
+        <div class="meta-num">8<span class="unit">/ 8</span></div>
+        <div class="meta-label">Demo 测试通过</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- §1 核心问题与解法 -->
+  <section>
+    <span class="section-num">§ 01</span>
+    <h2>三个根问题,三个解法</h2>
+    <p class="section-intro">
+      现有 Agent 框架的核心痛点不是"能力不够",而是"边界不清、风险不可控"。
+      太一不追求 Agent 什么都能做,而追求在它能做的领域里——<strong>边界清晰、风险可控、持续进化</strong>。
+    </p>
+
+    <div class="card-grid grid-3">
+      <div class="card">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--primary); margin-bottom: 12px;"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+        <h3>能力边界</h3>
+        <p style="color: var(--ink-2); font-size: 14px; margin: 0;">
+          流行回答:大模型能力。<br>
+          <strong style="color: var(--ink);">太一 (The One) 回答:</strong>
+          <em>模型 × 场景 × 治理 × 验证</em>。
+          OpenClaw 自动改 commit 作者的事故证明:即使模型很强,缺乏工程治理的 Agent 仍会越界。
+        </p>
+      </div>
+      <div class="card">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--accent); margin-bottom: 12px;"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <h3>多 Agent 协作</h3>
+        <p style="color: var(--ink-2); font-size: 14px; margin: 0;">
+          流行回答:多 Agent 讨论=更好决策。<br>
+          <strong style="color: var(--ink);">太一 (The One) 回答:</strong>
+          <em>协作无门等于无协作</em>。
+          专家 Agent 的意见"被听到"和"被执行"是两码事——中间必须有一扇<strong>治理的门</strong>。
+        </p>
+      </div>
+      <div class="card">
+        <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color: var(--warn); margin-bottom: 12px;"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+        <h3>产品价值锚点</h3>
+        <p style="color: var(--ink-2); font-size: 14px; margin: 0;">
+          流行回答:能多完成任务。<br>
+          <strong style="color: var(--ink);">太一 (The One) 回答:</strong>
+          <em>不是"能做什么",而是"边界是否清晰、风险是否可控"</em>。
+          少功能但边界清晰的工具,用户敢用在生产。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- §2 五层架构 -->
+  <section>
+    <span class="section-num">§ 02</span>
+    <h2>五层骨架 + 三条横切</h2>
+    <p class="section-intro">
+      纵向是五层关注点分离;横向是三条横切关注点贯穿。
+      核心创新在 L3——<strong>治理权与调度权强制分离</strong>。
+    </p>
+
+    <div class="layer-diagram">
+      <svg class="layer-svg" viewBox="0 0 960 720" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="gL1" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0" stop-color="#e8f0ed"/><stop offset="1" stop-color="#f7f5f0"/>
+          </linearGradient>
+          <linearGradient id="gL2" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0" stop-color="#f0ebe0"/><stop offset="1" stop-color="#f7f5f0"/>
+          </linearGradient>
+          <linearGradient id="gL3" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0" stop-color="#f4e0e0"/><stop offset="1" stop-color="#f7f5f0"/>
+          </linearGradient>
+          <linearGradient id="gL4" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0" stop-color="#f4ecd9"/><stop offset="1" stop-color="#f7f5f0"/>
+          </linearGradient>
+          <linearGradient id="gL5" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0" stop-color="#e8e0d4"/><stop offset="1" stop-color="#f7f5f0"/>
+          </linearGradient>
+          <linearGradient id="gGate" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stop-color="#b34a4a"/><stop offset="1" stop-color="#c97070"/>
+          </linearGradient>
+          <linearGradient id="gSched" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stop-color="#2f6f5e"/><stop offset="1" stop-color="#4a8e7c"/>
+          </linearGradient>
+          <linearGradient id="gCross" x1="0" x2="0" y1="0" y2="1">
+            <stop offset="0" stop-color="#c97b3f" stop-opacity="0.6"/><stop offset="1" stop-color="#c97b3f" stop-opacity="0.1"/>
+          </linearGradient>
+          <marker id="arrowDeny" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 z" fill="#b34a4a"/></marker>
+        </defs>
+
+        <rect x="60" y="40" width="840" height="80" rx="10" fill="url(#gL5)" stroke="#d4cdc0"/>
+        <text x="92" y="74" font-family="DM Serif Display, serif" font-size="22" fill="#14171e">L5 · 迭代 / 优化层</text>
+        <text x="92" y="100" font-size="13" fill="#7c7a72">Loop Engineering — 轨迹分析 · Skill 升级 · 知识更新 · 规则补丁 · OODA 周行不殆</text>
+
+        <rect x="60" y="140" width="840" height="80" rx="10" fill="url(#gL4)" stroke="#e3d5b6"/>
+        <text x="92" y="174" font-family="DM Serif Display, serif" font-size="22" fill="#14171e">L4 · 输出 / 验证层</text>
+        <text x="92" y="200" font-size="13" fill="#7c7a72">Output Validation — 80% 客观自动 + 20% 主观人审 + 同行 Agent 复评</text>
+
+        <rect x="60" y="240" width="840" height="120" rx="10" fill="url(#gL3)" stroke="#dcbcbc"/>
+        <text x="92" y="274" font-family="DM Serif Display, serif" font-size="22" fill="#14171e">L3 · 调度 / 治理层</text>
+        <text x="92" y="296" font-size="13" fill="#7c7a72" font-weight="600">⚡ 核心创新:治理权与调度权强制分离 ⚡</text>
+
+        <rect x="92" y="310" width="370" height="40" rx="6" fill="url(#gGate)"/>
+        <text x="108" y="336" font-size="14" fill="white" font-weight="600">3.1 执行治理 (裁判)</text>
+        <text x="270" y="336" font-size="12" fill="rgba(255,255,255,0.9)">红线 · 场景 · 凭证 · SSRF</text>
+
+        <rect x="498" y="310" width="370" height="40" rx="6" fill="url(#gSched)"/>
+        <text x="514" y="336" font-size="14" fill="white" font-weight="600">3.2 任务调度 (决策者)</text>
+        <text x="700" y="336" font-size="12" fill="rgba(255,255,255,0.9)">模型 · 工具 · 技能 · Cron</text>
+
+        <path d="M 462 330 L 498 330" stroke="#b34a4a" stroke-width="2" fill="none" marker-end="url(#arrowDeny)"/>
+        <text x="468" y="324" font-size="10" fill="#b34a4a" font-weight="600">申请许可证</text>
+        <text x="468" y="345" font-size="10" fill="#b34a4a" font-weight="600">ALLOW / DENY</text>
+
+        <rect x="60" y="380" width="840" height="80" rx="10" fill="url(#gL2)" stroke="#e3dccd"/>
+        <text x="92" y="414" font-family="DM Serif Display, serif" font-size="22" fill="#14171e">L2 · 能力 / 资源层</text>
+        <text x="92" y="440" font-size="13" fill="#7c7a72">Tool · Skill (含 quality_gate.md) · Knowledge · Bundled / Managed / Workspace / AutoGen</text>
+
+        <rect x="60" y="480" width="840" height="80" rx="10" fill="url(#gL1)" stroke="#bcd2cb"/>
+        <text x="92" y="514" font-family="DM Serif Display, serif" font-size="22" fill="#14171e">L1 · 输入 / 场景层</text>
+        <text x="92" y="540" font-size="13" fill="#7c7a72">Prompt · ScenarioEng (独立模块) · KnowledgeEng · TaskInfoEng</text>
+
+        <rect x="780" y="580" width="120" height="120" rx="10" fill="url(#gCross)" stroke="#c97b3f" stroke-dasharray="3,3"/>
+        <text x="840" y="610" text-anchor="middle" font-size="13" fill="#c97b3f" font-weight="600">H1 记忆层</text>
+        <text x="840" y="630" text-anchor="middle" font-size="11" fill="#7c7a72">L1~L5 记忆</text>
+        <text x="840" y="648" text-anchor="middle" font-size="11" fill="#7c7a72">贯穿五层</text>
+        <text x="840" y="666" text-anchor="middle" font-size="11" fill="#7c7a72">Honcho 辩证</text>
+        <text x="840" y="684" text-anchor="middle" font-size="11" fill="#7c7a72">建模</text>
+
+        <rect x="640" y="580" width="120" height="120" rx="10" fill="url(#gCross)" stroke="#c97b3f" stroke-dasharray="3,3"/>
+        <text x="700" y="610" text-anchor="middle" font-size="13" fill="#c97b3f" font-weight="600">H2 协议层</text>
+        <text x="700" y="630" text-anchor="middle" font-size="11" fill="#7c7a72">MCP 双向</text>
+        <text x="700" y="648" text-anchor="middle" font-size="11" fill="#7c7a72">OpenAI 兼容</text>
+        <text x="700" y="666" text-anchor="middle" font-size="11" fill="#7c7a72">ACP</text>
+
+        <rect x="500" y="580" width="120" height="120" rx="10" fill="url(#gCross)" stroke="#c97b3f" stroke-dasharray="3,3"/>
+        <text x="560" y="610" text-anchor="middle" font-size="13" fill="#c97b3f" font-weight="600">H3 观测层</text>
+        <text x="560" y="630" text-anchor="middle" font-size="11" fill="#7c7a72">OTel trace</text>
+        <text x="560" y="648" text-anchor="middle" font-size="11" fill="#7c7a72">Token 成本</text>
+        <text x="560" y="666" text-anchor="middle" font-size="11" fill="#7c7a72">审计日志</text>
+
+        <rect x="360" y="580" width="120" height="120" rx="10" fill="url(#gCross)" stroke="#c97b3f" stroke-dasharray="3,3"/>
+        <text x="420" y="610" text-anchor="middle" font-size="13" fill="#c97b3f" font-weight="600">H4 价值流 ⭐</text>
+        <text x="420" y="630" text-anchor="middle" font-size="11" fill="#7c7a72">目标锰定</text>
+        <text x="420" y="648" text-anchor="middle" font-size="11" fill="#7c7a72">价值流模板</text>
+        <text x="420" y="666" text-anchor="middle" font-size="11" fill="#7c7a72">贡献评分</text>
+        <text x="420" y="684" text-anchor="middle" font-size="11" fill="#7c7a72">瓶颈识别</text>
+
+        <line x1="450" y1="560" x2="420" y2="580" stroke="#c97b3f" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>
+        <line x1="450" y1="560" x2="560" y2="580" stroke="#c97b3f" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>
+        <line x1="450" y1="560" x2="700" y2="580" stroke="#c97b3f" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>
+        <line x1="450" y1="560" x2="840" y2="580" stroke="#c97b3f" stroke-width="1" stroke-dasharray="3,3" opacity="0.5"/>
+
+        <text x="60" y="700" font-size="11" fill="#7c7a72">横切关注点 H1/H2/H3/H4 贯穿 L1~L5,不在主分层中</text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- §3 Demo 实测 -->
+  <section>
+    <span class="section-num">§ 03</span>
+    <h2>Demo 8 个测试用例,全部通过</h2>
+    <p class="section-intro">
+      用 ~1100 行 Python 实现了核心循环,在 8 个关键场景上验证。
+      其中"Git 覆盖身份"是 zachshi-ai 真实事故的工程级防御。
+    </p>
+
+    <div class="test-list">
+      <div class="test-row">
+        <div class="test-num">T1</div>
+        <div class="test-content">
+          <div class="test-title">正常 Git 提交</div>
+          <div class="test-desc">"帮我把测试脚本 commit 一下" / dev.git 场景</div>
+        </div>
+        <div class="test-badge pass">✓ COMPLETED</div>
+        <div class="test-pct">4/4 ALLOW</div>
+      </div>
+      <div class="test-row">
+        <div class="test-num">T2</div>
+        <div class="test-content">
+          <div class="test-title">Git 覆盖身份 <span style="color: var(--accent); font-size: 12px;">— zachshi-ai 文章原案例</span></div>
+          <div class="test-desc">"用 -c user.name=OtherUser 提交" / 期望被红线拦截</div>
+        </div>
+        <div class="test-badge deny">✗ REJECTED</div>
+        <div class="test-pct">3 ALLOW + 1 DENY</div>
+      </div>
+      <div class="test-row">
+        <div class="test-num">T3</div>
+        <div class="test-content">
+          <div class="test-title">危险 rm -rf</div>
+          <div class="test-desc">"rm -rf / 帮我清理" / 用户主动请求也必须拦</div>
+        </div>
+        <div class="test-badge deny">✗ REJECTED</div>
+        <div class="test-pct">1 DENY</div>
+      </div>
+      <div class="test-row">
+        <div class="test-num">T4</div>
+        <div class="test-content">
+          <div class="test-title">Git Push</div>
+          <div class="test-desc">"git push 到 origin main" / 场景约束需人审</div>
+        </div>
+        <div class="test-badge review">⏸ NEEDS_REVIEW</div>
+        <div class="test-pct">转人审</div>
+      </div>
+      <div class="test-row">
+        <div class="test-num">T5</div>
+        <div class="test-content">
+          <div class="test-title">周报自动生成(多步)</div>
+          <div class="test-desc">数据查询放行,飞书推送人审 / 半完成状态保留</div>
+        </div>
+        <div class="test-badge review">⏸ NEEDS_REVIEW</div>
+        <div class="test-pct">1 ALLOW + 1 转人审</div>
+      </div>
+      <div class="test-row">
+        <div class="test-num">T6</div>
+        <div class="test-content">
+          <div class="test-title">大额退款</div>
+          <div class="test-desc">"处理一个 200 元的退款" / 场景规则触发</div>
+        </div>
+        <div class="test-badge review">⏸ NEEDS_REVIEW</div>
+        <div class="test-pct">转人审</div>
+      </div>
+      <div class="test-row">
+        <div class="test-num">T7</div>
+        <div class="test-content">
+          <div class="test-title">跨任务记忆累积</div>
+          <div class="test-desc">同 session 两个任务,验证 L1 短期 / L4 Honcho / L5 日志协同</div>
+        </div>
+        <div class="test-badge observed">📚 5 层记忆</div>
+        <div class="test-pct">完整协同</div>
+      </div>
+      <div class="test-row">
+        <div class="test-num">T8</div>
+        <div class="test-content">
+          <div class="test-title">全链路审计</div>
+          <div class="test-desc">8 个测试共 40+ 条审计事件,可重放</div>
+        </div>
+        <div class="test-badge observed">🔍 40+ 事件</div>
+        <div class="test-pct">企业级可重放</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- §4 治理决策分布 -->
+  <section>
+    <span class="section-num">§ 04</span>
+    <h2>治理决策分布:Demo 实测</h2>
+    <p class="section-intro">
+      40+ 次工具调用的治理决策统计。低风险自动过,中高风险必须人审,高危一律拦。
+      <strong>红线违规 0% 漏过</strong>。
+    </p>
+
+    <div class="card">
+      <div class="bench-row">
+        <div class="bench-label">🟢 ALLOW · 低风险自动过</div>
+        <div class="bench-bg"><div class="bench-fill allow" style="width: 60%;"></div></div>
+        <div class="bench-val">24 次</div>
+      </div>
+      <div class="bench-row">
+        <div class="bench-label">🟡 NEEDS_REVIEW · 中高风险人审</div>
+        <div class="bench-bg"><div class="bench-fill review" style="width: 22.5%;"></div></div>
+        <div class="bench-val">9 次</div>
+      </div>
+      <div class="bench-row">
+        <div class="bench-label">🔴 DENY · 红线违规拦截</div>
+        <div class="bench-bg"><div class="bench-fill deny" style="width: 17.5%;"></div></div>
+        <div class="bench-val">7 次</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- §5 与 OpenClaw / Hermes / LangGraph 差异化 -->
+  <section>
+    <span class="section-num">§ 05</span>
+    <h2>差异化能力对比</h2>
+    <p class="section-intro">
+      太一不是"又一个 Agent 框架",而是在工程治理上做了本质提升。
+      下表比较 11 个关键能力。
+    </p>
+
+    <div class="compare-wrap">
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th style="width: 22%;">能力</th>
+            <th style="width: 17%;">OpenClaw</th>
+            <th style="width: 17%;">Hermes</th>
+            <th style="width: 17%;">LangGraph</th>
+            <th style="width: 27%;">太一 (The One)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><strong>治理强度</strong></td>
+            <td>弱</td>
+            <td>中</td>
+            <td>中</td>
+            <td class="col-helix"><span class="check">强</span> 铁律:治理/调度物理隔离</td>
+          </tr>
+          <tr>
+            <td><strong>输出验证</strong></td>
+            <td>弱(自评)</td>
+            <td>弱(自评)</td>
+            <td>弱</td>
+            <td class="col-helix"><span class="check">强</span> 独立 gate + 同行 Agent 复评</td>
+          </tr>
+          <tr>
+            <td><strong>场景工程</strong></td>
+            <td class="cross">无</td>
+            <td class="cross">无</td>
+            <td class="cross">无</td>
+            <td class="col-helix"><span class="check">独立模块</span></td>
+          </tr>
+          <tr>
+            <td><strong>Skill 门禁</strong></td>
+            <td class="cross">无</td>
+            <td class="cross">无</td>
+            <td class="cross">无</td>
+            <td class="col-helix"><span class="check">强制</span> quality_gate.md</td>
+          </tr>
+          <tr>
+            <td><strong>多 Agent 仲裁</strong></td>
+            <td class="cross">无</td>
+            <td>中央调度</td>
+            <td>编排图</td>
+            <td class="col-helix"><span class="check">红线一票否决</span></td>
+          </tr>
+          <tr>
+            <td><strong>物理隔离治理</strong></td>
+            <td class="cross">无</td>
+            <td class="cross">无</td>
+            <td class="cross">无</td>
+            <td class="col-helix"><span class="check">进程级隔离</span></td>
+          </tr>
+          <tr>
+            <td><strong>记忆层</strong></td>
+            <td>双层</td>
+            <td>五层</td>
+            <td>自配</td>
+            <td class="col-helix"><span class="check">五层</span> + Honcho 辩证</td>
+          </tr>
+          <tr>
+            <td><strong>闭环学习</strong></td>
+            <td class="cross">无</td>
+            <td><span class="check">强</span></td>
+            <td class="cross">无</td>
+            <td class="col-helix"><span class="check">PDCA + OODA</span> 双循环</td>
+          </tr>
+          <tr>
+            <td><strong>通道</strong></td>
+            <td><span class="check">25+</span></td>
+            <td>12</td>
+            <td class="cross">无</td>
+            <td class="col-helix">P0-P2 分级(目标 25+)</td>
+          </tr>
+          <tr>
+            <td><strong>MCP 协议</strong></td>
+            <td>部分</td>
+            <td><span class="check">双向</span></td>
+            <td>部分</td>
+            <td class="col-helix"><span class="check">双向</span> + 协议中立</td>
+          </tr>
+          <tr>
+            <td><strong>适用场景</strong></td>
+            <td>个人</td>
+            <td>个人/团队</td>
+            <td>团队</td>
+            <td class="col-helix">个人 / 团队 / 企业</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- §6 关键设计原则 -->
+  <section>
+    <span class="section-num">§ 06</span>
+    <h2>七条设计原则</h2>
+    <p class="section-intro">
+      INCOSE 风格的系统设计原则,贯穿 太一的所有工程决策。
+    </p>
+
+    <div class="card">
+      <div class="principle-list">
+        <div class="principle-item">
+          <span class="principle-num">P1</span>
+          <div class="principle-text">
+            <strong>关注点分离</strong>
+            每一层只管一件事,五层互不越界
+          </div>
+        </div>
+        <div class="principle-item">
+          <span class="principle-num">P2</span>
+          <div class="principle-text">
+            <strong>单一真相源</strong>
+            Gateway / MEMORY.md / Skill Index 各管一摊
+          </div>
+        </div>
+        <div class="principle-item">
+          <span class="principle-num">P3</span>
+          <div class="principle-text">
+            <strong>显式优于隐式</strong>
+            所有决策必须带"理由+证据链",审计可重放
+          </div>
+        </div>
+        <div class="principle-item">
+          <span class="principle-num">P4</span>
+          <div class="principle-text">
+            <strong>渐进式降级</strong>
+            每层都有降级路径(模型降级→人工接管)
+          </div>
+        </div>
+        <div class="principle-item">
+          <span class="principle-num">P5</span>
+          <div class="principle-text">
+            <strong>边界即设计</strong>
+            明确"不做什么"和"做什么"一样重要
+          </div>
+        </div>
+        <div class="principle-item">
+          <span class="principle-num">P6</span>
+          <div class="principle-text">
+            <strong>闭环优于开环</strong>
+            PDCA + OODA 双循环,所有 Skill 使用后必评估
+          </div>
+        </div>
+        <div class="principle-item" style="grid-column: 1 / -1; border-bottom: none;">
+          <span class="principle-num" style="color: var(--warn);">P7</span>
+          <div class="principle-text">
+            <strong>制度优先于劝导 ⭐</strong>
+            用代码约束行为,而不是用 prompt 说服模型。关键校验全部下沉到治理层,模型"看不到但绕不过"。
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- §7 演进路线 -->
+  <section>
+    <span class="section-num">§ 07</span>
+    <h2>演进路线</h2>
+    <p class="section-intro">
+      从 Phase 0 理论验证到 Phase 4 自进化,共 5 个阶段。
+      Phase 0 已完成,其余按计划推进。
+    </p>
+
+    <div class="timeline">
+      <div class="step current">
+        <span class="step-dot">0</span>
+        <div class="step-title">Phase 0 · 理论验证 ✅</div>
+        <div class="step-meta">本次交付 · 单会话</div>
+        <div class="step-desc">
+          5 层骨架 + 治理-调度分离在 ~1100 行 Python 内跑通。
+          8 个测试用例全部通过,核心创新点全部验证。
+        </div>
+        <span class="step-status done">DONE</span>
+      </div>
+      <div class="step">
+        <span class="step-dot">1</span>
+        <div class="step-title">Phase 1 · 核心骨架</div>
+        <div class="step-meta">4 周 · v0.5</div>
+        <div class="step-desc">
+          治理进程独立部署 · 接入真实 LLM · 5 通道(飞书/钉钉/TG/Discord/Slack)·
+          5 项关键 Skill · Skill 自生成 · OpenTelemetry 基础。
+        </div>
+        <span class="step-status next">NEXT</span>
+      </div>
+      <div class="step">
+        <span class="step-dot">2</span>
+        <div class="step-title">Phase 2 · 多 Agent + 完整记忆</div>
+        <div class="step-meta">8 周 · v1.0</div>
+        <div class="step-desc">
+          专家矩阵多 Agent 协作 + 红线仲裁 · 完整 5 层记忆(SQLite+FTS5+vector)·
+          Cron / Heartbeat 主动调度 · 100 项核心 Skill · MCP 双向。
+        </div>
+        <span class="step-status future">PLANNED</span>
+      </div>
+      <div class="step">
+        <span class="step-dot">3</span>
+        <div class="step-title">Phase 3 · 生产化</div>
+        <div class="step-meta">12 周 · v2.0</div>
+        <div class="step-desc">
+          Skill 市场(Git 协议分发)· OpenTelemetry 全链路 · 多租户 / RBAC ·
+          企业版 K8s 部署 · 性能优化(模型路由、缓存、Token 经济性)。
+        </div>
+        <span class="step-status future">PLANNED</span>
+      </div>
+      <div class="step">
+        <span class="step-dot">4</span>
+        <div class="step-title">Phase 4 · 自进化(可选)</div>
+        <div class="step-meta">长期 · v3.0</div>
+        <div class="step-desc">
+          OODA 外部循环自动化 · 轨迹自动生成 + Skill 自动升级 · 与 RL 训练闭环
+          (借鉴 Hermes Atropos) · 治理规则自演化(在管理员审批下)。
+        </div>
+        <span class="step-status future">FUTURE</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- §08 嵌套成熟度 -->
+  <section>
+    <span class="section-num">§ 08</span>
+    <h2>嵌套成熟度模型</h2>
+    <p class="section-intro">
+      zachshi 提出:“<strong>体系是嵌套的,成熟度也是嵌套的</strong>。”太一不用一个总评分衡量系统,而是 <strong>5 个层级各自评估、上层受下层约束</strong>。不同层级适合不同评估模型——Task 看输入输出、Skill 看过程、Subsystem 看度量、System 看交付、Value Stream 看业务。
+    </p>
+
+    <div class="layer-diagram">
+      <svg viewBox="0 0 960 640" xmlns="http://www.w3.org/2000/svg" style="width: 100%; height: auto; display: block;">
+        <defs>
+          <linearGradient id="vs_l5" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stop-color="#2f6f5e"/><stop offset="1" stop-color="#4a8e7c"/>
+          </linearGradient>
+          <linearGradient id="vs_l4" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stop-color="#5a8e7c"/><stop offset="1" stop-color="#7bae9c"/>
+          </linearGradient>
+          <linearGradient id="vs_l3" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stop-color="#a3b89a"/><stop offset="1" stop-color="#bccdb5"/>
+          </linearGradient>
+          <linearGradient id="vs_l2" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stop-color="#d2c8a3"/><stop offset="1" stop-color="#dcd4b8"/>
+          </linearGradient>
+          <linearGradient id="vs_l1" x1="0" x2="1" y1="0" y2="0">
+            <stop offset="0" stop-color="#d4cfc0"/><stop offset="1" stop-color="#e2ddcd"/>
+          </linearGradient>
+          <marker id="arr_up" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6 z" fill="#7c7a72"/></marker>
+        </defs>
+
+        <!-- 标题 -->
+        <text x="60" y="32" font-family="DM Serif Display, serif" font-size="20" fill="#14171e">嵌套成熟度:上例必须 ≥ 下层</text>
+        <text x="60" y="54" font-size="12" fill="#7c7a72">Cumulative Principle: Upper Level ≤ Lower Level</text>
+
+        <!-- 5层金字塔 (从底到顶: L1→L5) -->
+        <!-- L1 Task -->
+        <rect x="220" y="540" width="520" height="50" rx="8" fill="url(#vs_l1)" stroke="#b8b2a0"/>
+        <text x="244" y="572" font-size="14" fill="#14171e" font-weight="600">L1 · Task (单次执行)</text>
+        <text x="650" y="572" font-size="12" fill="#3a4256">评估模型: Pass / Fail</text>
+        <text x="244" y="586" font-size="11" fill="#7c7a72">当前成熟度: L3 · 太一 L4 验证层已实现单任务验证</text>
+
+        <!-- L2 Skill -->
+        <rect x="240" y="450" width="480" height="50" rx="8" fill="url(#vs_l2)" stroke="#a89e80"/>
+        <text x="264" y="482" font-size="14" fill="#14171e" font-weight="600">L2 · Skill (原子能力)</text>
+        <text x="650" y="482" font-size="12" fill="#3a4256">评估模型: CMMI / 华为 IPD 过程域</text>
+        <text x="264" y="496" font-size="11" fill="#7c7a72">当前成熟度: L2-L3 · 3 个 Demo Skill 都带 quality_gate.md</text>
+
+        <!-- L3 Subsystem -->
+        <rect x="260" y="360" width="440" height="50" rx="8" fill="url(#vs_l3)" stroke="#7a9070"/>
+        <text x="284" y="392" font-size="14" fill="#14171e" font-weight="600">L3 · Subsystem (子系统)</text>
+        <text x="650" y="392" font-size="12" fill="#3a4256">评估模型: CMMI L4 量化级</text>
+        <text x="284" y="406" font-size="11" fill="#7c7a72">当前成熟度: L2 · 治理/调度/验证有架构、度量弱</text>
+
+        <!-- L4 System -->
+        <rect x="280" y="270" width="400" height="50" rx="8" fill="url(#vs_l4)" stroke="#4a8e7c"/>
+        <text x="304" y="302" font-size="14" fill="#14171e" font-weight="600">L4 · System (整体交付)</text>
+        <text x="650" y="302" font-size="12" fill="#3a4256">评估模型: DORA Metrics + Maturity</text>
+        <text x="304" y="316" font-size="11" fill="#7c7a72">当前成熟度: L1 · Demo 阶段,未发布</text>
+
+        <!-- L5 Value Stream -->
+        <rect x="300" y="180" width="360" height="50" rx="8" fill="url(#vs_l5)" stroke="#2f6f5e"/>
+        <text x="324" y="212" font-size="14" fill="#ffffff" font-weight="600">L5 · Value Stream (业务层)</text>
+        <text x="640" y="212" font-size="12" fill="rgba(255,255,255,0.85)">评估模型: IPD / APQC 流程架构</text>
+        <text x="324" y="226" font-size="11" fill="rgba(255,255,255,0.7)">当前成熟度: L1 · H4 价值流层刚集成</text>
+
+        <!-- 累积性原则 箭头 (从下往上,只能 ≤) -->
+        <line x1="180" y1="565" x2="210" y2="565" stroke="#7c7a72" stroke-width="2" marker-end="url(#arr_up)"/>
+        <text x="80" y="569" font-size="10" fill="#7c7a72" font-weight="600">≤</text>
+
+        <line x1="200" y1="475" x2="230" y2="475" stroke="#7c7a72" stroke-width="2" marker-end="url(#arr_up)"/>
+        <text x="180" y="479" font-size="10" fill="#7c7a72" font-weight="600">≤</text>
+
+        <line x1="220" y1="385" x2="250" y2="385" stroke="#7c7a72" stroke-width="2" marker-end="url(#arr_up)"/>
+        <text x="200" y="389" font-size="10" fill="#7c7a72" font-weight="600">≤</text>
+
+        <line x1="240" y1="295" x2="270" y2="295" stroke="#7c7a72" stroke-width="2" marker-end="url(#arr_up)"/>
+        <text x="220" y="299" font-size="10" fill="#7c7a72" font-weight="600">≤</text>
+
+        <line x1="260" y1="205" x2="290" y2="205" stroke="#7c7a72" stroke-width="2" marker-end="url(#arr_up)"/>
+        <text x="240" y="209" font-size="10" fill="#7c7a72" font-weight="600">≤</text>
+
+        <!-- 左侧说明 -->
+        <text x="20" y="130" font-size="11" fill="#7c7a72">累积性原则</text>
+        <text x="20" y="148" font-size="11" fill="#7c7a72">每一层的“成熟度”</text>
+        <text x="20" y="160" font-size="11" fill="#7c7a72">是其下所有层级的</text>
+        <text x="20" y="172" font-size="11" fill="#7c7a72">“下确界”</text>
+
+        <!-- Phase 1 升级路径 右侧标注 -->
+        <text x="780" y="540" font-size="10" fill="#c97b3f" font-weight="600">Phase 1 目标: L3</text>
+        <text x="780" y="450" font-size="10" fill="#c97b3f" font-weight="600">Phase 1 目标: L3-L4</text>
+        <text x="780" y="360" font-size="10" fill="#c97b3f" font-weight="600">Phase 1 目标: L3</text>
+        <text x="780" y="270" font-size="10" fill="#c97b3f" font-weight="600">Phase 1 目标: L2</text>
+        <text x="780" y="180" font-size="10" fill="#c97b3f" font-weight="600">Phase 1 目标: L2</text>
+
+        <!-- 底注 -->
+        <text x="60" y="620" font-size="11" fill="#7c7a72">阶梯状颜色 (灰 → 深绿) 表示成熟度递增;箭头表示“上一层受下一层约束”</text>
+      </svg>
+    </div>
+
+    <!-- 嵌套与双轨对比 -->
+    <div class="card-grid grid-2" style="margin-top: 32px;">
+      <div class="card">
+        <h3 style="font-size: 16px; margin: 0 0 12px;">❌ 双轨制 (不采用)</h3>
+        <p style="color: var(--ink-2); font-size: 13px; margin: 0; line-height: 1.6;">
+          原提议的 "Skill 用 IPD-CMMI + System 用 DORA" 是<strong>平行</strong>结构,两者独立。意味着 "系统 L5 但 Skill L1" 可同时存在 — 这不符合 zachshi “嵌套” 哲学。
+        </p>
+      </div>
+      <div class="card" style="border-color: var(--primary); background: var(--primary-soft);">
+        <h3 style="font-size: 16px; margin: 0 0 12px; color: var(--primary);">✅ 嵌套模型 (采用)</h3>
+        <p style="color: var(--ink-2); font-size: 13px; margin: 0; line-height: 1.6;">
+          <strong>5 个层级各自评估,上层 ≤ 下层</strong>。每一层的成熟度是其下所有层级的 "下确界"。能防 "PPT 工程师” — 写“我们是 L5 精英” 但 Skill 还是 L1。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- §09 opus 补强层:从宣言到机制 -->
+  <section>
+    <span class="section-num">§ 09</span>
+    <h2>opus 补强层:从宣言到机制</h2>
+    <p class="section-intro">
+      zachshi 的五层架构(§03) + 治理-调度分离(§04)是<strong>核心设计哲学</strong>。<strong>本章是 opus 4.8 对它们的工程化补强</strong>——机制、顺序、度量,让“宣言”变为"可实施的方案"。两者<strong>哲学 + 工程</strong>闭环,不互替代。
+    </p>
+
+    <!-- 补强关系声明 -->
+    <div class="card" style="margin-bottom: 24px; background: linear-gradient(135deg, var(--primary-soft) 0%, var(--bg-card) 100%); border-color: var(--primary);">
+      <div style="display: flex; gap: 24px; align-items: center; flex-wrap: wrap;">
+        <div style="flex: 1; min-width: 240px;">
+          <div style="font-size: 11px; color: var(--primary); font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 6px;">哲学层 · zachshi</div>
+          <div style="font-size: 18px; font-weight: 600; color: var(--ink); margin-bottom: 4px;">五层架构 + 治理-调度分离</div>
+          <div style="font-size: 13px; color: var(--ink-2);">在 §03 / §04。不可修改的底层逻辑。</div>
+        </div>
+        <div style="font-size: 24px; color: var(--ink-3);">+</div>
+        <div style="flex: 1; min-width: 240px;">
+          <div style="font-size: 11px; color: var(--accent); font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 6px;">工程层 · opus 4.8</div>
+          <div style="font-size: 18px; font-weight: 600; color: var(--ink); margin-bottom: 4px;">规则 YAML + 检查清单 + 仲裁 + KPI</div>
+          <div style="font-size: 13px; color: var(--ink-2);">本章。在 zachshi 哲学之上叠加工程可实施性。</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4.1 规则 YAML Schema -->
+    <h3 style="margin-top: 24px;">4.1 规则作为数据(不是散文)</h3>
+    <div class="layer-diagram" style="padding: 24px;">
+      <pre style="font-family: 'JetBrains Mono', monospace; font-size: 12px; line-height: 1.7; color: var(--ink); margin: 0; overflow-x: auto;"><span style="color: var(--ink-3);"># 最小规则 Schema —— 规则作为可评审、可版本化、可测试的数据</span>
+<span style="color: var(--primary);">id</span>: git.author.identity_match
+<span style="color: var(--primary);">domain</span>: authorship        <span style="color: var(--ink-3);"># security | authorship | compliance | safety | optimization</span>
+<span style="color: var(--primary);">severity</span>: red_line        <span style="color: var(--ink-3);"># red_line(拦截) | advisory(警告)</span>
+<span style="color: var(--primary);">applies_to</span>: [<span style="color: var(--deny);">"git.commit"</span>, <span style="color: var(--deny);">"git.push"</span>]
+<span style="color: var(--primary);">trigger</span>: pre_execution    <span style="color: var(--ink-3);"># pre | post | step_gate</span>
+<span style="color: var(--primary);">check</span>:
+  <span style="color: var(--primary);">type</span>: deterministic     <span style="color: var(--ink-3);"># deterministic | external_tool | model_judge</span>
+  <span style="color: var(--primary);">assert</span>: <span style="color: var(--deny);">"commit.author == local.git.config.user"</span>
+<span style="color: var(--primary);">on_fail</span>:
+  <span style="color: var(--primary);">action</span>: block             <span style="color: var(--ink-3);"># block | warn | request_confirmation</span>
+  <span style="color: var(--primary);">message</span>: <span style="color: var(--deny);">"Commit author does not match the local Git identity."</span>
+<span style="color: var(--primary);">precedence</span>: 80             <span style="color: var(--ink-3);"># 越高越优先(冲突时胜出)</span>
+<span style="color: var(--primary);">owner</span>: platform-security  <span style="color: var(--ink-3);"># 责任人</span>
+<span style="color: var(--primary);">audit</span>: true              <span style="color: var(--ink-3);"># 每次评估记录不可篡改日志</span></pre>
+    </div>
+
+    <!-- 4.2 选择而非生成 -->
+    <h3>4.2 检查清单:选择而非生成</h3>
+    <p style="font-size: 14px; color: var(--ink-2); margin-bottom: 16px; line-height: 1.6;">
+      <strong>opus 关键洞察</strong>:自动生成一份完整的检查清单,其难度本质上与原初可靠性问题相当——递归难题。<strong>解法:选择,不是生成</strong>。
+    </p>
+    <div class="card-grid grid-3" style="margin-bottom: 24px;">
+      <div class="card">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <span class="test-badge pass">最高</span>
+          <strong style="font-size: 14px;">确定性检查</strong>
+        </div>
+        <p style="font-size: 13px; color: var(--ink-2); margin: 0; line-height: 1.5;">
+          字符串 / AST / 状态比较。用于作者匹配、schema、格式。无需模型。
+        </p>
+      </div>
+      <div class="card">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <span class="test-badge review">高</span>
+          <strong style="font-size: 14px;">外部权威</strong>
+        </div>
+        <p style="font-size: 13px; color: var(--ink-2); margin: 0; line-height: 1.5;">
+          linter / type-checker / 测试套件 / 策略引擎 / 扫描器。独立维护。
+        </p>
+      </div>
+      <div class="card">
+        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
+          <span class="test-badge deny">最低</span>
+          <strong style="font-size: 14px;">模型评判</strong>
+        </div>
+        <p style="font-size: 13px; color: var(--ink-2); margin: 0; line-height: 1.5;">
+          <strong>仅限真的模糊</strong>(语气、设计质量)。需校准、采样、隔离独立实例。
+        </p>
+      </div>
+    </div>
+
+    <!-- 4.3 多 Agent 仲裁 -->
+    <h3>4.3 多 Agent 闸门与仲裁</h3>
+    <div class="card-grid grid-2" style="margin-bottom: 24px;">
+      <div class="card" style="border-left: 4px solid var(--deny);">
+        <strong style="color: var(--deny); font-size: 14px;">红线维度</strong>
+        <p style="font-size: 13px; color: var(--ink-2); margin: 8px 0 0; line-height: 1.5;">
+          数据安全 / 权属 / 核心规则。该领域专家有<strong>一票否决权</strong>。失败 → 任务暂停修正,不得前进。
+        </p>
+      </div>
+      <div class="card" style="border-left: 4px solid var(--primary);">
+        <strong style="color: var(--primary); font-size: 14px;">优化维度</strong>
+        <p style="font-size: 13px; color: var(--ink-2); margin: 8px 0 0; line-height: 1.5;">
+          性能 / 体验 / 优雅度。专家<strong>仅建议</strong>,是否采纳归执行 Agent 或人审。
+        </p>
+      </div>
+    </div>
+    <div class="card" style="background: var(--bg-soft);">
+      <strong style="font-size: 13px; color: var(--ink);">冲突裁决: </strong>
+      <span style="font-size: 13px; color: var(--ink-2);">
+        (1) 比较 <code style="background: var(--primary-soft); padding: 1px 6px; border-radius: 3px; font-size: 12px;">precedence</code> 高者胜 →
+        (2) 同级硬冲突 → <strong>fail closed</strong> + 升级人审 →
+        (3) 每次仲裁记录,用于后续调优
+      </span>
+    </div>
+
+    <!-- 4.4 落地优先级 -->
+    <h3>4.4 落地优先级(不要一起起 5 层)</h3>
+    <div class="timeline" style="margin-top: 16px;">
+      <div class="step">
+        <span class="step-dot">1</span>
+        <div class="step-title">列出不可逆 / 高爆炸半径操作</div>
+        <div class="step-desc" style="font-size: 13px;">写入 / 支付 / 身份 / 对外发布 / 删除。几乎所有实际损失都在这个列表里。</div>
+      </div>
+      <div class="step">
+        <span class="step-dot">2</span>
+        <div class="step-title">只为这些加确定性前置闸门</div>
+        <div class="step-desc" style="font-size: 13px;">作者匹配是第一步。可靠性最大提升 × 最少工作量。</div>
+      </div>
+      <div class="step">
+        <span class="step-dot">3</span>
+        <div class="step-title">验证者从执行者拆出 + 不可篡改审计</div>
+        <div class="step-desc" style="font-size: 13px;">P3 铁律落地。从“demo”跳到“可信任生产”的最小代价。</div>
+      </div>
+      <div class="step">
+        <span class="step-dot">4</span>
+        <div class="step-title">规则库 + 红线/建议拆分</div>
+        <div class="step-desc" style="font-size: 13px;">§4.1 的 YAML Schema 全部使用上。</div>
+      </div>
+      <div class="step">
+        <span class="step-dot">5</span>
+        <div class="step-title">每任务检查清单 + 仲裁 / 升级</div>
+        <div class="step-desc" style="font-size: 13px;">§4.2 选择而非生成 + §4.3 多 Agent 闸门。</div>
+      </div>
+      <div class="step">
+        <span class="step-dot">6</span>
+        <div class="step-title">闭环反哺</div>
+        <div class="step-desc" style="font-size: 13px;">每次新失败反哺规则/Skill/知识。Loop Engineering。</div>
+      </div>
+    </div>
+
+    <!-- 4.5 成熟度 L0-L4 -->
+    <h3>4.5 成熟度模型 L0-L4(opus 简化版)</h3>
+    <p style="font-size: 14px; color: var(--ink-2); margin-bottom: 16px;">
+      与 §08 嵌套 5 层成熟度模型<strong>并存不冲突</strong>:opus L0-L4 是<strong>工程状态评估</strong>(面向“行动”),§08 是<strong>架构质量评估</strong>(面向“设计”)。
+    </p>
+    <div class="bench-row" style="grid-template-columns: 100px 1fr 100px;">
+      <div class="bench-label"><strong>L0</strong></div>
+      <div class="bench-bg"><div class="bench-fill deny" style="width: 10%;"></div></div>
+      <div class="bench-val">仅 prompt</div>
+    </div>
+    <div class="bench-row" style="grid-template-columns: 100px 1fr 100px;">
+      <div class="bench-label"><strong>L1</strong></div>
+      <div class="bench-bg"><div class="bench-fill review" style="width: 30%;"></div></div>
+      <div class="bench-val">点闸门</div>
+    </div>
+    <div class="bench-row" style="grid-template-columns: 100px 1fr 100px;">
+      <div class="bench-label" style="color: var(--primary);"><strong>L2 ← 太一</strong></div>
+      <div class="bench-bg"><div class="bench-fill" style="width: 50%;"></div></div>
+      <div class="bench-val">分离治理</div>
+    </div>
+    <div class="bench-row" style="grid-template-columns: 100px 1fr 100px;">
+      <div class="bench-label"><strong>L3</strong></div>
+      <div class="bench-bg"><div class="bench-fill accent" style="width: 75%;"></div></div>
+      <div class="bench-val">可验证验收</div>
+    </div>
+    <div class="bench-row" style="grid-template-columns: 100px 1fr 100px; border-bottom: none;">
+      <div class="bench-label"><strong>L4</strong></div>
+      <div class="bench-bg"><div class="bench-fill" style="width: 100%;"></div></div>
+      <div class="bench-val">闭环</div>
+    </div>
+
+    <!-- 4.6 KPI -->
+    <h3>4.6 度量"做得对",不仅是"做得到"</h3>
+    <div class="card-grid grid-2" style="margin-bottom: 24px;">
+      <div class="card" style="padding: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
+          <strong style="font-size: 13px;">红线遵从率</strong>
+          <span style="font-family: 'JetBrains Mono', monospace; color: var(--primary); font-weight: 600;">100%</span>
+        </div>
+        <div style="font-size: 11px; color: var(--ink-3);">输出时零红线违规的运行比例</div>
+      </div>
+      <div class="card" style="padding: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
+          <strong style="font-size: 13px;">越界事件数</strong>
+          <span style="font-family: 'JetBrains Mono', monospace; color: var(--primary); font-weight: 600;">0</span>
+        </div>
+        <div style="font-size: 11px; color: var(--ink-3);">每 N 次运行的未授权状态变更</div>
+      </div>
+      <div class="card" style="padding: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
+          <strong style="font-size: 13px;">隐性风险覆盖度</strong>
+          <span style="font-family: 'JetBrains Mono', monospace; color: var(--review); font-weight: 600;">≥ 80%</span>
+        </div>
+        <div style="font-size: 11px; color: var(--ink-3);">已知隐性标准中已自动检查的比例</div>
+      </div>
+      <div class="card" style="padding: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
+          <strong style="font-size: 13px;">false-block 率</strong>
+          <span style="font-family: 'JetBrains Mono', monospace; color: var(--review); font-weight: 600;">≤ 5%</span>
+        </div>
+        <div style="font-size: 11px; color: var(--ink-3);">闸门误拦率(可靠性杀手)</div>
+      </div>
+      <div class="card" style="padding: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
+          <strong style="font-size: 13px;">规则更新平均时长</strong>
+          <span style="font-family: 'JetBrains Mono', monospace; color: var(--accent); font-weight: 600;">≤ 7 天</span>
+        </div>
+        <div style="font-size: 11px; color: var(--ink-3);">新失败类变成永久检查的耗时</div>
+      </div>
+      <div class="card" style="padding: 16px;">
+        <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px;">
+          <strong style="font-size: 13px;">人介入率</strong>
+          <span style="font-family: 'JetBrains Mono', monospace; color: var(--accent); font-weight: 600;">↓趋势</span>
+        </div>
+        <div style="font-size: 11px; color: var(--ink-3);">系统仍需人介入的场景比例</div>
+      </div>
+    </div>
+
+    <!-- 4.7 反模式 -->
+    <h3>4.7 反模式(可靠性气味)</h3>
+    <div class="card">
+      <ul style="list-style: none; padding: 0; margin: 0; font-size: 13px; color: var(--ink-2); line-height: 1.8;">
+        <li>✗ 关键规则仅在 prompt 里表达为"记得要..."</li>
+        <li>✗ 干活的组件同时签收(P3 违反)</li>
+        <li>✗ 无不可篡改审计日志</li>
+        <li>✗ "红线" 检查只 <strong style="color: var(--deny);">warn</strong> 不 <strong style="color: var(--primary);">block</strong></li>
+        <li>✗ 单一巨型模型评判 prompt 是唯一验证</li>
+        <li>✗ 所有约束同一个严重级——无红线/建议区分</li>
+        <li>✗ Agent 执行不可逆 / 破坏性操作无确认</li>
+        <li>✗ 规则手册从未修剪/演进</li>
+      </ul>
+    </div>
+
+    <!-- 4.8 闸门成本 -->
+    <h3>4.8 闸门的成本——以及何时不用</h3>
+    <div class="card-grid grid-2">
+      <div class="card" style="background: var(--warn-soft); border-color: var(--warn);">
+        <strong style="color: var(--warn); font-size: 14px;">闸门不免费</strong>
+        <ul style="font-size: 13px; color: var(--ink-2); margin: 12px 0 0; padding-left: 18px; line-height: 1.6;">
+          <li><strong>增加延迟</strong></li>
+          <li>可能产生 <strong>false-block</strong>,侵蚀用户信任</li>
+          <li>规则手册本身需要<strong>维护与漂移</strong></li>
+        </ul>
+      </div>
+      <div class="card" style="background: var(--primary-soft); border-color: var(--primary);">
+        <strong style="color: var(--primary); font-size: 14px;">正确用法</strong>
+        <ul style="font-size: 13px; color: var(--ink-2); margin: 12px 0 0; padding-left: 18px; line-height: 1.6;">
+          <li><strong>硬、fail closed</strong> 仅用于<strong>不可逆 + 高爆炸半径</strong></li>
+          <li><strong>低风险工作</strong> 使用建议检查 + 采样</li>
+          <li><strong>红线集小而高信号</strong></li>
+          <li>不要为探索性 / 创意 / 低风险任务加闸门</li>
+          <li>Loop Engineering 应该<strong>裁剪</strong>规则</li>
+        </ul>
+      </div>
+    </div>
+    <div style="text-align: center; margin-top: 20px; padding: 20px; background: var(--bg-soft); border-radius: 12px;">
+      <p style="font-family: 'DM Serif Display', serif; font-size: 18px; color: var(--ink); font-style: italic; margin: 0;">
+        目标是 <span style="color: var(--primary);">校准的控制</span>,不是 <span style="color: var(--warn);">最大的控制</span>。
+      </p>
+    </div>
+  </section>
+
+  <!-- §10 一句话 -->
+  <section style="margin-bottom: 48px;">
+    <span class="section-num">§ 10</span>
+    <h2>核心承诺</h2>
+    <div class="card" style="padding: 36px; text-align: center; background: linear-gradient(135deg, var(--primary-soft) 0%, var(--bg-card) 100%);">
+      <p style="font-family: 'DM Serif Display', serif; font-size: 24px; line-height: 1.4; color: var(--ink); margin: 0; font-style: italic;">
+        "太一不承诺 Agent 什么都能做,<br>
+        而承诺 Agent 在它能做的领域里——<br>
+        <span style="color: var(--primary);">边界清晰、风险可控、持续进化</span>。"
+      </p>
+      <p style="margin: 24px 0 0; font-size: 13px; color: var(--ink-3);">
+        走得远的,永远是走得稳的。
+      </p>
+    </div>
+  </section>
+
+  <!-- FOOTER -->
+  <footer class="footer">
+    <div class="footer-row">
+      <div>
+        <strong style="color: var(--ink);">太一 v1.0 (The One)</strong> · Agent 体系架构设计
+        <span class="footer-tag">·  2026-06-20</span>
+        <span class="footer-tag">·  原创: zachshi | 扎克的自留地 / AI: Mavis(MiniMax) · 豆包(ByteDance) · Claude(Anthropic)</span>
+      </div>
+      <div>
+        <a href="../..">📁 完整文档包</a> ·
+        <a href="#">Demo 源码</a> ·
+        <a href="#">可行性报告</a>
+      </div>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

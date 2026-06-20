@@ -1,47 +1,87 @@
-# Agent Architecture
+# 太一 / The One (Taiyi)
 
-> A reflection on AI Agent engineering, sparked by a real GitHub upload pitfall.
+> A production-grade Agent OS for *deterministic* production tasks (code,
+> transactions, compliance, process execution). Its reason to exist is one design
+> decision: **governance authority and scheduling authority are physically
+> separated.** A module that both does the work and signs off on the work has an
+> incentive to skip the sign-off — Taiyi removes that incentive by design.
 >
-> 中文版：[`README_cn.md`](./README_cn.md)
+> 中文说明见 [`README_cn.md`](./README_cn.md)。
 
-## About
+The project started from a real incident: an agent reported "task complete" while
+silently swapping the git commit author, recording the user's code under someone
+else's name. Surface success ≠ actually correct. Taiyi's goal is to make the
+*implicit* acceptance criteria — authorship, compliance, safety — into code the
+model **cannot bypass**, rather than rules it is merely asked to remember.
 
-Recently I used [OpenClaw](https://github.com/) to push a GitHub repo. The tool reported "task complete" — but the commit author was silently swapped, recording my code under someone else's name.
+## Where things are
 
-This made me realize: **today's "task complete" only covers the surface acceptance criteria. Process compliance, authorship clarity, risk control — these hidden criteria are almost never actively covered by any tool.**
+| Path | What |
+|---|---|
+| [`DEVELOPMENT_PLAN.md`](./DEVELOPMENT_PLAN.md) | **The build order** — modular roadmap, one module per "move forward" |
+| [`docs/00_Design_Document.md`](./docs/00_Design_Document.md) | Design philosophy + the five-layer architecture |
+| [`docs/01_Feasibility_Report.md`](./docs/01_Feasibility_Report.md) | Phase 0 demo evidence |
+| [`prd/00_PRD.md`](./prd/00_PRD.md) | Product requirements & version plan |
+| [`tech/00_Technical_Architecture.md`](./tech/00_Technical_Architecture.md) | Components, interfaces, deployment |
+| [`research/`](./research/) | The originating article + borrowed-pattern analysis |
+| `src/taiyi/` | **Production code** (built module by module) |
+| `demo/` | Phase 0 throwaway demo (mock everything; kept as reference) |
+| `examples/` | Runnable examples against the production package |
 
-Following this pitfall, I dug down three layers:
+## Current status
 
-- **Layer 1**: Surface success ≠ actually correct — user's and Agent's acceptance criteria aren't even on the same dimension
-- **Layer 2**: Why the whole industry builds "half-baked" Agents — everyone's racing on model capability, while hard-coded rules, engineering implementation, and design priorities are severely underestimated
-- **Layer 3**: Multi-agent is not a universal cure — collaboration without gates is no collaboration at all
+**Module 1 — Governance Core is built.** Rules-as-data, deterministic gates,
+fail-closed verdicts, and a tamper-evident audit log. See the roadmap for what's
+next. (Phase 0's demo remains under `demo/` as the validated reference.)
 
-Eventually, I derived a **production-grade Agent engineering framework**, broken into five layers:
+```bash
+# Run the production governance engine on the founding scenarios
+python3 examples/governance_demo.py
 
-1. **Input & Scenario Layer** (Prompt / Scenario & Constraint / Knowledge / Task Information Engineering)
-2. **Capability & Resource Layer** (Tool / Standard & Skill Engineering)
-3. **Scheduling & Governance Layer** (Execution Governance / Task Adaptation & Scheduling)
-4. **Output & Validation Layer** (Output Validation Engineering)
-5. **Iteration & Optimization Layer** (Loop Engineering)
+# Run the test suite
+pip install -e ".[dev]"
+pytest
+```
 
-## Contents
+Expected from the example:
 
-- [`cn/Agent架构思考.md`](./cn/Agent架构思考.md) — Chinese full article
-- [`en/Agent_Architecture_Thoughts.md`](./en/Agent_Architecture_Thoughts.md) — English full article
+```
+Identity override (founding incident)      -> DENY          authorship.git_identity.no_override
+rm -rf /                                   -> DENY          safety.recursive_delete.no_critical_path
+git push                                   -> NEEDS_REVIEW  dev.git.push_needs_review
+Refund 200                                 -> NEEDS_REVIEW  customer_service.refund.amount_over_threshold
+```
 
-## Key Takeaways
+## Rules are data, not prose
 
-- **Collaboration without gates is no collaboration at all.** If a multi-agent framework just lets Agents chat, it's still a one-voice autocracy by the executor.
-- **80/20 rule**: Hold the 80-point objective baseline (via engineering-mandated validation), and leave the remaining 20% of human taste to humans.
-- **Governance and scheduling authorities must be separated**: a module that both schedules and validates will naturally have the motivation to bypass validation to complete the task.
-- **All current peripheral engineering modules are to fill in the gaps in the inherent capabilities of large models** — when AGI truly arrives, most of them will be replaced by inherent capabilities.
-- **The one that goes far is always the one that walks steady.**
+Red lines and scenario constraints live in `src/taiyi/rules/*.yaml`, so they are
+reviewable via `git diff`, testable as fixtures, and loadable without re-parsing
+a prompt. Adding a rule is a reviewed file change, never a runtime call from the
+scheduler:
 
-## Author
+```yaml
+id: authorship.git_identity.no_override
+domain: authorship
+severity: red_line
+applies_to: ["shell:git*"]
+trigger: pre_execution
+check:
+  type: deterministic
+  match: args_any
+  patterns: ["-c user.name=", "-c user.email=", "--author="]
+on_fail:
+  action: block
+  message: "Overriding the git committer/author identity is forbidden."
+precedence: 90
+owner: platform-security
+```
 
-- GitHub: [@zachshi-ai](https://github.com/zachshi-ai)
-- Writing date: 2026-06-19
+## Credits
 
----
+Theory and original engineering reflection by **zachshi** (the
+[@zachshi-ai](https://github.com/zachshi-ai) article under `research/`). AI
+collaboration on docs/architecture: Mavis (MiniMax), Doubao (ByteDance), Claude
+(Anthropic). Engineering references (implementation only): OpenClaw, NousResearch
+(Hermes).
 
-> The original intention of this reflection is not to deny any tool. On the contrary, I think the current open-source projects are all very well done. It's just that the whole industry is moving too fast — everyone is racing forward on efficiency and piling on features, and very few people pause to obsess over "reliability".
+> The one that goes far is always the one that walks steady.
