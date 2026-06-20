@@ -1,0 +1,21 @@
+id: security.ssh_private_key.no_read
+domain: security
+severity: red_line
+applies_to:
+  - "file:read*"
+  - "shell:cat*"
+trigger: pre_execution
+check:
+  type: deterministic
+  match: args_any
+  patterns:
+    - "id_rsa"
+    - "id_ed25519"
+    - "*.pem"
+    - ".ssh/"
+on_fail:
+  action: block
+  message: "Reading SSH private keys is forbidden."
+precedence: 100
+owner: platform-security
+audit: true

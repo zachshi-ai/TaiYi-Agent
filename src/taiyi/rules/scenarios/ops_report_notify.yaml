@@ -1,0 +1,18 @@
+id: ops.report.outbound_notify_needs_review
+domain: compliance
+severity: advisory
+scenario: ops.report
+applies_to:
+  - "notify:*"
+trigger: pre_execution
+check:
+  type: deterministic
+  match: args_any
+  patterns:
+    - "send"
+on_fail:
+  action: request_confirmation
+  message: "Publishing a report to an external channel needs human review before it goes out."
+precedence: 50
+owner: ops-platform
+audit: true

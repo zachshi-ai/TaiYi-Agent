@@ -1,0 +1,22 @@
+# A parameterized deterministic check: extract the refund amount from the call
+# and compare it against a threshold. Same "refund" action, different governance
+# path depending on the number — and on the scenario it runs in.
+id: customer_service.refund.amount_over_threshold
+domain: business
+severity: advisory
+scenario: customer_service.refund
+applies_to:
+  - "tool:refund*"
+trigger: pre_execution
+check:
+  type: deterministic
+  match: numeric_threshold
+  extract: 'amount=(\d+(?:\.\d+)?)'
+  op: ">"
+  value: 100
+on_fail:
+  action: request_confirmation
+  message: "Refunds over 100 require human approval."
+precedence: 60
+owner: cs-platform
+audit: true

@@ -1,0 +1,27 @@
+# The founding case: a tool silently swapped the commit author, recording the
+# user's code under someone else's name. This is the deterministic gate that
+# makes that class of incident impossible to slip through.
+id: authorship.git_identity.no_override
+domain: authorship
+severity: red_line
+applies_to:
+  - "shell:git*"
+trigger: pre_execution
+check:
+  type: deterministic
+  match: args_any
+  patterns:
+    - "-c user.name="
+    - "-c user.email="
+    - "--author="
+    - "--config-env="
+    - "GIT_AUTHOR_NAME="
+    - "GIT_AUTHOR_EMAIL="
+    - "GIT_COMMITTER_NAME="
+    - "GIT_COMMITTER_EMAIL="
+on_fail:
+  action: block
+  message: "Overriding the git committer/author identity is forbidden; use the local git config."
+precedence: 90
+owner: platform-security
+audit: true
