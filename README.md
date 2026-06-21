@@ -58,6 +58,18 @@ market (Taiyi callable by MCP clients, still governed; gated skill installs). On
 live opt-ins remain (real LLM provider, real embedding model, live platform
 channels). (Phase 0's demo remains under `demo/` as reference.)
 
+### Run it yourself
+
+```bash
+pip install .                              # installs the `taiyi` command
+cp taiyi.example.yaml taiyi.yaml           # edit: auth, executor, custom rules…
+taiyi serve --config taiyi.yaml            # HTTP gateway (+ /metrics, OpenAI API)
+# or:  docker compose -f deploy/docker-compose.yml up
+# set `executor: sandbox` in the config for real, governed execution
+```
+
+### Explore the layers
+
 ```bash
 # Taiyi as an MCP server — governed tools for Claude Code / Cursor / etc.
 python3 examples/mcp_demo.py        # or:  PYTHONPATH=src python3 -m taiyi.cli mcp

@@ -83,16 +83,10 @@ def _build_rule(doc: dict, source: str) -> Rule:
     )
 
 
-def load_rules(rules_dir: str | Path = DEFAULT_RULES_DIR) -> tuple[Rule, ...]:
-    """Load and validate every *.yaml rule under ``rules_dir`` (recursively).
-
-    Raises RuleError on the first malformed file or duplicate id — governance
-    refuses to start with an ambiguous rule set rather than guess.
-    """
-    rules_dir = Path(rules_dir)
+def _load_dir(rules_dir: Path) -> list[Rule]:
+    """Load+validate every rule in a directory; tolerant of a missing/empty dir."""
     if not rules_dir.exists():
-        raise RuleError(f"rules directory not found: {rules_dir}")
-
+        return []
     rules: list[Rule] = []
     seen: dict[str, str] = {}
     for path in sorted(rules_dir.rglob("*.yaml")):
@@ -109,7 +103,33 @@ def load_rules(rules_dir: str | Path = DEFAULT_RULES_DIR) -> tuple[Rule, ...]:
                 )
             seen[rule.id] = path.name
             rules.append(rule)
+    return rules
 
+
+def load_rules(rules_dir: str | Path = DEFAULT_RULES_DIR) -> tuple[Rule, ...]:
+    """Load and validate every *.yaml rule under ``rules_dir`` (recursively).
+
+    Raises RuleError on the first malformed file or duplicate id — governance
+    refuses to start with an ambiguous rule set rather than guess.
+    """
+    rules_dir = Path(rules_dir)
+    if not rules_dir.exists():
+        raise RuleError(f"rules directory not found: {rules_dir}")
+
+    rules = _load_dir(rules_dir)
     if not rules:
         raise RuleError(f"no rules found under {rules_dir}")
     return tuple(rules)
+
+
+def load_rule_set(dirs: list[str | Path]) -> tuple[Rule, ...]:
+    """Merge rules from several directories. Later directories override earlier
+    ones by rule id, so an operator can drop a custom rule next to the built-ins
+    (and intentionally override a built-in by reusing its id)."""
+    merged: dict[str, Rule] = {}
+    for d in dirs:
+        for rule in _load_dir(Path(d)):
+            merged[rule.id] = rule
+    if not merged:
+        raise RuleError(f"no rules found in any of: {dirs}")
+    return tuple(merged.values())

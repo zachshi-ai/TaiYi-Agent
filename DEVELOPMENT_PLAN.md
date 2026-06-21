@@ -51,6 +51,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M12** | **Iteration / OODA (L5) + Skill auto-generation** | ✅ **Done** | **L4** | No (offline) |
 | **M13** | **Multi-agent (expert matrix + arbitration)** | ✅ **Done** | L4 | No (offline) |
 | **M14** | **MCP server + channel adapter + Skill market** | ✅ **Done** | L4 | No (live channels = opt-in) |
+| **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -367,6 +368,28 @@ became a permanent check; a repeated shape sediments into a gated, production-
 eligible auto-generated skill; the validator gets a regression set with
 false-pass/false-block tracking. **Maturity → L4 (closed loop).**
 **Depends on.** M6, M8, M11.
+
+### M15 — Configuration & deployment ✅ Done
+**Goal.** Make Taiyi self-operable: configure an instance without editing Python,
+and ship a container.
+
+**Delivered.**
+- `taiyi.config` — `TaiyiConfig` + `load_config`: one YAML file (`taiyi.yaml`) plus
+  `TAIYI_*` env overrides for persistence, host/port, auth tokens, executor
+  (`mock`|`sandbox`), `max_rounds`, and custom rule/scenario/skill directories.
+- **Merge-friendly loaders** — `load_rule_set` and `ScenarioRegistry.load_dirs` /
+  `SkillRegistry.load_dirs`: drop your own YAML/Markdown into a directory and it
+  merges with the built-ins (yours can override a built-in by reusing its id/name).
+- `build_gateway_from_config` + `--config` on `taiyi run|serve|mcp`; selecting
+  `executor: sandbox` runs real, governed, credential-isolated execution.
+- `taiyi.example.yaml`, `deploy/Dockerfile`, `deploy/docker-compose.yml`.
+- 5 tests + verified end-to-end: a config with `executor: sandbox` runs a real
+  governed `git commit` in a target repo, preserving the local identity.
+
+**Acceptance (met).** `pip install` → `taiyi serve --config taiyi.yaml` (or
+`docker compose up`) stands up a configured instance; custom rules are enforced
+alongside the built-ins; the real executor is selectable by config alone.
+**Depends on.** M9.
 
 ### M13 — Multi-agent (expert matrix + arbitration) ✅ Done
 **Goal.** Expert agents with red-line veto and precedence-based arbitration

@@ -1,0 +1,22 @@
+services:
+  taiyi:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: taiyi:latest
+    ports:
+      - "8080:8080"
+    environment:
+      TAIYI_HOST: "0.0.0.0"
+      TAIYI_PORT: "8080"
+      TAIYI_BASE_DIR: "/data"
+      # TAIYI_AUTH_TOKENS: "your-secret-token"   # uncomment to require auth
+      # TAIYI_EXECUTOR: "sandbox"                 # real execution (governed)
+    volumes:
+      - taiyi-data:/data
+      # Mount a custom config and point the command at it:
+      # - ./taiyi.yaml:/etc/taiyi/taiyi.yaml:ro
+    # command: ["serve", "--config", "/etc/taiyi/taiyi.yaml"]
+
+volumes:
+  taiyi-data:

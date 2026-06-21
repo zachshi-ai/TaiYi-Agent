@@ -31,6 +31,15 @@ class SkillRegistry:
                     reg.add(load_skill(sub))
         return reg
 
+    @classmethod
+    def load_dirs(cls, dirs: list[str | Path]) -> "SkillRegistry":
+        """Merge skills from several directories; later dirs override by name."""
+        reg = cls()
+        for d in dirs:
+            for skill in cls.load_dir(d).all():
+                reg.add(skill)
+        return reg
+
     def add(self, skill: Skill) -> None:
         self._skills[skill.name] = skill
 
