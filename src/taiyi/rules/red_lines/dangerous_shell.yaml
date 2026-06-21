@@ -1,0 +1,21 @@
+id: safety.recursive_delete.no_critical_path
+domain: safety
+severity: red_line
+applies_to:
+  - "shell:rm*"
+trigger: pre_execution
+check:
+  type: deterministic
+  match: args_any
+  patterns:
+    - "-rf /"
+    - "-rf ~"
+    - "-rf /*"
+    - "-rf $HOME"
+    - "-fr /"
+on_fail:
+  action: block
+  message: "Recursive deletion of root or home directories is forbidden."
+precedence: 95
+owner: platform-security
+audit: true

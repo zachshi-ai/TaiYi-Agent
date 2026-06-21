@@ -1,0 +1,16 @@
+id: dev.git.push_needs_review
+domain: business
+severity: advisory
+scenario: dev.git
+applies_to:
+  - "shell:git push*"
+trigger: pre_execution
+check:
+  type: deterministic
+  match: tool_only
+on_fail:
+  action: request_confirmation
+  message: "Pushing to a remote is an outward-facing action and needs human review."
+precedence: 50
+owner: dev-platform
+audit: true
