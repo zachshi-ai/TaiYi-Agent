@@ -50,6 +50,8 @@ class TaskContext:
     final_output: str | None = None
     error: str | None = None
     approval_id: str | None = None
+    round: int = 0
+    validation_summary: str | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -72,4 +74,6 @@ class TaskContext:
             "final_output": self.final_output,
             "error": self.error,
             "approval_id": self.approval_id,
+            "round": self.round,
+            "validation_summary": self.validation_summary,
         }

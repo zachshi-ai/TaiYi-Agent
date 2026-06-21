@@ -42,7 +42,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M3** | **Task Runtime (PDCA loop + state machine)** | ✅ **Done** | L2 | No |
 | **M4** | **LLM provider layer (offline-first)** | ✅ **Done** | L2 | No (live = opt-in) |
 | **M5** | **Tool Runtime (sandbox, credential isolation, SSRF)** | ✅ **Done** | L2 | No |
-| M6 | Validation Engine (L4, per-task checklists) | Planned | L3 | Partly |
+| **M6** | **Validation Engine (L4, per-task checklists)** | ✅ **Done** | **L3** | No (offline) |
 | M7 | Memory (5-layer: SQLite/FTS5/vector/Honcho) | Planned | L3 | Partly |
 | M8 | Scenario + Skill engine (quality gates) | Planned | L3 | No |
 | M9 | Gateway + channels (CLI + Web, OpenAI-compatible) | Planned | L3 | No |
@@ -193,13 +193,31 @@ no commit at all.
 > when cleared, and archived to a tamper-evident, replayable trajectory. The only
 > remaining money decision is the *live* LLM opt-in (M4's deferred half).
 
-### M6 — Validation Engine (L4, per-task checklists)
-**Goal.** Objective checks selected by `(task_type, scenario)` from a checklist
-library, routed to the cheapest reliable checker (deterministic → external tool →
-model judge), kept **separate from the executor**. Adds post-execution gates.
-**Acceptance.** Failed validation bounces the task back into PDCA; model-judge
-use is isolated and version-tracked. **Maturity → L3.**
-**Depends on.** M3 (M5 for functional checks).
+### M6 — Validation Engine (L4, per-task checklists) ✅ Done
+**Goal.** Objective checks selected by `(task_type, scenario)`, routed to the
+cheapest reliable checker, kept separate from the executor; failed validation
+bounces the task back into PDCA. Lifts the system to maturity **L3**.
+
+**Delivered.**
+- `taiyi.validation.checks` — a checklist *library* (universal + per-scenario +
+  per-task-type) with `select_checks`: **select, don't generate** (§5.2).
+- `taiyi.validation.engine` — `ValidationEngine` runs checks **cheapest-first**
+  (deterministic → external → model judge) and **short-circuits** on the first
+  failure, so a one-line check failing never spends a model-judge call. It judges
+  output; it never produces it.
+- `taiyi.validation.model_judge` — `ModelJudge` is isolated (its own provider,
+  never the executor's), **version-tracked** (rubric_version), and **calibrated**:
+  `calibrate()` measures its false-pass / false-block rates against labelled cases.
+- Runtime now runs a **bounce-back correction loop** (`max_rounds`): a validation
+  FAIL re-enters PDCA; with an LLM planner that can revise, the task can recover.
+- 10 tests + `examples/validation_demo.py`.
+
+**Acceptance (met).** Selection by (task_type, scenario); cheapest-first
+short-circuit proven (model judge not called when a deterministic check fails);
+model judging isolated, versioned, and calibratable; a validation failure bounces
+back and then succeeds on a corrected round, or fails after exhausting rounds.
+**Depends on.** M3 (M5 for functional checks). External-tool checks (real
+linters/test-suites) and live model judging are a later opt-in on the M4 seam.
 
 ### M7 — Memory (5-layer, production)
 **Goal.** Production memory: SQLite + FTS5 (history), vector index (semantic),
