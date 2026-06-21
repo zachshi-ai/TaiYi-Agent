@@ -41,6 +41,13 @@ def _serve(args) -> int:
     return 0
 
 
+def _mcp(args) -> int:
+    from taiyi.mcp import MCPServer
+
+    MCPServer(build_gateway(base_dir=args.base_dir)).serve_stdio()
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="taiyi", description="Taiyi / The One — Agent OS")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -57,6 +64,10 @@ def main(argv=None) -> int:
     serve.add_argument("--token", action="append", help="valid bearer token (repeatable)")
     serve.add_argument("--base-dir", default=None)
     serve.set_defaults(func=_serve)
+
+    mcp = sub.add_parser("mcp", help="run the MCP server over stdio")
+    mcp.add_argument("--base-dir", default=None)
+    mcp.set_defaults(func=_mcp)
 
     args = parser.parse_args(argv)
     return args.func(args)

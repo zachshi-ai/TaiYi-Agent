@@ -30,9 +30,8 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 
 ## Current status
 
-**Modules 1–13 are built — the full core plus multi-agent review, a closed-loop
-Agent OS at maturity level L4.** Every core layer of the architecture is
-implemented and tested (117 tests).
+**All 14 modules are built — the complete architecture, a closed-loop Agent OS at
+maturity level L4.** Every layer is implemented and tested (129 tests).
 A request enters via the CLI or HTTP, is anchored to a business goal, matched to a
 scenario, planned (rule- or LLM-driven), gated step-by-step by governance, executed
 for real but sandboxed only when cleared, independently validated (a failed check
@@ -54,11 +53,15 @@ contribution scoring, bottleneck detection); M11 Observability (per-task traces,
 Prometheus `/metrics`, structured logs); M12 Iteration/OODA (trajectory analysis,
 human-approved rule patches, gated skill auto-generation, validator regression set);
 M13 Multi-agent (expert matrix with red-line veto and precedence arbitration —
-collaboration with gates, not agent chat). What remains is deferred breadth (M14:
-channel breadth, MCP server, Skill market) — see the roadmap. (Phase 0's demo
-remains under `demo/` as reference.)
+collaboration with gates, not agent chat); M14 MCP server + channel adapter + Skill
+market (Taiyi callable by MCP clients, still governed; gated skill installs). Only
+live opt-ins remain (real LLM provider, real embedding model, live platform
+channels). (Phase 0's demo remains under `demo/` as reference.)
 
 ```bash
+# Taiyi as an MCP server — governed tools for Claude Code / Cursor / etc.
+python3 examples/mcp_demo.py        # or:  PYTHONPATH=src python3 -m taiyi.cli mcp
+
 # Multi-agent review: red-line veto + precedence arbitration (contract review)
 python3 examples/multi_agent_demo.py
 

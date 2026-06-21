@@ -50,7 +50,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M11** | **Observability (H3: traces, metrics, logs)** | ✅ **Done** | L3 | No |
 | **M12** | **Iteration / OODA (L5) + Skill auto-generation** | ✅ **Done** | **L4** | No (offline) |
 | **M13** | **Multi-agent (expert matrix + arbitration)** | ✅ **Done** | L4 | No (offline) |
-| M14 | Channel breadth + MCP server + Skill market | Deferred | L4 | Yes |
+| **M14** | **MCP server + channel adapter + Skill market** | ✅ **Done** | L4 | No (live channels = opt-in) |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -394,9 +394,31 @@ an amended proposal or, if not, records a system defect.
 **Decision.** Built offline-first (deterministic marker experts), so it is
 zero-cost; the live multi-expert LLM path is the opt-in. **Depends on.** M3.
 
-### M14 — Channel breadth + MCP server + Skill market  *(deferred)*
-P1/P2 channels (Feishu/DingTalk/Telegram/Discord/Slack/…), Taiyi-as-MCP-server,
-and the Git-distributed Skill market. Breadth work; deferred for budget.
+### M14 — MCP server + channel adapter + Skill market ✅ Done
+**Goal.** The breadth layer. Built the zero-cost core; live messaging connectors
+remain a documented opt-in (they need platform SDKs and credentials).
+
+**Delivered.**
+- `taiyi.mcp` — **Taiyi as an MCP server** (JSON-RPC 2.0: `initialize` / `tools/list`
+  / `tools/call`), exposing governed tools (`taiyi_run_task`, `taiyi_list_skills`,
+  `taiyi_get_skill`, `taiyi_search_memory`, `taiyi_review`) backed by the gateway.
+  `handle()` is transport-agnostic; `serve_stdio()` runs the loop; `taiyi mcp` is a
+  CLI subcommand. A call from Claude Code / Cursor flows through the same
+  governance — an MCP client cannot bypass a red line.
+- `taiyi.channels` — the `ChannelAdapter` interface + `InProcessChannel` reference.
+  A real Feishu/Telegram/Discord adapter subclasses it and overrides only transport
+  ("a new channel is one file"); those are the live opt-in.
+- `taiyi.market` — `SkillMarket`: list/search/install from a registry, **refusing
+  any skill that does not pass its quality gate** at install time, so the market
+  cannot become a junkyard. (Git distribution is the deferred transport.)
+- 18 tests + `examples/mcp_demo.py`.
+
+**Acceptance (met).** MCP `initialize`/`tools/list`/`tools/call` work in-process and
+over real stdio; `taiyi_run_task` is governed via MCP (identity override → REJECTED);
+the channel adapter runs and reflects governance; the market installs gated skills
+and refuses ungated ones.
+**Deferred (live opt-in).** Real platform channel connectors and Git-based market
+distribution — both need credentials/SDKs/network. **Depends on.** M9.
 
 ---
 
