@@ -30,20 +30,24 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 
 ## Current status
 
-**Modules 1–7 are built — a governed, validated single-task agent with memory, at
-maturity level L3.** A request is planned (rule- or LLM-driven), gated step-by-step
-by governance, executed for real but sandboxed only when cleared, then
-independently validated (a failed check bounces it back), and remembered. M1
-Governance Core (rules-as-data, fail-closed, audit log); M2 Scheduler + boundary
-(no execution capability; permits only); M3 Task Runtime (PDCA loop + state
-machine); M4 LLM layer offline-first (a model **cannot bypass governance**; live
-providers are an opt-in); M5 Tool Runtime (sandboxed execution, credential
-isolation, SSRF); M6 Validation Engine (cheapest-first checklists, isolated/
-calibrated model judge, bounce-back); M7 Memory (5-layer SQLite/FTS5/vector/Honcho,
-Markdown-first). See the roadmap for what's next. (Phase 0's demo remains under
-`demo/` as reference.)
+**Modules 1–8 are built — a governed, validated single-task agent with memory,
+scenarios, and gated skills, at maturity level L3.** A request is matched to a
+scenario, planned (rule- or LLM-driven), gated step-by-step by governance, executed
+for real but sandboxed only when cleared, then independently validated (a failed
+check bounces it back), and remembered. M1 Governance Core (rules-as-data,
+fail-closed, audit log); M2 Scheduler + boundary (no execution capability; permits
+only); M3 Task Runtime (PDCA loop + state machine); M4 LLM layer offline-first (a
+model **cannot bypass governance**; live providers are an opt-in); M5 Tool Runtime
+(sandboxed execution, credential isolation, SSRF); M6 Validation Engine
+(cheapest-first checklists, isolated/calibrated model judge, bounce-back); M7 Memory
+(5-layer SQLite/FTS5/vector/Honcho, Markdown-first); M8 Scenario + Skill engine
+(scenarios as data; **no skill enters production without a passing quality gate**).
+See the roadmap for what's next. (Phase 0's demo remains under `demo/` as reference.)
 
 ```bash
+# Scenario matching + the skill quality gate (ungated skills are refused)
+python3 examples/skills_demo.py
+
 # Memory: short-term, full-text (FTS5), semantic (vector), Honcho user model
 python3 examples/memory_demo.py
 

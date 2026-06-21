@@ -44,7 +44,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M5** | **Tool Runtime (sandbox, credential isolation, SSRF)** | ✅ **Done** | L2 | No |
 | **M6** | **Validation Engine (L4, per-task checklists)** | ✅ **Done** | **L3** | No (offline) |
 | **M7** | **Memory (5-layer: SQLite/FTS5/vector/Honcho)** | ✅ **Done** | L3 | No (offline) |
-| M8 | Scenario + Skill engine (quality gates) | Planned | L3 | No |
+| **M8** | **Scenario + Skill engine (quality gates)** | ✅ **Done** | L3 | No |
 | M9 | Gateway + channels (CLI + Web, OpenAI-compatible) | Planned | L3 | No |
 | M10 | Value Stream (H4: goal anchoring, scoring) | Planned | L3 | Partly |
 | M11 | Observability (H3: OpenTelemetry, metrics) | Planned | L3 | No |
@@ -242,10 +242,26 @@ with a Markdown mirror; the runtime records to memory end-to-end.
 when a real embedding model is plugged into the `Embedder` seam (opt-in).
 **Depends on.** M3.
 
-### M8 — Scenario + Skill engine (quality gates)
-**Goal.** Scenario registry/matcher and a Skill loader that **refuses Skills
-without a passing `quality_gate.md`** into the production path. Migrate the three
-demo Skills/scenarios into the production format.
+### M8 — Scenario + Skill engine (quality gates) ✅ Done
+**Goal.** Scenario registry/matcher and a Skill loader that refuses ungated skills
+from the production path.
+
+**Delivered.**
+- `taiyi.scenarios` — `ScenarioRegistry` (loads Markdown scenarios with structured
+  frontmatter) + `ScenarioMatcher` (deterministic trigger matching, default
+  fallback). Scenarios are standalone, switchable data, decoupled from prompts.
+- `taiyi.skills` — `QualityGate` (structured, with a completeness check),
+  `load_skill`, and `SkillRegistry` that splits **production-eligible** skills
+  (present + complete + passing gate) from the **sandbox**. `get_production`
+  refuses sandbox skills; `index_into` registers production skills into memory L2.
+- Migrated the three demo skills + scenarios into the structured catalog under
+  `taiyi/skills/catalog/` and `taiyi/scenarios/catalog/` (shipped as package data).
+- 13 tests + `examples/skills_demo.py`.
+
+**Acceptance (met).** A skill with no gate, or an incomplete gate, is not
+production-eligible and is refused by `get_production`; every shipped catalog skill
+passes its gate; scenario matching routes the founding prompts correctly and falls
+back to default. Running a gate's verification cases is deferred to M12.
 **Depends on.** M2, M7.
 
 ### M9 — Gateway + channels (CLI + Web)

@@ -24,7 +24,7 @@ dev = [
 where = ["src"]
 
 [tool.setuptools.package-data]
-taiyi = ["rules/**/*.yaml"]
+taiyi = ["rules/**/*.yaml", "scenarios/catalog/*.md", "skills/catalog/**/*.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
