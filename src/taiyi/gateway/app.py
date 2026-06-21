@@ -41,9 +41,13 @@ class GatewayApp:
         self.auth = auth or AuthPolicy()
         self.rate = rate_limiter
 
-    def handle(self, method: str, path: str, headers, body: str) -> tuple[int, dict]:
+    def handle(self, method: str, path: str, headers, body: str):
         if method == "GET" and path == "/healthz":
             return 200, {"status": "ok"}
+        if method == "GET" and path == "/metrics":
+            if self.gateway.obs is None:
+                return 404, {"error": "metrics not enabled"}
+            return 200, self.gateway.obs.render_metrics()  # text/plain payload
 
         if not self.auth.authorize(headers):
             return 401, {"error": "unauthorized"}

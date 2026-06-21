@@ -47,7 +47,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M8** | **Scenario + Skill engine (quality gates)** | ✅ **Done** | L3 | No |
 | **M9** | **Gateway + channels (CLI + HTTP, OpenAI-compatible)** | ✅ **Done** | L3 | No |
 | **M10** | **Value Stream (H4: goal anchoring, scoring)** | ✅ **Done** | L3 | No (offline) |
-| M11 | Observability (H3: OpenTelemetry, metrics) | Planned | L3 | No |
+| **M11** | **Observability (H3: traces, metrics, logs)** | ✅ **Done** | L3 | No |
 | M12 | Iteration / OODA (L5) + Skill auto-generation | Planned | **L4** | Partly |
 | M13 | Multi-agent (expert matrix + arbitration) | Deferred | L4 | Yes |
 | M14 | Channel breadth + MCP server + Skill market | Deferred | L4 | Yes |
@@ -318,10 +318,28 @@ step-count waste; the bottleneck report aggregates and names the worst task type
 runtime tasks carry a goal and a contribution score end-to-end.
 **Depends on.** M6.
 
-### M11 — Observability (H3)
-**Goal.** OpenTelemetry traces (one trace per task, spans per phase), Prometheus
-metrics (governance verdicts, latency, token cost), structured logs built on the
-M1 audit log.
+### M11 — Observability (H3) ✅ Done
+**Goal.** Traces, metrics, and structured logs across the system.
+
+**Delivered.**
+- `taiyi.observability.tracing` — one `TaskTrace` per task with nested phase spans
+  (task → plan / do / validate), timing and attributes. An OTel exporter walks
+  these as the opt-in seam.
+- `taiyi.observability.metrics` — stdlib Counter / Gauge / Histogram with labels
+  and a `render_prometheus()` exposition (no client library).
+- `taiyi.observability.logging` — structured JSON logs, correlated by task id,
+  with an optional sink.
+- `Observability` facade pre-declares task metrics; the runtime records traces,
+  task/state counters, governance verdicts, and duration. The gateway exposes
+  `/metrics` (Prometheus text), and the HTTP server now serves text payloads.
+- 7 tests + `examples/observability_demo.py`.
+
+**Acceptance (met).** Nested spans recorded with correct parentage; Prometheus
+render is well-formed (counters with labels, histogram buckets/count/sum); logs
+captured and forwarded; a runtime task emits the four phase spans and increments
+the verdict/state/duration metrics; the gateway `/metrics` endpoint returns text.
+**Decision.** Stdlib metrics/tracing rather than the OpenTelemetry SDK, consistent
+with the dependency-light posture; an OTLP/Prometheus-client exporter is an opt-in.
 **Depends on.** M3.
 
 ### M12 — Iteration / OODA (L5) + Skill auto-generation

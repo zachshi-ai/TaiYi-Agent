@@ -15,13 +15,15 @@ be replayed in order with ``replay_task``.
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 
 from taiyi.core.audit import AuditLog
 from taiyi.core.types import Verdict
+from taiyi.memory import MemoryEngine
+from taiyi.observability import Observability
 from taiyi.runtime.context import StepResult, TaskContext
 from taiyi.runtime.executor import Executor, MockExecutor
 from taiyi.runtime.state import TaskState
-from taiyi.memory import MemoryEngine
 from taiyi.scheduler import SchedulerEngine
 from taiyi.validation import ValidationContext, ValidationEngine
 from taiyi.value_stream import ValueStreamEngine
@@ -37,6 +39,7 @@ class TaskRuntime:
         validator: ValidationEngine | None = None,
         memory: MemoryEngine | None = None,
         value_stream: ValueStreamEngine | None = None,
+        observability: Observability | None = None,
         max_rounds: int = 1,
     ):
         self.scheduler = scheduler
@@ -45,6 +48,7 @@ class TaskRuntime:
         self.validator = validator
         self.memory = memory
         self.value_stream = value_stream
+        self.obs = observability
         self.max_rounds = max(1, max_rounds)
 
     def run(
@@ -62,48 +66,77 @@ class TaskRuntime:
             user_id=user_id,
             session_id=session_id,
         )
+        start = time.time()
         self.audit.append("task_start", task_id=ctx.task_id, prompt=prompt, scenario=scenario)
         if self.memory is not None:
             self.memory.add_message(session_id, "user", prompt)
         if self.value_stream is not None:
             ctx.goal = self.value_stream.anchor(prompt, scenario)  # L1: anchor goal
 
+        trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
+        if self.obs is not None:
+            self.obs.tasks_total.inc()
+
         try:
-            ctx.touch(TaskState.PARSING)
-            for rnd in range(1, self.max_rounds + 1):
-                ctx.round = rnd
-                ctx.step_results = []
-                self._plan(ctx)
-                if not self._do(ctx):
-                    return ctx  # DENY / NEEDS_REVIEW / failed execution: terminal
-
-                ctx.final_output = self._synthesize(ctx)
-                vr = self._validate(ctx)
-                if vr is None or vr.passed:
-                    ctx.touch(TaskState.COMPLETED)
-                    self.audit.append(
-                        "task_completed", task_id=ctx.task_id, round=rnd,
-                        steps=len(ctx.executed_steps),
-                    )
-                    self._remember_completion(ctx)
-                    return ctx
-
-                # Validation failed → bounce back into PDCA.
-                ctx.validation_summary = vr.summary
-                self.audit.append(
-                    "validation_failed", task_id=ctx.task_id, round=rnd,
-                    failed=vr.failed_checks,
-                )
-
-            ctx.error = f"validation failed after {self.max_rounds} round(s): {ctx.validation_summary}"
-            ctx.touch(TaskState.FAILED)
-            self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
-            return ctx
+            with self._span(trace, "task"):
+                ctx.touch(TaskState.PARSING)
+                self._execute_rounds(ctx, trace)
         except Exception as e:  # noqa: BLE001 — convert any failure into a terminal state
             ctx.error = f"{type(e).__name__}: {e}"
             ctx.touch(TaskState.FAILED)
             self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
-            return ctx
+
+        self._finish(ctx, start)
+        return ctx
+
+    def _execute_rounds(self, ctx: TaskContext, trace) -> None:
+        for rnd in range(1, self.max_rounds + 1):
+            ctx.round = rnd
+            ctx.step_results = []
+            with self._span(trace, "plan"):
+                self._plan(ctx)
+            with self._span(trace, "do"):
+                completed = self._do(ctx)
+            if not completed:
+                return  # DENY / NEEDS_REVIEW / failed execution: terminal state set
+
+            ctx.final_output = self._synthesize(ctx)
+            with self._span(trace, "validate"):
+                vr = self._validate(ctx)
+            if vr is None or vr.passed:
+                ctx.touch(TaskState.COMPLETED)
+                self.audit.append(
+                    "task_completed", task_id=ctx.task_id, round=rnd, steps=len(ctx.executed_steps)
+                )
+                self._remember_completion(ctx)
+                return
+
+            # Validation failed → bounce back into PDCA.
+            ctx.validation_summary = vr.summary
+            self.audit.append(
+                "validation_failed", task_id=ctx.task_id, round=rnd, failed=vr.failed_checks
+            )
+
+        ctx.error = f"validation failed after {self.max_rounds} round(s): {ctx.validation_summary}"
+        ctx.touch(TaskState.FAILED)
+        self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+
+    @staticmethod
+    def _span(trace, name: str):
+        return trace.span(name) if trace is not None else nullcontext()
+
+    def _finish(self, ctx: TaskContext, start: float) -> None:
+        if self.obs is None:
+            return
+        self.obs.task_state.inc(state=ctx.state.value)
+        self.obs.task_duration.observe(time.time() - start)
+        self.obs.logger.info(
+            "task_finished",
+            task_id=ctx.task_id,
+            state=ctx.state.value,
+            scenario=ctx.scenario,
+            round=ctx.round,
+        )
 
     # --- P -------------------------------------------------------------------
     def _plan(self, ctx: TaskContext) -> None:
@@ -133,6 +166,8 @@ class TaskRuntime:
                 matched_rule_id=permit.matched_rule_id,
             )
             ctx.step_results.append(sr)
+            if self.obs is not None:
+                self.obs.governance_verdict.inc(verdict=permit.verdict.value)
 
             if permit.verdict is Verdict.DENY:
                 ctx.touch(TaskState.REJECTED)

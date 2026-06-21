@@ -30,9 +30,9 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 
 ## Current status
 
-**Modules 1–10 are built — a governed, validated agent with memory, scenarios,
-gated skills, a gateway (CLI + HTTP), and value-stream alignment, at maturity level
-L3.** A request enters via the CLI or HTTP, is anchored to a business goal, matched
+**Modules 1–11 are built — a governed, validated agent with memory, scenarios,
+gated skills, a gateway (CLI + HTTP), value-stream alignment, and observability, at
+maturity level L3.** A request enters via the CLI or HTTP, is anchored to a business goal, matched
 to a scenario, planned (rule- or LLM-driven), gated step-by-step by governance,
 executed for real but sandboxed only when cleared, independently validated (a
 failed check bounces it back), scored for value contribution, and remembered. M1
@@ -45,10 +45,14 @@ calibrated model judge, bounce-back); M7 Memory (5-layer SQLite/FTS5/vector/Honc
 M8 Scenario + Skill engine (scenarios as data; **no skill enters production without
 a passing quality gate**); M9 Gateway (stdlib HTTP + CLI, auth/rate-limit,
 OpenAI-compatible endpoint); M10 Value Stream (dual-mode goal anchoring, value-
-contribution scoring, bottleneck detection). See the roadmap for what's next.
-(Phase 0's demo remains under `demo/` as reference.)
+contribution scoring, bottleneck detection); M11 Observability (per-task traces,
+Prometheus `/metrics`, structured logs). See the roadmap for what's next. (Phase 0's
+demo remains under `demo/` as reference.)
 
 ```bash
+# Observability: per-task traces, Prometheus metrics, structured logs
+python3 examples/observability_demo.py
+
 # Value-stream alignment: goal anchoring, scoring, bottleneck detection
 python3 examples/value_stream_demo.py
 

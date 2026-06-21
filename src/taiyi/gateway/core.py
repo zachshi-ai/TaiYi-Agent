@@ -16,6 +16,7 @@ from pathlib import Path
 from taiyi.core.audit import AuditLog
 from taiyi.governance import GovernanceEngine, LocalPermitClient
 from taiyi.memory import MemoryEngine
+from taiyi.observability import Observability
 from taiyi.runtime import TaskContext, TaskRuntime
 from taiyi.runtime.executor import Executor
 from taiyi.scenarios import ScenarioMatcher, ScenarioRegistry
@@ -33,11 +34,13 @@ class Gateway:
         scenario_matcher: ScenarioMatcher,
         skills: SkillRegistry,
         memory: MemoryEngine,
+        observability: Observability | None = None,
     ):
         self.runtime = runtime
         self.matcher = scenario_matcher
         self.skills = skills
         self.memory = memory
+        self.obs = observability
 
     def submit(
         self,
@@ -63,6 +66,7 @@ def build_gateway(
     governance = GovernanceEngine(audit_log=audit)
     scheduler = SchedulerEngine(LocalPermitClient(governance))
     memory = MemoryEngine(base)
+    observability = Observability()
     runtime = TaskRuntime(
         scheduler,
         audit_log=audit,
@@ -70,6 +74,7 @@ def build_gateway(
         validator=ValidationEngine(),
         memory=memory,
         value_stream=ValueStreamEngine(),
+        observability=observability,
         max_rounds=max_rounds,
     )
 
@@ -82,4 +87,5 @@ def build_gateway(
         scenario_matcher=ScenarioMatcher(scenarios),
         skills=skills,
         memory=memory,
+        observability=observability,
     )
