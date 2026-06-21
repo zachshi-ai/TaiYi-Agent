@@ -46,7 +46,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M7** | **Memory (5-layer: SQLite/FTS5/vector/Honcho)** | ✅ **Done** | L3 | No (offline) |
 | **M8** | **Scenario + Skill engine (quality gates)** | ✅ **Done** | L3 | No |
 | **M9** | **Gateway + channels (CLI + HTTP, OpenAI-compatible)** | ✅ **Done** | L3 | No |
-| M10 | Value Stream (H4: goal anchoring, scoring) | Planned | L3 | Partly |
+| **M10** | **Value Stream (H4: goal anchoring, scoring)** | ✅ **Done** | L3 | No (offline) |
 | M11 | Observability (H3: OpenTelemetry, metrics) | Planned | L3 | No |
 | M12 | Iteration / OODA (L5) + Skill auto-generation | Planned | **L4** | Partly |
 | M13 | Multi-agent (expert matrix + arbitration) | Deferred | L4 | Yes |
@@ -293,10 +293,29 @@ tokens (401) and the rate limiter returns 429; OpenAI clients get a valid
 chat-completion shape.
 **Depends on.** M3.
 
-### M10 — Value Stream (H4)
-**Goal.** Productionize the demo's `value_stream.py`: dual-mode goal anchoring
-(A: AI-infer+confirm, B: preset), value-contribution scoring at L4, bottleneck
-detection at L5.
+### M10 — Value Stream (H4) ✅ Done
+**Goal.** Productionize the demo's `value_stream.py`: dual-mode goal anchoring,
+value-contribution scoring at L4, bottleneck detection at L5.
+
+**Delivered.**
+- `taiyi.value_stream.goals` — `GoalRef` / `TaskGoal` / `ValueContribution` /
+  `GoalAnchoringMode` (the H4 data types from Tech Doc §3.2).
+- `value_streams.yaml` — three-layer goal templates (task→tactical→strategic) per
+  scenario, as data (shipped as package data).
+- `taiyi.value_stream.anchoring` — Mode B (preset, zero-interaction) and Mode A
+  (AI-infer candidates → user confirms which layers to lock); offline-first, with
+  an optional provider seam for live refinement.
+- `taiyi.value_stream.scoring` — contribution scoring + `BottleneckDetector` that
+  aggregates scores into a value-leak report (avg alignment, waste, worst type).
+- `ValueStreamEngine` ties it together; the runtime anchors a goal at L1 and scores
+  contribution at L4 on completion (wired into the gateway, surfaced in the task
+  summary and the audit trajectory).
+- 6 tests + `examples/value_stream_demo.py`.
+
+**Acceptance (met).** Preset anchoring honors each scenario's default stack;
+infer→confirm locks the chosen layers; scoring reflects completion and flags
+step-count waste; the bottleneck report aggregates and names the worst task type;
+runtime tasks carry a goal and a contribution score end-to-end.
 **Depends on.** M6.
 
 ### M11 — Observability (H3)

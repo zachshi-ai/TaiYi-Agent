@@ -1,0 +1,28 @@
+# Value-stream templates: the three-layer goal stack per scenario (APQC + OKR).
+# default_stack lists which layers are anchored by default in preset mode (B).
+streams:
+  dev.git:
+    stream_id: code_commit
+    default_stack: [task]
+    task: { goal_id: task-commit, title: "Land the change" }
+    tactical: { goal_id: tac-code-quality, title: "Raise code review pass rate", kpi_id: review_pass_rate }
+    strategic: { goal_id: str-delivery, title: "Improve delivery quality", kpi_id: delivery_quality }
+
+  ops.report:
+    stream_id: report_generation
+    default_stack: [task, tactical]
+    task: { goal_id: task-report, title: "Produce the report" }
+    tactical: { goal_id: tac-report-accuracy, title: "Report accuracy", kpi_id: data_accuracy }
+    strategic: { goal_id: str-customer-trust, title: "Customer trust", kpi_id: trust_score }
+
+  customer_service.refund:
+    stream_id: customer_reply
+    default_stack: [task, tactical, strategic]
+    task: { goal_id: task-refund, title: "Resolve the refund" }
+    tactical: { goal_id: tac-first-resolution, title: "First-contact resolution", kpi_id: frt }
+    strategic: { goal_id: str-retention, title: "Customer retention", kpi_id: retention_rate }
+
+  default:
+    stream_id: generic
+    default_stack: [task]
+    task: { goal_id: task-generic, title: "Complete the task" }

@@ -24,6 +24,8 @@ def task_summary(ctx: TaskContext) -> dict:
         "approval_id": ctx.approval_id,
         "final_output": ctx.final_output,
         "steps": [s.to_dict() for s in ctx.step_results],
+        "goal": ctx.goal.to_dict() if ctx.goal else None,
+        "value_contribution": ctx.value_contribution.to_dict() if ctx.value_contribution else None,
     }
 
 

@@ -30,11 +30,12 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 
 ## Current status
 
-**Modules 1–9 are built — a governed, validated agent with memory, scenarios,
-gated skills, and a gateway (CLI + HTTP), at maturity level L3.** A request enters
-via the CLI or HTTP, is matched to a scenario, planned (rule- or LLM-driven), gated
-step-by-step by governance, executed for real but sandboxed only when cleared, then
-independently validated (a failed check bounces it back), and remembered. M1
+**Modules 1–10 are built — a governed, validated agent with memory, scenarios,
+gated skills, a gateway (CLI + HTTP), and value-stream alignment, at maturity level
+L3.** A request enters via the CLI or HTTP, is anchored to a business goal, matched
+to a scenario, planned (rule- or LLM-driven), gated step-by-step by governance,
+executed for real but sandboxed only when cleared, independently validated (a
+failed check bounces it back), scored for value contribution, and remembered. M1
 Governance Core (rules-as-data, fail-closed, audit log); M2 Scheduler + boundary
 (no execution capability; permits only); M3 Task Runtime (PDCA loop + state
 machine); M4 LLM layer offline-first (a model **cannot bypass governance**; live
@@ -43,10 +44,14 @@ isolation, SSRF); M6 Validation Engine (cheapest-first checklists, isolated/
 calibrated model judge, bounce-back); M7 Memory (5-layer SQLite/FTS5/vector/Honcho);
 M8 Scenario + Skill engine (scenarios as data; **no skill enters production without
 a passing quality gate**); M9 Gateway (stdlib HTTP + CLI, auth/rate-limit,
-OpenAI-compatible endpoint). See the roadmap for what's next. (Phase 0's demo
-remains under `demo/` as reference.)
+OpenAI-compatible endpoint); M10 Value Stream (dual-mode goal anchoring, value-
+contribution scoring, bottleneck detection). See the roadmap for what's next.
+(Phase 0's demo remains under `demo/` as reference.)
 
 ```bash
+# Value-stream alignment: goal anchoring, scoring, bottleneck detection
+python3 examples/value_stream_demo.py
+
 # Run a task from the CLI (scenario auto-matched)
 PYTHONPATH=src python3 -m taiyi.cli run "commit my changes"
 # ...or start the HTTP gateway:  PYTHONPATH=src python3 -m taiyi.cli serve

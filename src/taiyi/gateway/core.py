@@ -22,6 +22,7 @@ from taiyi.scenarios import ScenarioMatcher, ScenarioRegistry
 from taiyi.scheduler import SchedulerEngine
 from taiyi.skills import SkillRegistry
 from taiyi.validation import ValidationEngine
+from taiyi.value_stream import ValueStreamEngine
 
 
 class Gateway:
@@ -68,6 +69,7 @@ def build_gateway(
         executor=executor,
         validator=ValidationEngine(),
         memory=memory,
+        value_stream=ValueStreamEngine(),
         max_rounds=max_rounds,
     )
 

@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from taiyi.runtime.state import TaskState
 from taiyi.scheduler import ExecutionPlan, PlanStep
+from taiyi.value_stream.goals import TaskGoal, ValueContribution
 
 
 @dataclass
@@ -52,6 +53,8 @@ class TaskContext:
     approval_id: str | None = None
     round: int = 0
     validation_summary: str | None = None
+    goal: TaskGoal | None = None
+    value_contribution: ValueContribution | None = None
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -76,4 +79,6 @@ class TaskContext:
             "approval_id": self.approval_id,
             "round": self.round,
             "validation_summary": self.validation_summary,
+            "goal": self.goal.to_dict() if self.goal else None,
+            "value_contribution": self.value_contribution.to_dict() if self.value_contribution else None,
         }

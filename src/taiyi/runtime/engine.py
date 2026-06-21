@@ -24,6 +24,7 @@ from taiyi.runtime.state import TaskState
 from taiyi.memory import MemoryEngine
 from taiyi.scheduler import SchedulerEngine
 from taiyi.validation import ValidationContext, ValidationEngine
+from taiyi.value_stream import ValueStreamEngine
 
 
 class TaskRuntime:
@@ -35,6 +36,7 @@ class TaskRuntime:
         *,
         validator: ValidationEngine | None = None,
         memory: MemoryEngine | None = None,
+        value_stream: ValueStreamEngine | None = None,
         max_rounds: int = 1,
     ):
         self.scheduler = scheduler
@@ -42,6 +44,7 @@ class TaskRuntime:
         self.executor = executor or MockExecutor()
         self.validator = validator
         self.memory = memory
+        self.value_stream = value_stream
         self.max_rounds = max(1, max_rounds)
 
     def run(
@@ -62,6 +65,8 @@ class TaskRuntime:
         self.audit.append("task_start", task_id=ctx.task_id, prompt=prompt, scenario=scenario)
         if self.memory is not None:
             self.memory.add_message(session_id, "user", prompt)
+        if self.value_stream is not None:
+            ctx.goal = self.value_stream.anchor(prompt, scenario)  # L1: anchor goal
 
         try:
             ctx.touch(TaskState.PARSING)
@@ -178,9 +183,16 @@ class TaskRuntime:
         return self.validator.validate(vctx)
 
     def _remember_completion(self, ctx: TaskContext) -> None:
+        skill = ctx.plan.skill_name if ctx.plan else None
+        if self.value_stream is not None and ctx.goal is not None:  # L4: score contribution
+            ctx.value_contribution = self.value_stream.score(
+                ctx.goal,
+                completed=True,
+                n_steps=len(ctx.executed_steps),
+                task_type=skill or "generic",
+            )
         if self.memory is None:
             return
-        skill = ctx.plan.skill_name if ctx.plan else None
         self.memory.remember(
             f"Completed [{skill}] via {len(ctx.executed_steps)} tool(s): {ctx.prompt}",
             tags=("task", ctx.scenario),
