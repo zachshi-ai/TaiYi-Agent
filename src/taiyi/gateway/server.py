@@ -19,9 +19,14 @@ def _make_handler(app: GatewayApp):
             body = self.rfile.read(length).decode("utf-8") if length else ""
             path = self.path.split("?", 1)[0]
             status, data = app.handle(method, path, self.headers, body)
-            payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+            if isinstance(data, str):  # e.g. Prometheus /metrics text
+                payload = data.encode("utf-8")
+                content_type = "text/plain; version=0.0.4"
+            else:
+                payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                content_type = "application/json"
             self.send_response(status)
-            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)

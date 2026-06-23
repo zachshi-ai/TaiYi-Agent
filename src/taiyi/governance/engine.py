@@ -21,7 +21,7 @@ from taiyi.core.types import (
     Verdict,
     build_full_call,
 )
-from taiyi.governance.loader import DEFAULT_RULES_DIR, load_rules
+from taiyi.governance.loader import DEFAULT_RULES_DIR, load_rule_set, load_rules
 from taiyi.governance.rules import Rule
 
 
@@ -30,9 +30,14 @@ class GovernanceEngine:
         self,
         rules_dir: str | Path = DEFAULT_RULES_DIR,
         audit_log: AuditLog | None = None,
+        *,
+        extra_rules_dirs: list[str | Path] | None = None,
     ):
         # Rules are stored as an immutable tuple; the engine exposes no mutators.
-        self._rules: tuple[Rule, ...] = load_rules(rules_dir)
+        if extra_rules_dirs:
+            self._rules: tuple[Rule, ...] = load_rule_set([rules_dir, *extra_rules_dirs])
+        else:
+            self._rules = load_rules(rules_dir)
         self.audit = audit_log if audit_log is not None else AuditLog()
 
     @property

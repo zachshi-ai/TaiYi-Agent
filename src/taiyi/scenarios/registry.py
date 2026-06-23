@@ -47,6 +47,15 @@ class ScenarioRegistry:
                 )
         return reg
 
+    @classmethod
+    def load_dirs(cls, dirs: list[str | Path]) -> "ScenarioRegistry":
+        """Merge scenarios from several directories; later dirs override by name."""
+        reg = cls()
+        for d in dirs:
+            for scenario in cls.load_dir(d).all():
+                reg.add(scenario)
+        return reg
+
     def add(self, scenario: Scenario) -> None:
         self._scenarios[scenario.name] = scenario
 

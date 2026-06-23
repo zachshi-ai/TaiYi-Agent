@@ -46,11 +46,14 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M7** | **Memory (5-layer: SQLite/FTS5/vector/Honcho)** | ✅ **Done** | L3 | No (offline) |
 | **M8** | **Scenario + Skill engine (quality gates)** | ✅ **Done** | L3 | No |
 | **M9** | **Gateway + channels (CLI + HTTP, OpenAI-compatible)** | ✅ **Done** | L3 | No |
-| M10 | Value Stream (H4: goal anchoring, scoring) | Planned | L3 | Partly |
-| M11 | Observability (H3: OpenTelemetry, metrics) | Planned | L3 | No |
-| M12 | Iteration / OODA (L5) + Skill auto-generation | Planned | **L4** | Partly |
-| M13 | Multi-agent (expert matrix + arbitration) | Deferred | L4 | Yes |
-| M14 | Channel breadth + MCP server + Skill market | Deferred | L4 | Yes |
+| **M10** | **Value Stream (H4: goal anchoring, scoring)** | ✅ **Done** | L3 | No (offline) |
+| **M11** | **Observability (H3: traces, metrics, logs)** | ✅ **Done** | L3 | No |
+| **M12** | **Iteration / OODA (L5) + Skill auto-generation** | ✅ **Done** | **L4** | No (offline) |
+| **M13** | **Multi-agent (expert matrix + arbitration)** | ✅ **Done** | L4 | No (offline) |
+| **M14** | **MCP server + channel adapter + Skill market** | ✅ **Done** | L4 | No (live channels = opt-in) |
+| **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
+| **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
+| **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -293,33 +296,197 @@ tokens (401) and the rate limiter returns 429; OpenAI clients get a valid
 chat-completion shape.
 **Depends on.** M3.
 
-### M10 — Value Stream (H4)
-**Goal.** Productionize the demo's `value_stream.py`: dual-mode goal anchoring
-(A: AI-infer+confirm, B: preset), value-contribution scoring at L4, bottleneck
-detection at L5.
+### M10 — Value Stream (H4) ✅ Done
+**Goal.** Productionize the demo's `value_stream.py`: dual-mode goal anchoring,
+value-contribution scoring at L4, bottleneck detection at L5.
+
+**Delivered.**
+- `taiyi.value_stream.goals` — `GoalRef` / `TaskGoal` / `ValueContribution` /
+  `GoalAnchoringMode` (the H4 data types from Tech Doc §3.2).
+- `value_streams.yaml` — three-layer goal templates (task→tactical→strategic) per
+  scenario, as data (shipped as package data).
+- `taiyi.value_stream.anchoring` — Mode B (preset, zero-interaction) and Mode A
+  (AI-infer candidates → user confirms which layers to lock); offline-first, with
+  an optional provider seam for live refinement.
+- `taiyi.value_stream.scoring` — contribution scoring + `BottleneckDetector` that
+  aggregates scores into a value-leak report (avg alignment, waste, worst type).
+- `ValueStreamEngine` ties it together; the runtime anchors a goal at L1 and scores
+  contribution at L4 on completion (wired into the gateway, surfaced in the task
+  summary and the audit trajectory).
+- 6 tests + `examples/value_stream_demo.py`.
+
+**Acceptance (met).** Preset anchoring honors each scenario's default stack;
+infer→confirm locks the chosen layers; scoring reflects completion and flags
+step-count waste; the bottleneck report aggregates and names the worst task type;
+runtime tasks carry a goal and a contribution score end-to-end.
 **Depends on.** M6.
 
-### M11 — Observability (H3)
-**Goal.** OpenTelemetry traces (one trace per task, spans per phase), Prometheus
-metrics (governance verdicts, latency, token cost), structured logs built on the
-M1 audit log.
+### M11 — Observability (H3) ✅ Done
+**Goal.** Traces, metrics, and structured logs across the system.
+
+**Delivered.**
+- `taiyi.observability.tracing` — one `TaskTrace` per task with nested phase spans
+  (task → plan / do / validate), timing and attributes. An OTel exporter walks
+  these as the opt-in seam.
+- `taiyi.observability.metrics` — stdlib Counter / Gauge / Histogram with labels
+  and a `render_prometheus()` exposition (no client library).
+- `taiyi.observability.logging` — structured JSON logs, correlated by task id,
+  with an optional sink.
+- `Observability` facade pre-declares task metrics; the runtime records traces,
+  task/state counters, governance verdicts, and duration. The gateway exposes
+  `/metrics` (Prometheus text), and the HTTP server now serves text payloads.
+- 7 tests + `examples/observability_demo.py`.
+
+**Acceptance (met).** Nested spans recorded with correct parentage; Prometheus
+render is well-formed (counters with labels, histogram buckets/count/sum); logs
+captured and forwarded; a runtime task emits the four phase spans and increments
+the verdict/state/duration metrics; the gateway `/metrics` endpoint returns text.
+**Decision.** Stdlib metrics/tracing rather than the OpenTelemetry SDK, consistent
+with the dependency-light posture; an OTLP/Prometheus-client exporter is an opt-in.
 **Depends on.** M3.
 
-### M12 — Iteration / OODA (L5) + Skill auto-generation
-**Goal.** Close the loop: trajectory analysis, rule-patch suggestions (human
-approved), and Skill sedimentation after N repeats (sandbox-verified, gated).
-**Acceptance.** A new failure class can become a permanent check; the validator
-gets a regression set. **Maturity → L4.**
+### M12 — Iteration / OODA (L5) + Skill auto-generation ✅ Done
+**Goal.** Close the loop: trajectory analysis, human-approved rule patches, gated
+skill auto-generation, and the validator regression set. Takes the build to L4.
+
+**Delivered.**
+- `taiyi.iteration.trajectory` — `TrajectoryStore` records each finished task and
+  surfaces failure classes and repeated skill-less task shapes.
+- `taiyi.iteration.rule_patcher` — turns a recurring failure into a
+  `RulePatchSuggestion` (rule-as-data, M1 schema); `approve()` writes the YAML,
+  which governance loads read-only. Human-gated — nothing auto-mutates live rules.
+- `taiyi.iteration.skill_generator` — drafts an `auto_generated` skill with a
+  complete quality gate from a repeated tool sequence; enters the sandbox, needs
+  human approval to be promoted to managed.
+- `taiyi.iteration.regression` — accumulates labelled validation cases and
+  calibrates a model judge against them over time.
+- `IterationEngine` (OODA) is fed by the runtime on every finished task; wired
+  into the gateway.
+- 6 tests + `examples/iteration_demo.py`.
+
+**Acceptance (met).** A recurring failure produces a suggestion that, once
+approved, makes governance return NEEDS_REVIEW for that tool — a new failure class
+became a permanent check; a repeated shape sediments into a gated, production-
+eligible auto-generated skill; the validator gets a regression set with
+false-pass/false-block tracking. **Maturity → L4 (closed loop).**
 **Depends on.** M6, M8, M11.
 
-### M13 — Multi-agent (expert matrix + arbitration)  *(deferred)*
-Expert agents (security/compliance/business/perf/UX) with red-line veto and the
-precedence-based arbitration from Design Doc §5.3. Highest complexity; deferred
-until the single-agent slice is solid.
+### M17 — Human approval & resume (HITL) ✅ Done
+**Goal.** Close the human-in-the-loop story: a `NEEDS_REVIEW` task can be approved
+and **resumed from where it stopped**, not just abandoned.
 
-### M14 — Channel breadth + MCP server + Skill market  *(deferred)*
-P1/P2 channels (Feishu/DingTalk/Telegram/Discord/Slack/…), Taiyi-as-MCP-server,
-and the Git-distributed Skill market. Breadth work; deferred for budget.
+**Delivered.**
+- `taiyi.approvals` — `ApprovalStore` + `PendingApproval` (in-memory; no runtime
+  import, so no cycle). The runtime parks a suspended task here keyed by approval id.
+- `TaskRuntime.resume(approval_id, approve=…)` — on approve, executes the held step
+  (a human override of the review), then continues gating the remaining steps and
+  validates → COMPLETED; on reject, marks REJECTED. Steps already done are kept.
+  A downstream step that needs review re-suspends with a fresh approval (chained).
+- Gateway `GET /v1/approvals` (list pending) and `POST /v1/approvals/resolve`.
+- 4 tests + `examples/approval_demo.py`.
+
+**Acceptance (met).** A weekly-report task suspends at the outbound notify (keeping
+the completed query), shows up in the pending list, and resumes to COMPLETED on
+approval; rejection marks it REJECTED; an unknown approval id errors; the full
+flow works over the gateway endpoints.
+**Note.** In-process store; persisting approvals to disk for resume-across-restart
+is a small later refinement. **Depends on.** M3, M9.
+
+### M16 — Iterative agent loop ✅ Done
+**Goal.** Turn plan-once execution into a real agent: reason → act → observe →
+repeat, with every action still gated. The "framework → agent" piece.
+
+**Delivered.**
+- `taiyi.agent.AgentRuntime` — a step-by-step loop: the model proposes one tool
+  call, **`scheduler.request_permit` gates it**, it executes, the result is fed
+  back into the conversation, and the model decides the next step. Stops when the
+  model answers with no tool call (validated first) or the step budget runs out.
+  Reuses the same governance boundary, executor, validation, memory, value-stream,
+  observability, and iteration components as `TaskRuntime`.
+- A validation failure on "done" is fed back as an observation so the agent can
+  correct itself within budget.
+- 5 tests + `examples/agent_demo.py`.
+
+**Acceptance (met).** A multi-step task runs to COMPLETED with results fed back; a
+prompt-injected override mid-loop is DENIED and never executes (governance holds
+step by step); a `git push` mid-loop suspends as NEEDS_REVIEW; a validation failure
+feeds back and the agent recovers; the step budget bounds the loop (FAILED).
+**The live LLM is the opt-in** that drives this for real — same control flow.
+**Depends on.** M4, M5, M6.
+
+### M15 — Configuration & deployment ✅ Done
+**Goal.** Make Taiyi self-operable: configure an instance without editing Python,
+and ship a container.
+
+**Delivered.**
+- `taiyi.config` — `TaiyiConfig` + `load_config`: one YAML file (`taiyi.yaml`) plus
+  `TAIYI_*` env overrides for persistence, host/port, auth tokens, executor
+  (`mock`|`sandbox`), `max_rounds`, and custom rule/scenario/skill directories.
+- **Merge-friendly loaders** — `load_rule_set` and `ScenarioRegistry.load_dirs` /
+  `SkillRegistry.load_dirs`: drop your own YAML/Markdown into a directory and it
+  merges with the built-ins (yours can override a built-in by reusing its id/name).
+- `build_gateway_from_config` + `--config` on `taiyi run|serve|mcp`; selecting
+  `executor: sandbox` runs real, governed, credential-isolated execution.
+- `taiyi.example.yaml`, `deploy/Dockerfile`, `deploy/docker-compose.yml`.
+- 5 tests + verified end-to-end: a config with `executor: sandbox` runs a real
+  governed `git commit` in a target repo, preserving the local identity.
+
+**Acceptance (met).** `pip install` → `taiyi serve --config taiyi.yaml` (or
+`docker compose up`) stands up a configured instance; custom rules are enforced
+alongside the built-ins; the real executor is selectable by config alone.
+**Depends on.** M9.
+
+### M13 — Multi-agent (expert matrix + arbitration) ✅ Done
+**Goal.** Expert agents with red-line veto and precedence-based arbitration
+(Design Doc §4.5 / §5.3) — collaboration with gates, not free-form agent chat.
+
+**Delivered.**
+- `taiyi.multi_agent.experts` — the `Expert` interface, `ExpertOpinion`, and
+  deterministic `MarkerExpert` stand-ins; `builtin_experts()` is the five-domain
+  matrix (security/compliance/business with veto authority; performance/UX
+  advisory-only), with the design's default precedence. A live LLM-backed expert
+  implements the same interface — the arbitration math is unchanged.
+- `taiyi.multi_agent.arbitration` — `arbitrate()`: no veto → APPROVED (advisories
+  non-binding); any veto → highest-precedence veto wins, task paused + escalated;
+  same-precedence cross-domain conflict → fail closed → NEEDS_HUMAN.
+- `taiyi.multi_agent.committee` — `ExpertCommittee.review` + `reconsider_once`
+  (one amendment retry; a persistent veto becomes an L5 system defect, bounded).
+- Gateway `/v1/review` endpoint; default committee wired into `build_gateway`.
+- 8 tests + `examples/multi_agent_demo.py` (reproduces the design's contract-review
+  scenario C).
+
+**Acceptance (met).** A red-line expert's veto is a one-vote pause that escalates;
+advisory experts never block; a higher-precedence veto wins a cross-level conflict;
+a same-precedence hard conflict fails closed to a human; reconsideration resolves
+an amended proposal or, if not, records a system defect.
+**Decision.** Built offline-first (deterministic marker experts), so it is
+zero-cost; the live multi-expert LLM path is the opt-in. **Depends on.** M3.
+
+### M14 — MCP server + channel adapter + Skill market ✅ Done
+**Goal.** The breadth layer. Built the zero-cost core; live messaging connectors
+remain a documented opt-in (they need platform SDKs and credentials).
+
+**Delivered.**
+- `taiyi.mcp` — **Taiyi as an MCP server** (JSON-RPC 2.0: `initialize` / `tools/list`
+  / `tools/call`), exposing governed tools (`taiyi_run_task`, `taiyi_list_skills`,
+  `taiyi_get_skill`, `taiyi_search_memory`, `taiyi_review`) backed by the gateway.
+  `handle()` is transport-agnostic; `serve_stdio()` runs the loop; `taiyi mcp` is a
+  CLI subcommand. A call from Claude Code / Cursor flows through the same
+  governance — an MCP client cannot bypass a red line.
+- `taiyi.channels` — the `ChannelAdapter` interface + `InProcessChannel` reference.
+  A real Feishu/Telegram/Discord adapter subclasses it and overrides only transport
+  ("a new channel is one file"); those are the live opt-in.
+- `taiyi.market` — `SkillMarket`: list/search/install from a registry, **refusing
+  any skill that does not pass its quality gate** at install time, so the market
+  cannot become a junkyard. (Git distribution is the deferred transport.)
+- 18 tests + `examples/mcp_demo.py`.
+
+**Acceptance (met).** MCP `initialize`/`tools/list`/`tools/call` work in-process and
+over real stdio; `taiyi_run_task` is governed via MCP (identity override → REJECTED);
+the channel adapter runs and reflects governance; the market installs gated skills
+and refuses ungated ones.
+**Deferred (live opt-in).** Real platform channel connectors and Git-based market
+distribution — both need credentials/SDKs/network. **Depends on.** M9.
 
 ---
 

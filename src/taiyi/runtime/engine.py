@@ -15,15 +15,20 @@ be replayed in order with ``replay_task``.
 from __future__ import annotations
 
 import time
+from contextlib import nullcontext
 
+from taiyi.approvals import ApprovalStore, PendingApproval
 from taiyi.core.audit import AuditLog
 from taiyi.core.types import Verdict
+from taiyi.iteration import IterationEngine
+from taiyi.memory import MemoryEngine
+from taiyi.observability import Observability
 from taiyi.runtime.context import StepResult, TaskContext
 from taiyi.runtime.executor import Executor, MockExecutor
 from taiyi.runtime.state import TaskState
-from taiyi.memory import MemoryEngine
 from taiyi.scheduler import SchedulerEngine
 from taiyi.validation import ValidationContext, ValidationEngine
+from taiyi.value_stream import ValueStreamEngine
 
 
 class TaskRuntime:
@@ -35,6 +40,10 @@ class TaskRuntime:
         *,
         validator: ValidationEngine | None = None,
         memory: MemoryEngine | None = None,
+        value_stream: ValueStreamEngine | None = None,
+        observability: Observability | None = None,
+        iteration: IterationEngine | None = None,
+        approvals: ApprovalStore | None = None,
         max_rounds: int = 1,
     ):
         self.scheduler = scheduler
@@ -42,6 +51,10 @@ class TaskRuntime:
         self.executor = executor or MockExecutor()
         self.validator = validator
         self.memory = memory
+        self.value_stream = value_stream
+        self.obs = observability
+        self.iteration = iteration
+        self.approvals = approvals
         self.max_rounds = max(1, max_rounds)
 
     def run(
@@ -59,46 +72,79 @@ class TaskRuntime:
             user_id=user_id,
             session_id=session_id,
         )
+        start = time.time()
         self.audit.append("task_start", task_id=ctx.task_id, prompt=prompt, scenario=scenario)
         if self.memory is not None:
             self.memory.add_message(session_id, "user", prompt)
+        if self.value_stream is not None:
+            ctx.goal = self.value_stream.anchor(prompt, scenario)  # L1: anchor goal
+
+        trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
+        if self.obs is not None:
+            self.obs.tasks_total.inc()
 
         try:
-            ctx.touch(TaskState.PARSING)
-            for rnd in range(1, self.max_rounds + 1):
-                ctx.round = rnd
-                ctx.step_results = []
-                self._plan(ctx)
-                if not self._do(ctx):
-                    return ctx  # DENY / NEEDS_REVIEW / failed execution: terminal
-
-                ctx.final_output = self._synthesize(ctx)
-                vr = self._validate(ctx)
-                if vr is None or vr.passed:
-                    ctx.touch(TaskState.COMPLETED)
-                    self.audit.append(
-                        "task_completed", task_id=ctx.task_id, round=rnd,
-                        steps=len(ctx.executed_steps),
-                    )
-                    self._remember_completion(ctx)
-                    return ctx
-
-                # Validation failed → bounce back into PDCA.
-                ctx.validation_summary = vr.summary
-                self.audit.append(
-                    "validation_failed", task_id=ctx.task_id, round=rnd,
-                    failed=vr.failed_checks,
-                )
-
-            ctx.error = f"validation failed after {self.max_rounds} round(s): {ctx.validation_summary}"
-            ctx.touch(TaskState.FAILED)
-            self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
-            return ctx
+            with self._span(trace, "task"):
+                ctx.touch(TaskState.PARSING)
+                self._execute_rounds(ctx, trace)
         except Exception as e:  # noqa: BLE001 — convert any failure into a terminal state
             ctx.error = f"{type(e).__name__}: {e}"
             ctx.touch(TaskState.FAILED)
             self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
-            return ctx
+
+        self._finish(ctx, start)
+        return ctx
+
+    def _execute_rounds(self, ctx: TaskContext, trace) -> None:
+        for rnd in range(1, self.max_rounds + 1):
+            ctx.round = rnd
+            ctx.step_results = []
+            with self._span(trace, "plan"):
+                self._plan(ctx)
+            with self._span(trace, "do"):
+                completed = self._do(ctx)
+            if not completed:
+                return  # DENY / NEEDS_REVIEW / failed execution: terminal state set
+
+            ctx.final_output = self._synthesize(ctx)
+            with self._span(trace, "validate"):
+                vr = self._validate(ctx)
+            if vr is None or vr.passed:
+                ctx.touch(TaskState.COMPLETED)
+                self.audit.append(
+                    "task_completed", task_id=ctx.task_id, round=rnd, steps=len(ctx.executed_steps)
+                )
+                self._remember_completion(ctx)
+                return
+
+            # Validation failed → bounce back into PDCA.
+            ctx.validation_summary = vr.summary
+            self.audit.append(
+                "validation_failed", task_id=ctx.task_id, round=rnd, failed=vr.failed_checks
+            )
+
+        ctx.error = f"validation failed after {self.max_rounds} round(s): {ctx.validation_summary}"
+        ctx.touch(TaskState.FAILED)
+        self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+
+    @staticmethod
+    def _span(trace, name: str):
+        return trace.span(name) if trace is not None else nullcontext()
+
+    def _finish(self, ctx: TaskContext, start: float) -> None:
+        if self.iteration is not None:
+            self.iteration.record(ctx)  # L5: feed the OODA outer loop
+        if self.obs is None:
+            return
+        self.obs.task_state.inc(state=ctx.state.value)
+        self.obs.task_duration.observe(time.time() - start)
+        self.obs.logger.info(
+            "task_finished",
+            task_id=ctx.task_id,
+            state=ctx.state.value,
+            scenario=ctx.scenario,
+            round=ctx.round,
+        )
 
     # --- P -------------------------------------------------------------------
     def _plan(self, ctx: TaskContext) -> None:
@@ -114,9 +160,17 @@ class TaskRuntime:
 
     # --- D --------------------------------------------------------------------
     def _do(self, ctx: TaskContext) -> bool:
-        """Run the plan step by step. Returns True iff every step executed."""
         assert ctx.plan is not None
-        for step in ctx.plan.steps:
+        return self._execute_steps(ctx, ctx.plan.steps, 0)
+
+    def _execute_steps(self, ctx: TaskContext, steps: list, start: int) -> bool:
+        """Gate + execute steps[start:]. Returns True iff every step executed.
+
+        On NEEDS_REVIEW, if an approval store is configured, the suspended task is
+        parked so it can be resumed; otherwise it simply suspends as before.
+        """
+        for i in range(start, len(steps)):
+            step = steps[i]
             ctx.touch(TaskState.AWAITING_PERMIT)
             permit = self.scheduler.request_permit(
                 step, ctx.scenario, user_id=ctx.user_id, task_id=ctx.task_id
@@ -128,6 +182,8 @@ class TaskRuntime:
                 matched_rule_id=permit.matched_rule_id,
             )
             ctx.step_results.append(sr)
+            if self.obs is not None:
+                self.obs.governance_verdict.inc(verdict=permit.verdict.value)
 
             if permit.verdict is Verdict.DENY:
                 ctx.touch(TaskState.REJECTED)
@@ -147,6 +203,12 @@ class TaskRuntime:
                     "task_needs_review", task_id=ctx.task_id, tool=step.tool,
                     approval_id=permit.approval_id,
                 )
+                if self.approvals is not None and permit.approval_id:
+                    self.approvals.add(PendingApproval(
+                        approval_id=permit.approval_id, task_id=ctx.task_id, tool=step.tool,
+                        reason=permit.reason, scenario=ctx.scenario, ctx=ctx,
+                        held_index=i, steps=list(steps),
+                    ))
                 return False
 
             ctx.touch(TaskState.EXECUTING)
@@ -161,6 +223,54 @@ class TaskRuntime:
                 return False
 
         return True
+
+    def resume(self, approval_id: str, *, approve: bool) -> TaskContext:
+        """Resume (or reject) a task suspended for human review."""
+        if self.approvals is None:
+            raise RuntimeError("no approval store configured")
+        pending = self.approvals.get(approval_id)
+        if pending is None:
+            raise KeyError(f"unknown approval: {approval_id}")
+        ctx: TaskContext = pending.ctx
+        self.approvals.remove(approval_id)
+
+        if not approve:
+            ctx.touch(TaskState.REJECTED)
+            ctx.final_output = f"rejected by human reviewer (approval_id={approval_id})"
+            self.audit.append("human_rejected", task_id=ctx.task_id, approval_id=approval_id)
+            return ctx
+
+        # Approved: execute the held step (human override of the review), then
+        # continue gating the remaining steps normally.
+        self.audit.append("human_approved", task_id=ctx.task_id, approval_id=approval_id)
+        held_step = pending.steps[pending.held_index]
+        held_sr = ctx.step_results[-1]
+        ctx.touch(TaskState.EXECUTING)
+        result = self.executor.execute(held_step)
+        held_sr.verdict = "ALLOW(human)"
+        held_sr.executed = True
+        held_sr.output = result.output
+        self.audit.append("step_executed", task_id=ctx.task_id, tool=held_step.tool, ok=result.ok,
+                          approved_by="human")
+        if not result.ok:
+            ctx.error = f"step failed: {held_step.tool}: {result.output}"
+            ctx.touch(TaskState.FAILED)
+            return ctx
+
+        if not self._execute_steps(ctx, pending.steps, pending.held_index + 1):
+            return ctx  # re-suspended / rejected / failed downstream
+
+        ctx.final_output = self._synthesize(ctx)
+        vr = self._validate(ctx)
+        if vr is None or vr.passed:
+            ctx.touch(TaskState.COMPLETED)
+            self.audit.append("task_completed", task_id=ctx.task_id, steps=len(ctx.executed_steps))
+            self._remember_completion(ctx)
+        else:
+            ctx.validation_summary = vr.summary
+            ctx.error = f"validation failed after resume: {vr.summary}"
+            ctx.touch(TaskState.FAILED)
+        return ctx
 
     # --- C -------------------------------------------------------------------
     def _validate(self, ctx: TaskContext):
@@ -178,9 +288,16 @@ class TaskRuntime:
         return self.validator.validate(vctx)
 
     def _remember_completion(self, ctx: TaskContext) -> None:
+        skill = ctx.plan.skill_name if ctx.plan else None
+        if self.value_stream is not None and ctx.goal is not None:  # L4: score contribution
+            ctx.value_contribution = self.value_stream.score(
+                ctx.goal,
+                completed=True,
+                n_steps=len(ctx.executed_steps),
+                task_type=skill or "generic",
+            )
         if self.memory is None:
             return
-        skill = ctx.plan.skill_name if ctx.plan else None
         self.memory.remember(
             f"Completed [{skill}] via {len(ctx.executed_steps)} tool(s): {ctx.prompt}",
             tags=("task", ctx.scenario),

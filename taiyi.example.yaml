@@ -1,0 +1,26 @@
+# Taiyi / The One — example configuration.
+# Copy to taiyi.yaml and edit. Every value can also be set via TAIYI_* env vars
+# (env overrides the file). Run with:  taiyi serve --config taiyi.yaml
+
+base_dir: ./state          # persistence root: audit log, SQLite memory, markdown
+host: 127.0.0.1            # use 0.0.0.0 in a container
+port: 8080
+
+# Bearer auth. Empty list = open (local use). Add tokens to require auth.
+auth_tokens: []
+
+# Execution backend:
+#   mock    — side-effect-free (safe default for trials/demos)
+#   sandbox — real shell/file execution inside sandbox_dir (governed + credential-isolated)
+executor: mock
+sandbox_dir: ./state/sandbox
+
+max_rounds: 1              # PDCA correction rounds before a validation failure is terminal
+
+# Custom rules / scenarios / skills are MERGED with the built-ins (yours can
+# override a built-in by reusing its id/name). Drop YAML/Markdown into these dirs.
+rules_dirs: []
+scenarios_dirs: []
+skills_dirs: []
+
+log_level: info

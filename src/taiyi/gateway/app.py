@@ -24,6 +24,8 @@ def task_summary(ctx: TaskContext) -> dict:
         "approval_id": ctx.approval_id,
         "final_output": ctx.final_output,
         "steps": [s.to_dict() for s in ctx.step_results],
+        "goal": ctx.goal.to_dict() if ctx.goal else None,
+        "value_contribution": ctx.value_contribution.to_dict() if ctx.value_contribution else None,
     }
 
 
@@ -39,9 +41,13 @@ class GatewayApp:
         self.auth = auth or AuthPolicy()
         self.rate = rate_limiter
 
-    def handle(self, method: str, path: str, headers, body: str) -> tuple[int, dict]:
+    def handle(self, method: str, path: str, headers, body: str):
         if method == "GET" and path == "/healthz":
             return 200, {"status": "ok"}
+        if method == "GET" and path == "/metrics":
+            if self.gateway.obs is None:
+                return 404, {"error": "metrics not enabled"}
+            return 200, self.gateway.obs.render_metrics()  # text/plain payload
 
         if not self.auth.authorize(headers):
             return 401, {"error": "unauthorized"}
@@ -57,6 +63,12 @@ class GatewayApp:
             return self._tasks(payload)
         if method == "POST" and path == "/v1/chat/completions":
             return self._chat(payload)
+        if method == "POST" and path == "/v1/review":
+            return self._review(payload)
+        if method == "GET" and path == "/v1/approvals":
+            return self._list_approvals()
+        if method == "POST" and path == "/v1/approvals/resolve":
+            return self._resolve_approval(payload)
         return 404, {"error": "not found"}
 
     # --- routes --------------------------------------------------------------
@@ -78,6 +90,33 @@ class GatewayApp:
             return 400, {"error": "no user message"}
         ctx = self.gateway.submit(prompt, scenario=payload.get("scenario"))
         return 200, to_openai_response(ctx, payload.get("model", "taiyi"))
+
+    def _review(self, payload: dict) -> tuple[int, dict]:
+        if self.gateway.committee is None:
+            return 404, {"error": "multi-agent review not enabled"}
+        subject = payload.get("subject")
+        if not subject:
+            return 400, {"error": "missing subject"}
+        result = self.gateway.committee.review(subject, payload.get("context") or {})
+        return 200, result.to_dict()
+
+    def _list_approvals(self) -> tuple[int, dict]:
+        if self.gateway.approvals is None:
+            return 404, {"error": "approvals not enabled"}
+        return 200, {"pending": [p.summary() for p in self.gateway.approvals.list()]}
+
+    def _resolve_approval(self, payload: dict) -> tuple[int, dict]:
+        if self.gateway.approvals is None:
+            return 404, {"error": "approvals not enabled"}
+        approval_id = payload.get("approval_id")
+        decision = payload.get("decision")
+        if not approval_id or decision not in ("approve", "reject"):
+            return 400, {"error": "need approval_id and decision=approve|reject"}
+        try:
+            ctx = self.gateway.runtime.resume(approval_id, approve=(decision == "approve"))
+        except KeyError:
+            return 404, {"error": f"unknown approval: {approval_id}"}
+        return 200, task_summary(ctx)
 
     @staticmethod
     def _identity(headers) -> str:
