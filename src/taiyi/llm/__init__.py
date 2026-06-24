@@ -1,10 +1,10 @@
 """LLM provider layer (offline-first).
 
 A provider-agnostic interface plus deterministic offline providers, so the whole
-agent loop can be exercised with zero tokens and zero network. Live providers
-(Anthropic / OpenAI-compatible / Ollama) implement the same ``LLMProvider``
-interface and are a later opt-in — they require an API key and a token budget and
-are intentionally not built here.
+agent loop can be exercised with zero tokens and zero network. The live
+OpenAI-compatible adapter (``OpenAICompatProvider``) implements the same
+``LLMProvider`` interface and covers Ollama / DeepSeek / 智谱 / Moonshot / OpenAI
+through one ``base_url`` — opt in via config + the ``[live]`` extra (httpx).
 
 The point this module proves: **whatever a model proposes still passes through
 governance.** An LLM-driven planner cannot grant clearance, so even a
@@ -19,7 +19,7 @@ from taiyi.llm.base import (
     LLMResponse,
     ToolCall,
 )
-from taiyi.llm.live import make_provider
+from taiyi.llm.live import OpenAICompatProvider, make_provider
 from taiyi.llm.offline import KeywordOfflineProvider, ScriptedProvider
 
 __all__ = [
@@ -30,5 +30,6 @@ __all__ = [
     "ToolCall",
     "KeywordOfflineProvider",
     "ScriptedProvider",
+    "OpenAICompatProvider",
     "make_provider",
 ]

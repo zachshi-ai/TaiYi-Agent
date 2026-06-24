@@ -99,6 +99,8 @@ class GatewayApp:
             return self._get_config()
         if method == "PUT" and path == "/v1/config":
             return self._put_config(payload)
+        if method == "POST" and path == "/v1/config/test":
+            return self._test_config(payload)
         return 404, {"error": "not found"}
 
     # --- routes --------------------------------------------------------------
@@ -240,16 +242,20 @@ class GatewayApp:
         return 200, self.gateway.obs.metrics.as_json()
 
     def _get_config(self) -> tuple[int, dict]:
-        """Read-only view of the running config. Never includes the API key."""
+        """Read-only view of the running config. Never echoes the API key value —
+        only whether one is set, so the UI can show a placeholder without leaking."""
         from taiyi.config import WRITABLE_FIELDS
 
         prov = getattr(self.gateway.runtime, "provider", None)
         provider_name = getattr(prov, "name", None) if prov else "offline"
+        has_key = bool(getattr(prov, "_api_key", None))
         return 200, {
             "config_path": self.config_path,
             "mode": "agent" if type(self.gateway.runtime).__name__ == "AgentRuntime" else "workflow",
             "provider": provider_name,
             "model": getattr(prov, "_model", None) if prov else None,
+            "base_url": getattr(prov, "_base_url", None) if prov else None,
+            "api_key_set": has_key,
             "base_dir": self.gateway.base_dir,
             "writable_fields": sorted(WRITABLE_FIELDS),
             "restart_required_after_write": True,
@@ -265,9 +271,39 @@ class GatewayApp:
         updates = {k: v for k, v in payload.items() if k in WRITABLE_FIELDS}
         if not updates:
             return 400, {"error": f"no writable fields; allowed: {sorted(WRITABLE_FIELDS)}"}
+        # Treat an empty-string api_key as "clear it" → write null.
+        if "api_key" in updates and updates["api_key"] == "":
+            updates["api_key"] = None
         save_config(self.config_path, updates)
         return 200, {"restart_required": True, "applied": sorted(updates),
                      "config_path": self.config_path}
+
+    def _test_config(self, payload: dict) -> tuple[int, dict]:
+        """Probe a candidate LLM config without restarting.
+
+        Builds a throwaway OpenAICompatProvider from the supplied fields and sends
+        a one-token 'ping'. Returns ok/err so the UI can confirm a config works
+        before committing it. Never persists anything.
+        """
+        from taiyi.llm import OpenAICompatProvider
+        base_url = payload.get("base_url")
+        provider = (payload.get("provider") or "").lower()
+        if provider == "offline":
+            return 200, {"ok": True, "note": "offline provider needs no connection"}
+        if not base_url:
+            return 400, {"error": "base_url required to test a live provider"}
+        try:
+            prov = OpenAICompatProvider(
+                base_url=base_url,
+                model=payload.get("model"),
+                api_key=payload.get("api_key"),
+            )
+            from taiyi.llm.base import LLMMessage
+
+            resp = prov.complete([LLMMessage("user", "ping")])
+            return 200, {"ok": True, "model": resp.model, "reply": (resp.text or "")[:120]}
+        except Exception as e:  # noqa: BLE001 — surface the connection error to the UI
+            return 200, {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
     @staticmethod
     def _identity(headers) -> str:

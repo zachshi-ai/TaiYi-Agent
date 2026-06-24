@@ -25,16 +25,29 @@ max_rounds: 1              # PDCA correction rounds before a validation failure 
 #               executed step by step. Use when a task has a known fixed procedure.
 mode: agent
 
-# LLM provider seam. The system is offline-first: with provider=offline the whole
-# loop runs on deterministic offline providers (zero tokens, zero network). To
-# use a real model, set provider to one of: anthropic | openai_compat | ollama,
-# point api_key_env at the env var holding your key (the key itself never goes in
-# a config file), and fill model. NOTE: the live adapters are not wired yet — a
-# live provider slot will refuse to fabricate output until an adapter is
-# implemented and its SDK added to pyproject.toml's [live] group.
+# LLM provider. The system is offline-first: provider=offline runs the whole loop
+# on deterministic offline providers (zero tokens, zero network). To use a real
+# model, pick a protocol and fill base_url/model/api_key. Any OpenAI-compatible
+# endpoint works through the same adapter.
+#
+#   provider: ollama        # local Ollama — no key needed, runs on your machine
+#   base_url: http://localhost:11434/v1
+#   model: qwen2.5:7b        # whatever you `ollama pull`ed
+#   api_key: null            # Ollama ignores this; leave empty
+#
+#   provider: openai_compat  # DeepSeek / 智谱 / Moonshot / OpenAI / SiliconFlow / …
+#   base_url: https://api.deepseek.com/v1
+#   model: deepseek-chat
+#   api_key: sk-...          # your key; stored here (gitignored), restart to apply
+#
+# Requires the [live] extra:  pip install -e ".[live]"   (adds httpx)
 provider: offline
-model: null                # e.g. claude-... ; null = provider default
-api_key_env: null          # e.g. ANTHROPIC_API_KEY ; null = no key source
+base_url: null
+model: null
+api_key: null
+# api_key_env is an alternative: name an env var that holds the key value
+# (useful for secrets managers). Overrides api_key if set.
+api_key_env: null
 
 # Custom rules / scenarios / skills are MERGED with the built-ins (yours can
 # override a built-in by reusing its id/name). Drop YAML/Markdown into these dirs.

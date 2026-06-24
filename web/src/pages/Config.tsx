@@ -1,24 +1,31 @@
 import { useEffect, useState } from "react";
 import { api, getToken, setToken } from "../api";
 
+// Ollama is a local service — it needs no API key, so hide the key field for it.
+const NO_KEY_PROVIDERS = new Set(["offline", "ollama"]);
+
 export default function Config() {
   const [config, setConfig] = useState<any>(null);
-  const [provider, setProvider] = useState("");
+  const [provider, setProvider] = useState("offline");
   const [model, setModel] = useState("");
-  const [mode, setMode] = useState("");
-  const [apiKeyEnv, setApiKeyEnv] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [apiKey, setApiKey] = useState("");
+  const [mode, setMode] = useState("agent");
   const [token, setTokenInput] = useState(getToken());
   const [saved, setSaved] = useState("");
   const [error, setError] = useState("");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<any>(null);
 
   const load = async () => {
     try {
       const c = await api.getConfig();
       setConfig(c);
-      setProvider(c.provider || "offline");
+      setProvider(c.provider?.replace(/^live:/, "") || "offline");
       setModel(c.model || "");
+      setBaseUrl(c.base_url || "");
       setMode(c.mode || "agent");
-      setApiKeyEnv("");
+      setApiKey(""); // never echo the stored value; user re-types to change
       setError("");
     } catch (e: any) {
       setError(e.message);
@@ -29,17 +36,48 @@ export default function Config() {
     load();
   }, []);
 
+  const needsKey = !NO_KEY_PROVIDERS.has(provider);
+
+  const buildUpdates = () => {
+    const updates: Record<string, any> = { provider, mode };
+    if (model) updates.model = model;
+    if (baseUrl) updates.base_url = baseUrl;
+    if (needsKey) {
+      // empty string signals "clear the key"; only send if user typed something
+      updates.api_key = apiKey || "";
+    }
+    return updates;
+  };
+
   const save = async () => {
     setError("");
     setSaved("");
-    const updates: Record<string, any> = { provider, mode };
-    if (model) updates.model = model;
-    if (apiKeyEnv) updates.api_key_env = apiKeyEnv;
+    setTestResult(null);
     try {
-      const r = await api.putConfig(updates);
+      const r = await api.putConfig(buildUpdates());
       setSaved(`已写入 ${r.config_path}。需重启 taiyi 生效。`);
     } catch (e: any) {
       setError(e.message);
+    }
+  };
+
+  const test = async () => {
+    setError("");
+    setSaved("");
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const r = await api.testConfig({
+        provider,
+        base_url: baseUrl,
+        model: model || null,
+        api_key: needsKey ? apiKey : null,
+      });
+      setTestResult(r);
+    } catch (e: any) {
+      setTestResult({ ok: false, error: e.message });
+    } finally {
+      setTesting(false);
     }
   };
 
@@ -65,10 +103,12 @@ export default function Config() {
           <div className="mono">
             mode: <span className="badge">{config.mode}</span>　
             provider: <span className="badge">{config.provider}</span>　
-            model: <span className="badge">{config.model || "默认"}</span>
+            model: <span className="badge">{config.model || "默认"}</span>　
+            {config.base_url && <span>base_url: {config.base_url}</span>}
           </div>
           <p className="muted" style={{ marginTop: 8 }}>
             config_path: {config.config_path || "(无配置文件)"} · base_dir: {config.base_dir || "(内存)"}
+            {config.api_key_set != null && ` · api_key: ${config.api_key_set ? "已设置" : "未设置"}`}
           </p>
         </div>
       )}
@@ -81,26 +121,74 @@ export default function Config() {
             <option value="agent">agent (ReAct)</option>
             <option value="workflow">workflow (plan-once)</option>
           </select>
-          <label style={{ marginLeft: 16 }}>provider</label>
+          <label style={{ marginLeft: 16 }}>协议</label>
           <select value={provider} onChange={(e) => setProvider(e.target.value)}>
-            <option value="offline">offline</option>
-            <option value="anthropic">anthropic</option>
-            <option value="openai_compat">openai_compat</option>
-            <option value="ollama">ollama</option>
+            <option value="offline">offline（离线，零 token）</option>
+            <option value="ollama">ollama（本地，无需 key）</option>
+            <option value="openai_compat">openai_compat（DeepSeek/智谱/OpenAI…）</option>
           </select>
         </div>
-        <div className="row" style={{ marginBottom: 10 }}>
-          <label>model</label>
-          <input type="text" placeholder="模型 id（留空用默认）" value={model} onChange={(e) => setModel(e.target.value)} style={{ flex: 1 }} />
-        </div>
-        <div className="row" style={{ marginBottom: 10 }}>
-          <label>api_key_env</label>
-          <input type="text" placeholder="环境变量名，如 ANTHROPIC_API_KEY（不存 key 本身）" value={apiKeyEnv} onChange={(e) => setApiKeyEnv(e.target.value)} style={{ flex: 1 }} />
-        </div>
+
+        {provider !== "offline" && (
+          <>
+            <div className="row" style={{ marginBottom: 10 }}>
+              <label>baseURL</label>
+              <input
+                type="text"
+                placeholder={provider === "ollama" ? "http://localhost:11434/v1" : "https://api.deepseek.com/v1"}
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                style={{ flex: 1 }}
+              />
+            </div>
+            <div className="row" style={{ marginBottom: 10 }}>
+              <label>model</label>
+              <input
+                type="text"
+                placeholder={provider === "ollama" ? "qwen2.5:7b" : "deepseek-chat"}
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+                style={{ flex: 1 }}
+              />
+            </div>
+            {needsKey && (
+              <div className="row" style={{ marginBottom: 10 }}>
+                <label>apiKey</label>
+                <input
+                  type="password"
+                  placeholder={config?.api_key_set ? "（已设置，留空保持不变）" : "sk-..."}
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+              </div>
+            )}
+            {provider === "ollama" && (
+              <p className="muted" style={{ fontSize: 12, margin: "0 0 10px" }}>
+                Ollama 是本地服务，无需 API key。先确保已 <code>ollama serve</code> 并 <code>ollama pull &lt;模型&gt;</code>。
+              </p>
+            )}
+          </>
+        )}
+
         <div className="muted" style={{ marginBottom: 10, fontSize: 12 }}>
           可写字段: {writable.join(", ")}
         </div>
-        <button onClick={save}>写回配置</button>
+        <div className="row gap">
+          <button onClick={save}>写回配置</button>
+          {provider !== "offline" && (
+            <button className="secondary" onClick={test} disabled={testing || !baseUrl}>
+              {testing ? "测试中…" : "测试连接"}
+            </button>
+          )}
+        </div>
+        {testResult && (
+          <div className={testResult.ok ? "notice" : "error"} style={{ marginTop: 10 }}>
+            {testResult.ok
+              ? `✓ 连接成功${testResult.model ? `（模型: ${testResult.model}）` : ""}${testResult.reply ? ` · 回复: ${testResult.reply}` : ""}`
+              : `✗ ${testResult.error}`}
+          </div>
+        )}
       </div>
 
       <div className="card">
@@ -114,7 +202,8 @@ export default function Config() {
       </div>
 
       <div className="notice">
-        注意：live provider 适配器尚未接线（骨架）。设为非 offline 后重启，首次模型调用会抛 NotImplementedError——这是预期行为，待接入真实 LLM 后即可。
+        需要 live 依赖：首次使用前请 <code>pip install -e ".[live]"</code>（装 httpx）。
+        配置写回后重启 taiyi 生效——治理与技能集只在启动时加载，运行时不热切换。
       </div>
     </div>
   );

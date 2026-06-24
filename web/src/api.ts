@@ -67,4 +67,6 @@ export const api = {
   getConfig: () => req("/v1/config"),
   putConfig: (updates: Record<string, any>) =>
     req("/v1/config", { method: "PUT", body: JSON.stringify(updates) }),
+  testConfig: (cfg: Record<string, any>) =>
+    req("/v1/config/test", { method: "POST", body: JSON.stringify(cfg) }),
 };

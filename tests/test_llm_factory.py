@@ -1,16 +1,17 @@
 """Tests for the LLM provider seam (M4 live wiring point).
 
-The seam's contract: offline → None (gateway falls back to keyword planner);
-any live provider name → a provider object whose complete() raises
-NotImplementedError (it must refuse to fabricate output, never fake success).
+Contract after the adapter was wired:
+* offline → None (gateway falls back to keyword planner).
+* openai_compat / ollama → a live OpenAICompatProvider, but only when base_url is
+  set; a live provider with no endpoint is a config error (raises, never fakes).
+* an unknown provider name → raises (refuse rather than fabricate).
 """
 from __future__ import annotations
 
 import pytest
 
 from taiyi.config import TaiyiConfig
-from taiyi.llm import make_provider
-from taiyi.llm.base import DEFAULT_LIVE_MODEL, LLMMessage
+from taiyi.llm import OpenAICompatProvider, make_provider
 
 
 def _cfg(**kw) -> TaiyiConfig:
@@ -19,38 +20,39 @@ def _cfg(**kw) -> TaiyiConfig:
 
 
 def test_offline_returns_none():
-    cfg = _cfg(provider="offline")
-    assert make_provider(cfg) is None
+    assert make_provider(_cfg(provider="offline")) is None
 
 
 def test_default_config_is_offline():
-    # A fresh config with no explicit provider must be offline.
     assert make_provider(TaiyiConfig()) is None
 
 
-@pytest.mark.parametrize("name", ["anthropic", "openai_compat", "ollama"])
-def test_live_slot_raises_not_implemented(name):
-    cfg = _cfg(provider=name, api_key_env="DUMMY_KEY", model=None)
+@pytest.mark.parametrize("name", ["openai_compat", "ollama"])
+def test_live_provider_wires_with_base_url(name):
+    cfg = _cfg(provider=name, base_url="http://localhost:11434/v1", model="qwen2.5:7b")
     prov = make_provider(cfg)
-    assert prov is not None
+    assert isinstance(prov, OpenAICompatProvider)
     assert prov.name == f"live:{name}"
-    # The slot must refuse to fabricate a response — faking success would break
-    # the governance invariant (a no-op model still driving fake tool calls).
-    with pytest.raises(NotImplementedError):
-        prov.complete([LLMMessage("user", "hi")])
+    assert prov._base_url == "http://localhost:11434/v1"
+    assert prov._model == "qwen2.5:7b"
 
 
-def test_live_slot_uses_default_model_when_none():
-    cfg = _cfg(provider="anthropic", model=None)
+def test_live_provider_without_base_url_is_config_error():
+    # No endpoint configured → raise clearly, never fabricate a working provider.
+    cfg = _cfg(provider="ollama")
+    with pytest.raises(ValueError, match="base_url"):
+        make_provider(cfg)
+
+
+def test_unknown_provider_raises():
+    cfg = _cfg(provider="anthropic", base_url="http://x/v1")
+    with pytest.raises(ValueError, match="unknown provider"):
+        make_provider(cfg)
+
+
+def test_live_provider_resolves_default_model_when_none():
+    from taiyi.llm.base import DEFAULT_LIVE_MODEL
+
+    cfg = _cfg(provider="ollama", base_url="http://localhost:11434/v1", model=None)
     prov = make_provider(cfg)
-    assert prov is not None
-    # The slot stores the default model name; complete() still raises, but the
-    # wiring point is proven to resolve a None model to the documented default.
     assert prov._model == DEFAULT_LIVE_MODEL
-
-
-def test_live_slot_respects_explicit_model():
-    cfg = _cfg(provider="ollama", model="llama3:8b")
-    prov = make_provider(cfg)
-    assert prov is not None
-    assert prov._model == "llama3:8b"

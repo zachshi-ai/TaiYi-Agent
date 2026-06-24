@@ -36,15 +36,17 @@ class TaiyiConfig:
     # --- runtime shape -------------------------------------------------------
     mode: str = "agent"                  # agent (ReAct, default) | workflow (plan-once)
     # --- LLM provider seam (opt-in; offline until a live adapter is wired) ---
-    provider: str = "offline"            # offline | anthropic | openai_compat | ollama
+    provider: str = "offline"            # offline | openai_compat | ollama
     model: str | None = None             # model id; None → provider default
-    api_key_env: str | None = None       # name of env var holding the key (never the key itself)
+    base_url: str | None = None          # OpenAI-compatible endpoint, e.g. http://localhost:11434/v1
+    api_key: str | None = None           # the key value itself (empty for local Ollama)
+    api_key_env: str | None = None       # alt: name of env var holding the key (overrides api_key)
 
 
 # Fields the web UI is allowed to write back via PUT /v1/config. Anything else
 # is read-only from the UI to avoid clobbering deployment-specific settings.
-WRITABLE_FIELDS = {"provider", "model", "mode", "api_key_env", "max_rounds",
-                   "executor", "host", "port", "log_level"}
+WRITABLE_FIELDS = {"provider", "model", "mode", "base_url", "api_key", "api_key_env",
+                   "max_rounds", "executor", "host", "port", "log_level"}
 
 
 def load_config(path: str | Path | None = None) -> TaiyiConfig:
@@ -117,6 +119,10 @@ def _apply_env(cfg: TaiyiConfig) -> TaiyiConfig:
         over["model"] = env["TAIYI_MODEL"]
     if env.get("TAIYI_API_KEY_ENV"):
         over["api_key_env"] = env["TAIYI_API_KEY_ENV"]
+    if env.get("TAIYI_BASE_URL"):
+        over["base_url"] = env["TAIYI_BASE_URL"]
+    if env.get("TAIYI_API_KEY"):
+        over["api_key"] = env["TAIYI_API_KEY"]
     if env.get("TAIYI_STATIC_DIR"):
         over["static_dir"] = env["TAIYI_STATIC_DIR"]
     return replace(cfg, **over)

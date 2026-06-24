@@ -1,98 +1,220 @@
-"""Live LLM provider seam — the opt-in wiring point for a real model.
+"""Live LLM provider — the OpenAI-compatible adapter, plus the wiring factory.
 
-This module is **intentionally a skeleton, not a working client.** It exists so
-that the rest of the system (config, gateway, AgentRuntime) can be built against
-a stable provider-construction seam today, and a live adapter can be dropped in
-later *without* touching any caller.
+This is a *real* adapter, not a skeleton: ``OpenAICompatProvider.complete()``
+issues an HTTP POST to any OpenAI-compatible ``/chat/completions`` endpoint and
+parses the response. One adapter covers Ollama (``http://localhost:11434/v1``,
+no key), DeepSeek, 智谱, Moonshot, OpenAI, SiliconFlow, and any other service
+that speaks the OpenAI chat protocol — the only difference between them is the
+``base_url``/``model``/``api_key`` you configure.
 
-Design contract (do not violate):
-
-* ``make_provider(cfg)`` returns an ``LLMProvider`` for a live ``provider``, or
-  ``None`` when the deployment is offline. ``None`` is the signal to the gateway
-  to fall back to the keyword planner + offline providers.
-* Each live adapter raises ``NotImplementedError`` until it is genuinely wired —
-  it must *never* pretend to work or return a fabricated response. A provider
-  that fakes success is worse than one that refuses to start, because it would
-  break the governance invariant (a model that appears to think while actually
-  doing nothing still drives the permit flow with fake tool calls).
-* API keys are read by the adapter from the environment variable named by
-  ``cfg.api_key_env`` — the config never holds a key value, only the *name* of
-  the env var. This keeps secrets out of config files and git history.
-
-To wire a real provider later: implement the matching ``Provider`` class's
-``complete()`` (using ``anthropic``/``openai``/``httpx``/etc.), add the SDK to
-``pyproject.toml``'s ``[live]`` optional-dependency group, and remove the
-``NotImplementedError``. Nothing else changes.
+Design notes:
+* Uses ``httpx`` (pure Python) rather than the ``openai`` SDK, so there is no
+  heavyweight dependency and the request/response shape is fully under our
+  control. httpx is an opt-in ``[live]`` extra.
+* The API key lives in the config file (gitignored) — never in git, never echoed
+  back by the config endpoint. An empty key (local Ollama) simply omits the
+  Authorization header.
+* Tool calls: OpenAI function-calling is spotty across providers (Ollama models
+  vary). So the adapter prefers the native ``tool_calls`` field when present, and
+  otherwise parses a ``tool: <name> <args...>`` line from the model's text. The
+  AgentRuntime's ReAct loop works with either — it just reads ``tool_calls``.
+* Failures surface as exceptions the runtime catches into a FAILED task — the
+  adapter never fabricates a response (that would break the governance invariant).
 """
 from __future__ import annotations
 
-import os
-from typing import Protocol
+import json
+import re
+from typing import Any
 
-from taiyi.llm.base import DEFAULT_LIVE_MODEL, LLMMessage, LLMProvider, LLMResponse
+from taiyi.llm.base import DEFAULT_LIVE_MODEL, LLMMessage, LLMProvider, LLMResponse, ToolCall
+
+# Matches the tool-call convention the system prompt teaches the model to emit:
+#   tool: shell:git status
+#   tool: notify:feishu --msg hello world
+_TOOL_LINE = re.compile(r"^\s*tool:\s*(\S+)(?:\s+(.*))?$", re.MULTILINE)
 
 
-def _key_from_env(cfg) -> str | None:
-    """Resolve the API key from the env var named in the config, if any.
+def _messages_to_openai(messages: list[LLMMessage]) -> list[dict]:
+    """taiyi LLMMessage -> OpenAI {role, content}.
 
-    The config stores the *name* of the env var (e.g. ``ANTHROPIC_API_KEY``),
-    never the key itself. Returns None when no env var is named or it is unset.
+    taiyi uses a ``system`` role for both the system prompt and the scenario
+    injection; OpenAI accepts multiple system messages, so we pass them through.
     """
-    name = getattr(cfg, "api_key_env", None)
-    if not name:
-        return None
-    return os.environ.get(name)
+    return [{"role": m.role, "content": m.content} for m in messages]
 
 
-class _NotWiredProvider(LLMProvider):
-    """A provider slot that has been selected but not yet implemented.
+def _parse_tool_calls_from_text(text: str) -> list[ToolCall]:
+    """Fall back to text parsing when the provider returns no native tool_calls.
 
-    It raises on ``complete()`` so a misconfigured live deployment fails loudly
-    at the first model call rather than silently emitting fake responses.
+    The system prompt asks the model to emit ``tool: <name> <args...>`` on its own
+    line when it wants to call a tool. We split args on whitespace (taiyi tool
+    args are string tokens). Only the first such line is honored — the ReAct loop
+    calls one tool per turn.
     """
+    m = _TOOL_LINE.search(text)
+    if not m:
+        return []
+    tool = m.group(1)
+    rest = (m.group(2) or "").strip()
+    args = rest.split() if rest else []
+    return [ToolCall(tool=tool, args=args)]
 
-    def __init__(self, provider_name: str, model: str):
-        self.name = f"live:{provider_name}"
-        self._provider_name = provider_name
-        self._model = model
+
+class OpenAICompatProvider(LLMProvider):
+    """Calls any OpenAI-compatible /chat/completions endpoint via httpx."""
+
+    def __init__(
+        self,
+        base_url: str,
+        model: str | None = None,
+        api_key: str | None = None,
+        *,
+        name: str = "openai_compat",
+        timeout: float = 60.0,
+        transport: Any = None,  # injected for tests (httpx MockTransport)
+    ):
+        self.name = name
+        self._base_url = base_url.rstrip("/")
+        self._model = model or DEFAULT_LIVE_MODEL
+        self._api_key = api_key or None
+        self._timeout = timeout
+        self._transport = transport  # None in production → real network
 
     def complete(
         self, messages: list[LLMMessage], *, tools: list[str] | None = None
     ) -> LLMResponse:
-        raise NotImplementedError(
-            f"live provider {self._provider_name!r} is not wired yet. "
-            f"Set provider=offline, or implement {self._provider_name.title()}Provider.complete() "
-            f"(and add its SDK to the [live] optional-dependency group in pyproject.toml)."
-        )
+        import httpx  # local import: offline deployments never need httpx
+
+        url = f"{self._base_url}/chat/completions"
+        headers = {"Content-Type": "application/json"}
+        if self._api_key:
+            headers["Authorization"] = f"Bearer {self._api_key}"
+        body: dict = {
+            "model": self._model,
+            "messages": _messages_to_openai(messages),
+            "temperature": 0,
+        }
+        # When the caller lists tool names, describe them in the prompt so models
+        # without native function-calling can still emit a tool line. (Native
+        # tool-calling is attempted only if the provider supports it; we don't
+        # send a `tools` schema to keep this portable across Ollama models.)
+        if tools:
+            body["messages"] = _with_tool_hint(body["messages"], tools)
+
+        try:
+            with httpx.Client(transport=self._transport, timeout=self._timeout) as client:
+                resp = client.post(url, json=body, headers=headers)
+                resp.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            raise RuntimeError(f"LLM endpoint {url} returned {e.response.status_code}: "
+                               f"{e.response.text[:300]}") from e
+        except httpx.HTTPError as e:
+            raise RuntimeError(f"LLM request to {url} failed: {e}") from e
+
+        data = resp.json()
+        return self._to_response(data, self._model)
+
+    @staticmethod
+    def _to_response(data: dict, model: str) -> LLMResponse:
+        choice = (data.get("choices") or [{}])[0]
+        msg = choice.get("message", {}) or {}
+        text = msg.get("content") or ""
+        tool_calls: list[ToolCall] = []
+
+        # Prefer native tool_calls when the provider returns them.
+        for tc in msg.get("tool_calls") or []:
+            fn = tc.get("function", {}) or {}
+            name = fn.get("name")
+            if not name:
+                continue
+            raw_args = fn.get("arguments", "")
+            args = _coerce_args(raw_args)
+            tool_calls.append(ToolCall(tool=name, args=args))
+
+        # Fall back to parsing a `tool:` line from the text.
+        if not tool_calls and text:
+            tool_calls = _parse_tool_calls_from_text(text)
+
+        return LLMResponse(text=text, tool_calls=tool_calls, model=model)
+
+
+def _coerce_args(raw: Any) -> list[str]:
+    """Normalise OpenAI function arguments (a JSON string) to taiyi's list[str]."""
+    if isinstance(raw, list):
+        return [str(a) for a in raw]
+    if isinstance(raw, str) and raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(a) for a in parsed]
+            if isinstance(parsed, dict):
+                # A single-object arg: flatten values to positional tokens.
+                return [str(v) for v in parsed.values()]
+            return [str(parsed)]
+        except json.JSONDecodeError:
+            return raw.split()
+    return []
+
+
+def _with_tool_hint(messages: list[dict], tools: list[str]) -> list[dict]:
+    """Append a system note describing available tools and the call syntax.
+
+    Kept as a separate message so the model's own system/scenario context is
+    untouched. This is what makes the adapter portable: a model that supports
+    native function-calling ignores the hint and returns tool_calls; one that
+    doesn't follows the hint and emits a `tool:` line we parse.
+    """
+    hint = (
+        "When you want to call a tool, reply with a single line in the form "
+        "`tool: <name> <arg1> <arg2> ...` and nothing else. Available tools: "
+        + ", ".join(tools)
+        + ". If you have the answer (no tool needed), reply with the answer text."
+    )
+    return messages + [{"role": "system", "content": hint}]
 
 
 def make_provider(cfg) -> LLMProvider | None:
-    """Construct the LLM provider selected by ``cfg.provider``.
+    """Construct the LLM provider selected by ``cfg``.
 
     Returns ``None`` for ``offline`` (the default) — the gateway then falls back
     to the keyword planner and offline providers, so the whole agent loop still
     runs with zero tokens and zero network.
 
-    For a live provider name, this returns a provider object whose ``complete()``
-    raises ``NotImplementedError`` until the adapter is genuinely implemented.
-    This is the honest "leave a seam, do not fake it" stance: the wiring point
-    exists, but it refuses to fabricate model output.
+    For ``openai_compat`` / ``ollama`` it returns a live ``OpenAICompatProvider``
+    wired to ``cfg.base_url`` / ``cfg.model`` / ``cfg.api_key`` (or the env var
+    named by ``cfg.api_key_env``). A live provider with no base_url is a
+    configuration error and raises clearly rather than silently failing.
     """
     provider = (getattr(cfg, "provider", "offline") or "offline").lower()
     if provider == "offline":
         return None
 
-    model = getattr(cfg, "model", None) or DEFAULT_LIVE_MODEL
-    # api_key_env is read by the adapter when it is implemented; resolving it
-    # here would be premature, but we surface a clear error if a live provider
-    # is selected with no key source configured.
-    if getattr(cfg, "api_key_env", None) is None:
-        # Still construct the slot — the NotImplementedError on complete() will
-        # carry the actionable message. We do not hard-fail at construction so
-        # that tests can assert the seam shape without setting up keys.
-        pass
+    if provider in ("openai_compat", "ollama"):
+        base_url = getattr(cfg, "base_url", None)
+        if not base_url:
+            raise ValueError(
+                f"provider={provider!r} requires base_url "
+                f"(e.g. http://localhost:11434/v1 for Ollama). Set it in taiyi.yaml."
+            )
+        model = getattr(cfg, "model", None)
+        # api_key_env (a variable name) takes precedence over api_key (a value),
+        # so a deployment can avoid storing the key in the file.
+        import os
 
-    return _NotWiredProvider(provider, model)
+        key = getattr(cfg, "api_key", None)
+        env_name = getattr(cfg, "api_key_env", None)
+        if env_name:
+            key = os.environ.get(env_name) or key
+        return OpenAICompatProvider(
+            base_url=base_url, model=model, api_key=key,
+            name=f"live:{provider}",
+        )
+
+    # Unknown provider — refuse rather than fabricate.
+    raise ValueError(
+        f"unknown provider {provider!r}; use offline | openai_compat | ollama"
+    )
 
 
-__all__ = ["make_provider"]
+__all__ = ["OpenAICompatProvider", "make_provider"]

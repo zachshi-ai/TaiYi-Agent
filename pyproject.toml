@@ -22,10 +22,10 @@ taiyi = "taiyi.cli:main"
 dev = [
     "pytest>=7.4",
 ]
-# Live LLM provider adapters. Empty for now — populate when a real adapter is
-# wired (e.g. live = ["anthropic>=0.40"] or live = ["openai>=1.40", "httpx"]).
-# Until then the offline providers drive the whole loop with zero tokens.
-live = []
+# Live LLM provider adapter. Adds httpx for the OpenAI-compatible provider
+# (Ollama / DeepSeek / 智谱 / Moonshot / OpenAI / …). The core stays zero-dependency
+# (PyYAML only); this is opt-in via `pip install -e ".[live]"`.
+live = ["httpx>=0.27"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
