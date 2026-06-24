@@ -203,3 +203,41 @@ class IterationEngine:
             "regression_cases": len(self.regression),
             "pending_reviews": len(self.list_pending()),
         }
+
+    # --- trajectory browsing (for the web UI) --------------------------------
+    def list_trajectories(
+        self, *, limit: int = 50, offset: int = 0, state: str | None = None
+    ) -> list[dict]:
+        """Historical task records (newest first), optionally filtered by state.
+
+        Wraps the in-memory mirror of the SQLite trajectory store. Each record
+        carries its signal-rich step trail (tool/args/verdict/output), so the web
+        UI can render a task timeline without a second query.
+        """
+        recs = self.store.records
+        if state:
+            recs = [r for r in recs if r.state == state]
+        sliced = list(reversed(recs))[offset:offset + limit]
+        return [self._record_to_dict(r) for r in sliced]
+
+    def get_trajectory(self, task_id: str) -> dict | None:
+        """A single task record by id, with full step detail, or None."""
+        for r in self.store.records:
+            if r.task_id == task_id:
+                return self._record_to_dict(r)
+        return None
+
+    @staticmethod
+    def _record_to_dict(rec: TaskRecord) -> dict:
+        return {
+            "task_id": rec.task_id,
+            "scenario": rec.scenario,
+            "skill": rec.skill,
+            "state": rec.state,
+            "prompt": rec.prompt,
+            "tools": list(rec.tools),
+            "fail_reason": rec.fail_reason,
+            "steps": [s.to_dict() for s in rec.steps],
+            "value_contribution": rec.value_contribution,
+            "ts": rec.ts,
+        }

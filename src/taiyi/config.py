@@ -29,12 +29,21 @@ class TaiyiConfig:
     scenarios_dirs: tuple[str, ...] = ()
     skills_dirs: tuple[str, ...] = ()
     log_level: str = "info"
+    # --- web UI ----------------------------------------------------------------
+    static_dir: str | None = None       # directory of built web assets (web/dist); None disables UI
+    config_path: str | None = None      # path the config was loaded from (for write-back via /v1/config)
     # --- runtime shape -------------------------------------------------------
     mode: str = "agent"                  # agent (ReAct, default) | workflow (plan-once)
     # --- LLM provider seam (opt-in; offline until a live adapter is wired) ---
     provider: str = "offline"            # offline | anthropic | openai_compat | ollama
     model: str | None = None             # model id; None → provider default
     api_key_env: str | None = None       # name of env var holding the key (never the key itself)
+
+
+# Fields the web UI is allowed to write back via PUT /v1/config. Anything else
+# is read-only from the UI to avoid clobbering deployment-specific settings.
+WRITABLE_FIELDS = {"provider", "model", "mode", "api_key_env", "max_rounds",
+                   "executor", "host", "port", "log_level"}
 
 
 def load_config(path: str | Path | None = None) -> TaiyiConfig:
@@ -52,7 +61,32 @@ def load_config(path: str | Path | None = None) -> TaiyiConfig:
             continue
         kwargs[k] = tuple(v) if k in _LIST_FIELDS and v is not None else v
 
-    return _apply_env(TaiyiConfig(**kwargs))
+    cfg = _apply_env(TaiyiConfig(**kwargs))
+    if path:
+        cfg.config_path = str(path)
+    return cfg
+
+
+def save_config(path: str | Path, updates: dict) -> None:
+    """Merge ``updates`` into the YAML config at ``path`` and write it back.
+
+    Only ``WRITABLE_FIELDS`` are applied; unknown keys are ignored. Unknown keys
+    and the file's own comments are preserved by round-tripping the mapping (yaml
+    round-trip drops comments, but keeps unknown keys). The live runtime is NOT
+    affected — a restart is required to load the new file (by design: governance
+    and skill sets load once, read-only).
+    """
+    p = Path(path)
+    data: dict = {}
+    if p.is_file():
+        loaded = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+        if isinstance(loaded, dict):
+            data = loaded
+    for k, v in updates.items():
+        if k in WRITABLE_FIELDS and v is not None:
+            data[k] = list(v) if isinstance(v, tuple) else v
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
 def _apply_env(cfg: TaiyiConfig) -> TaiyiConfig:
@@ -80,4 +114,6 @@ def _apply_env(cfg: TaiyiConfig) -> TaiyiConfig:
         over["model"] = env["TAIYI_MODEL"]
     if env.get("TAIYI_API_KEY_ENV"):
         over["api_key_env"] = env["TAIYI_API_KEY_ENV"]
+    if env.get("TAIYI_STATIC_DIR"):
+        over["static_dir"] = env["TAIYI_STATIC_DIR"]
     return replace(cfg, **over)

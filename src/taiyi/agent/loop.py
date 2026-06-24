@@ -50,6 +50,7 @@ class AgentRuntime:
         iteration=None,
         approvals: ApprovalStore | None = None,
         max_steps: int = 8,
+        history_limit: int = 20,
         system_prompt: str | None = None,
         tool_names: list[str] | None = None,
     ):
@@ -64,6 +65,7 @@ class AgentRuntime:
         self.iteration = iteration
         self.approvals = approvals
         self.max_steps = max(1, max_steps)
+        self.history_limit = max(0, history_limit)
         self.system = system_prompt or DEFAULT_SYSTEM
         self.tool_names = tool_names
 
@@ -79,10 +81,6 @@ class AgentRuntime:
         )
         start = time.time()
         self.audit.append("task_start", task_id=ctx.task_id, prompt=prompt, scenario=scenario, mode="agent")
-        if self.memory is not None:
-            self.memory.add_message(session_id, "user", prompt)
-        if self.value_stream is not None:
-            ctx.goal = self.value_stream.anchor(prompt, scenario)
 
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         if self.obs is not None:
@@ -91,8 +89,21 @@ class AgentRuntime:
         messages = [
             LLMMessage("system", self.system),
             LLMMessage("system", f"scenario: {scenario}"),
-            LLMMessage("user", prompt),
         ]
+        # Multi-turn context: replay recent prior turns for this session BEFORE
+        # recording the current prompt, so the current prompt is not double-counted.
+        # Only user/assistant turns are replayed — tool observations stay inside
+        # their own task's ReAct loop and would only muddy a fresh task's context.
+        if self.memory is not None and self.history_limit:
+            for m in self.memory.get_messages(session_id, limit=self.history_limit):
+                if m.get("role") in ("user", "assistant") and m.get("content"):
+                    messages.append(LLMMessage(m["role"], m["content"]))
+        # Now record the current user turn and append it to the model's context.
+        if self.memory is not None:
+            self.memory.add_message(session_id, "user", prompt)
+        messages.append(LLMMessage("user", prompt))
+        if self.value_stream is not None:
+            ctx.goal = self.value_stream.anchor(prompt, scenario)
         try:
             with self._span(trace, "agent_task"):
                 self._loop(ctx, messages, trace)
@@ -302,6 +313,10 @@ class AgentRuntime:
             )
 
     def _finish(self, ctx: TaskContext, start: float) -> None:
+        # Record the assistant's final answer into the session so the next turn
+        # in this session can replay it as conversation history (multi-turn).
+        if self.memory is not None and ctx.final_output and ctx.state is TaskState.COMPLETED:
+            self.memory.add_message(ctx.session_id, "assistant", ctx.final_output)
         if self.iteration is not None:
             self.iteration.record(ctx)
         if self.obs is None:

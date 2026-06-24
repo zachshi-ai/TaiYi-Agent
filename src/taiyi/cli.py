@@ -38,16 +38,33 @@ def _run(args) -> int:
 
 
 def _serve(args) -> int:
+    from pathlib import Path
+
     if getattr(args, "config", None):
         cfg = load_config(args.config)
-        app = GatewayApp(build_gateway_from_config(cfg), auth=AuthPolicy(tuple(cfg.auth_tokens)))
-        host, port = cfg.host, cfg.port
+        gw = build_gateway_from_config(cfg)
+        app = GatewayApp(gw, auth=AuthPolicy(tuple(cfg.auth_tokens)))
+        app.config_path = cfg.config_path
+        # Command-line flags override the config file's host/port/static_dir so a
+        # user can run `taiyi serve --config x.yaml --port 9000` without editing
+        # the file. host defaults to the config's value if no flag is given.
+        host = args.host if args.host is not None else cfg.host
+        port = args.port if args.port is not None else cfg.port
+        static_dir = args.static_dir or cfg.static_dir
     else:
         app = GatewayApp(build_gateway(base_dir=args.base_dir), auth=AuthPolicy(tuple(args.token or ())))
-        host, port = args.host, args.port
-    server = make_server(app, host=host, port=port)
+        host = args.host or "127.0.0.1"
+        port = args.port or 8080
+        static_dir = args.static_dir
+    # Default to the bundled web UI build if nothing specified and it exists.
+    if not static_dir:
+        bundled = Path(__file__).resolve().parents[2] / "web" / "dist"
+        if bundled.is_dir():
+            static_dir = str(bundled)
+    server = make_server(app, host=host, port=port, static_dir=static_dir)
     where = f"http://{host}:{port}"
-    print(f"taiyi gateway listening on {where}  (auth {'on' if app.auth.enabled else 'off'})")
+    ui = f"  web UI: {where}/" if static_dir else ""
+    print(f"taiyi gateway listening on {where}{ui}  (auth {'on' if app.auth.enabled else 'off'})")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -118,11 +135,12 @@ def main(argv=None) -> int:
     run.set_defaults(func=_run)
 
     serve = sub.add_parser("serve", help="start the HTTP gateway")
-    serve.add_argument("--host", default="127.0.0.1")
-    serve.add_argument("--port", type=int, default=8080)
+    serve.add_argument("--host", default=None, help="bind host (default: config or 127.0.0.1)")
+    serve.add_argument("--port", type=int, default=None, help="bind port (default: config or 8080)")
     serve.add_argument("--token", action="append", help="valid bearer token (repeatable)")
     serve.add_argument("--base-dir", default=None)
     serve.add_argument("--config", default=None, help="path to taiyi.yaml")
+    serve.add_argument("--static-dir", default=None, help="directory of built web assets (default: web/dist)")
     serve.set_defaults(func=_serve)
 
     mcp = sub.add_parser("mcp", help="run the MCP server over stdio")

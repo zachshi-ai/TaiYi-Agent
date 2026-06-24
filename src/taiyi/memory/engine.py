@@ -89,6 +89,18 @@ class MemoryEngine:
         self.conn.execute("DELETE FROM messages WHERE session_id=?", (session_id,))
         self.conn.commit()
 
+    def list_sessions(self) -> list[dict]:
+        """All known sessions with first/last message time and message count.
+
+        Surfaces what ``add_message`` has accumulated so the web UI can render a
+        session list. session_id is not a separate table; this aggregates it.
+        """
+        rows = self.conn.execute(
+            "SELECT session_id, MIN(ts) AS first_ts, MAX(ts) AS last_ts, COUNT(*) AS msg_count "
+            "FROM messages GROUP BY session_id ORDER BY last_ts DESC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
     # --- L2: skill index -----------------------------------------------------
     def register_skill(self, name: str, summary: str = "", tags: tuple[str, ...] = ()) -> None:
         self.conn.execute(
@@ -101,6 +113,16 @@ class MemoryEngine:
     def list_skills(self) -> list[str]:
         return [r["name"] for r in self.conn.execute("SELECT name FROM skills ORDER BY name")]
 
+    def list_skills_full(self) -> list[dict]:
+        """All skills with summary + tags in one query (for the web UI catalog)."""
+        rows = self.conn.execute("SELECT name, summary, tags FROM skills ORDER BY name")
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["tags"] = json.loads(d["tags"] or "[]")
+            out.append(d)
+        return out
+
     def get_skill(self, name: str) -> dict | None:
         r = self.conn.execute("SELECT name, summary, tags FROM skills WHERE name=?", (name,)).fetchone()
         if not r:
@@ -108,6 +130,39 @@ class MemoryEngine:
         d = dict(r)
         d["tags"] = json.loads(d["tags"] or "[]")
         return d
+
+    def list_memories(
+        self,
+        *,
+        tag: str | None = None,
+        source_task_id: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[dict]:
+        """Long-term memories, optionally filtered by tag / source task.
+
+        Exposes the importance/ts/tags columns that ``remember`` writes but that
+        the search methods drop. The web UI uses this for a browsable memory bank.
+        """
+        sql = "SELECT id, content, tags, source_task_id, importance, ts FROM memories"
+        clauses, params = [], []
+        if tag:
+            clauses.append("tags LIKE ?")
+            params.append(f'%"{tag}"%')
+        if source_task_id:
+            clauses.append("source_task_id = ?")
+            params.append(source_task_id)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY ts DESC LIMIT ? OFFSET ?"
+        params += [limit, offset]
+        rows = self.conn.execute(sql, params).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["tags"] = json.loads(d["tags"] or "[]")
+            out.append(d)
+        return out
 
     # --- L5 write (also indexed by L3) ---------------------------------------
     def remember(

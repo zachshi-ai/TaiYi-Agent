@@ -4,6 +4,9 @@ __pycache__/
 .eggs/
 build/
 dist/
+# ...but keep the built web UI (committed for zero-build deployments)
+!web/dist/
+!web/dist/**
 .pytest_cache/
 .venv/
 venv/
@@ -11,3 +14,9 @@ venv/
 *.jsonl
 /tmp/
 .DS_Store
+
+# Local runtime state (created by taiyi serve --base-dir state)
+state/
+
+# Web build tooling (regenerated from package.json; not committed)
+web/node_modules/

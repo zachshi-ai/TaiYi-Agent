@@ -103,3 +103,22 @@ class MetricsRegistry:
         for metric in self._metrics.values():
             lines.extend(metric.render())
         return "\n".join(lines) + "\n"
+
+    def as_json(self) -> dict:
+        """A JSON snapshot for the web UI (no Prometheus parser needed client-side)."""
+        out: dict = {}
+        for name, metric in self._metrics.items():
+            if isinstance(metric, Counter):
+                out[name] = {"type": "counter", "help": metric.help,
+                             "series": [{"labels": dict(k), "value": v}
+                                        for k, v in sorted(metric.values.items())]}
+            elif isinstance(metric, Gauge):
+                out[name] = {"type": "gauge", "help": metric.help,
+                             "series": [{"labels": dict(k), "value": v}
+                                        for k, v in sorted(metric.values.items())]}
+            elif isinstance(metric, Histogram):
+                out[name] = {"type": "histogram", "help": metric.help,
+                             "count": metric.count, "sum": metric.sum,
+                             "buckets": list(metric.buckets),
+                             "bucket_counts": list(metric.bucket_counts)}
+        return out

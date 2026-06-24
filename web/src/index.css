@@ -1,0 +1,246 @@
+/* Design tokens reused from assets/visual-pages for brand consistency. */
+:root {
+  --primary: #2f6f5e;
+  --primary-dark: #245348;
+  --accent: #c97b3f;
+  --bg: #f7f5f0;
+  --surface: #ffffff;
+  --surface-alt: #f0ede5;
+  --text: #1f2a26;
+  --text-muted: #6b7a74;
+  --border: #e0dbd0;
+  --danger: #b04a3f;
+  --warn: #c97b3f;
+  --ok: #2f6f5e;
+  --radius: 10px;
+  --shadow: 0 1px 3px rgba(31, 42, 38, 0.08);
+  font-family: "Outfit", system-ui, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.app {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  min-height: 100vh;
+}
+
+.sidebar {
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  padding: 20px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.brand {
+  font-family: "DM Serif Display", serif;
+  font-size: 22px;
+  color: var(--primary);
+  margin: 0 0 4px 8px;
+  line-height: 1.1;
+}
+.brand small {
+  display: block;
+  font-family: "Outfit", sans-serif;
+  font-size: 11px;
+  color: var(--text-muted);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.navlink {
+  display: block;
+  padding: 9px 12px;
+  border-radius: 8px;
+  color: var(--text);
+  text-decoration: none;
+  font-weight: 500;
+}
+.navlink:hover {
+  background: var(--surface-alt);
+}
+.navlink.active {
+  background: var(--primary);
+  color: white;
+}
+
+.main {
+  padding: 28px 36px;
+  overflow-y: auto;
+}
+
+h1 {
+  font-family: "DM Serif Display", serif;
+  font-weight: 400;
+  font-size: 26px;
+  margin: 0 0 4px;
+}
+h2 {
+  font-size: 16px;
+  margin: 24px 0 10px;
+  color: var(--primary-dark);
+}
+.subtitle {
+  color: var(--text-muted);
+  margin: 0 0 20px;
+  font-size: 13px;
+}
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  box-shadow: var(--shadow);
+  margin-bottom: 14px;
+}
+
+.row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+input[type="text"],
+input[type="password"],
+select,
+textarea {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--text);
+}
+textarea {
+  width: 100%;
+  min-height: 70px;
+  resize: vertical;
+}
+
+button {
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 500;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 7px;
+  background: var(--primary);
+  color: white;
+  cursor: pointer;
+}
+button:hover {
+  background: var(--primary-dark);
+}
+button.secondary {
+  background: var(--surface-alt);
+  color: var(--text);
+}
+button.danger {
+  background: var(--danger);
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.badge {
+  display: inline-block;
+  font-size: 11px;
+  font-family: "JetBrains Mono", monospace;
+  padding: 2px 8px;
+  border-radius: 20px;
+  background: var(--surface-alt);
+  color: var(--text-muted);
+}
+.badge.ok { background: #e3f0ec; color: var(--ok); }
+.badge.warn { background: #fbeee0; color: var(--warn); }
+.badge.danger { background: #f6e3e0; color: var(--danger); }
+
+.mono {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+th, td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+th {
+  color: var(--text-muted);
+  font-weight: 500;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.msg {
+  margin-bottom: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  max-width: 80%;
+}
+.msg.user {
+  background: var(--primary);
+  color: white;
+  margin-left: auto;
+}
+.msg.assistant {
+  background: var(--surface);
+  border: 1px solid var(--border);
+}
+.msg .role {
+  font-size: 11px;
+  opacity: 0.7;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 3px;
+}
+
+.steps {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 12px;
+  background: var(--surface-alt);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-top: 10px;
+}
+.step-line {
+  padding: 3px 0;
+}
+.step-line .verdict {
+  margin-left: 8px;
+}
+
+.muted { color: var(--text-muted); }
+.error { color: var(--danger); }
+.right { margin-left: auto; }
+.gap { gap: 8px; }
+.notice {
+  background: #fbeee0;
+  border: 1px solid var(--accent);
+  color: var(--warn);
+  padding: 10px 14px;
+  border-radius: 8px;
+  font-size: 13px;
+}
