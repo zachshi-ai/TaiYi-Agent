@@ -35,6 +35,25 @@ DEFAULT_SYSTEM = (
 )
 
 
+def _looks_like_narration(text: str) -> bool:
+    """Heuristic: does this text read like the model *narrating* what it will do
+    rather than delivering a final answer or a tool call?
+
+    Catches the common failure where a real model says "I'll run echo hello for
+    you" in prose instead of emitting `tool: shell:echo hello`. We nudge it back
+    to tool use rather than misreading the narration as completion.
+    """
+    if not text:
+        return False
+    low = text.lower()
+    narration_markers = (
+        "i'll ", "i will ", "let me ", "i'll run", "i'll check", "i'll call",
+        "i'm going to", "i am going to", "i can help", "i will help",
+        "sure, ", "of course", "let's ", "first, i'll",
+    )
+    return any(m in low for m in narration_markers) and "tool:" not in low
+
+
 class AgentRuntime:
     def __init__(
         self,
@@ -68,7 +87,13 @@ class AgentRuntime:
         self.committee = committee
         self.max_steps = max(1, max_steps)
         self.history_limit = max(0, history_limit)
-        self.system = system_prompt or DEFAULT_SYSTEM
+        # Build the system prompt the model actually sees. The default prompt
+        # alone is too vague for a real model — it must know the tool-call syntax
+        # AND the exact tool ids (with prefixes) governance/executor expect, or it
+        # will free-form answer and be misread as "done" (断裂点 1/3).
+        from taiyi.tools.registry import tool_hint_block
+        base_system = system_prompt or DEFAULT_SYSTEM
+        self.system = base_system + "\n\n" + tool_hint_block()
         self.tool_names = tool_names
 
     def run(
@@ -126,6 +151,17 @@ class AgentRuntime:
 
             # No tool call → the model believes it is done. Validate before accepting.
             if not resp.tool_calls:
+                # Guard against the model answering in prose before doing any work
+                # (a common failure: it narrates "I'll run X" instead of calling
+                # the tool). If nothing has executed yet and the text looks like a
+                # narration rather than a final answer, nudge it back to tool use
+                # instead of misreading it as complete (断裂点 3).
+                if not ctx.executed_steps and step == 1 and _looks_like_narration(resp.text):
+                    messages.append(LLMMessage("user",
+                        "You have not called any tool yet. To act, reply with a single "
+                        "`tool: <id> <args>` line. If the task needs no tool and is truly "
+                        "complete, reply with your final answer."))
+                    continue
                 ctx.final_output = resp.text or self._synthesize(ctx)
                 vr = self._validate(ctx)
                 if vr is None or vr.passed:
@@ -139,7 +175,13 @@ class AgentRuntime:
                 continue
 
             call = resp.tool_calls[0]
-            step_obj = PlanStep(tool=call.tool, args=list(call.args))
+            # Normalize the model's tool id to the canonical form the governance
+            # rules and executor match on (e.g. "git status" -> "shell:git status").
+            # Without this, a red-line rule keyed on "shell:git*" would miss a bare
+            # "git" call, silently bypassing governance (断裂点 2).
+            from taiyi.tools.registry import normalize_tool_name
+            normalized = normalize_tool_name(call.tool)
+            step_obj = PlanStep(tool=normalized, args=list(call.args))
             ctx.touch(TaskState.AWAITING_PERMIT)
             permit = self.scheduler.request_permit(
                 step_obj, ctx.scenario, user_id=ctx.user_id, task_id=ctx.task_id
@@ -199,15 +241,19 @@ class AgentRuntime:
                 return
 
             ctx.touch(TaskState.EXECUTING)
-            with self._span(trace, "act", tool=call.tool):
+            with self._span(trace, "act", tool=step_obj.tool):
                 result = self.executor.execute(step_obj)
             sr.executed = True
             sr.output = result.output
-            self.audit.append("step_executed", task_id=ctx.task_id, tool=call.tool, ok=result.ok)
-            messages.append(LLMMessage("assistant", f"tool_call: {call.tool} {call.args}"))
-            messages.append(LLMMessage("tool", result.output))
+            self.audit.append("step_executed", task_id=ctx.task_id, tool=step_obj.tool, ok=result.ok)
+            # Feed the observation back to the model. OpenAI/Ollama reject a bare
+            # `role: "tool"` message (it requires a tool_call_id we don't carry),
+            # so we replay it as a `user` turn — portable across every provider
+            # (断裂点 4).
+            messages.append(LLMMessage("assistant", f"tool_call: {step_obj.tool} {call.args}"))
+            messages.append(LLMMessage("user", f"[tool result] {step_obj.tool}\n{result.output}"))
             if not result.ok:
-                ctx.error = f"step failed: {call.tool}: {result.output}"
+                ctx.error = f"step failed: {step_obj.tool}: {result.output}"
                 ctx.touch(TaskState.FAILED)
                 self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
                 return

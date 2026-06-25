@@ -110,10 +110,28 @@ def test_make_provider_openai_compat_with_key():
     assert prov._base_url == "https://api.deepseek.com/v1"
 
 
-def test_make_provider_missing_base_url_raises():
+def test_make_provider_missing_base_url_degrades_to_offline():
+    # A live provider with no base_url must NOT crash the gateway — it degrades
+    # to offline (returns None) with a warning, so a bad LLM config never makes
+    # the agent unstartable.
     cfg = TaiyiConfig(provider="ollama")  # no base_url
-    with pytest.raises(ValueError, match="base_url"):
-        make_provider(cfg)
+    assert make_provider(cfg) is None
+
+
+def test_make_provider_missing_httpx_degrades(monkeypatch):
+    # Simulate httpx not installed → degrade to offline, not crash.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def fake_import(name, *a, **k):
+        if name == "httpx":
+            raise ImportError("no httpx")
+        return real_import(name, *a, **k)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+    cfg = TaiyiConfig(provider="ollama", base_url="http://localhost:11434/v1")
+    assert make_provider(cfg) is None
 
 
 def test_make_provider_api_key_env_overrides_value(monkeypatch):

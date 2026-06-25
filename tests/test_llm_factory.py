@@ -37,17 +37,17 @@ def test_live_provider_wires_with_base_url(name):
     assert prov._model == "qwen2.5:7b"
 
 
-def test_live_provider_without_base_url_is_config_error():
-    # No endpoint configured → raise clearly, never fabricate a working provider.
+def test_live_provider_without_base_url_degrades_to_offline():
+    # No endpoint configured → degrade to offline (None) with a warning, not a
+    # crash. A bad LLM config must never make the agent unstartable.
     cfg = _cfg(provider="ollama")
-    with pytest.raises(ValueError, match="base_url"):
-        make_provider(cfg)
+    assert make_provider(cfg) is None
 
 
-def test_unknown_provider_raises():
+def test_unknown_provider_degrades_to_offline():
     cfg = _cfg(provider="anthropic", base_url="http://x/v1")
-    with pytest.raises(ValueError, match="unknown provider"):
-        make_provider(cfg)
+    # Unknown provider name → degrade to offline with a warning, not a crash.
+    assert make_provider(cfg) is None
 
 
 def test_live_provider_resolves_default_model_when_none():

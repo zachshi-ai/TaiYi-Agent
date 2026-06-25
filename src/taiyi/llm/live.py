@@ -183,8 +183,13 @@ def make_provider(cfg) -> LLMProvider | None:
 
     For ``openai_compat`` / ``ollama`` it returns a live ``OpenAICompatProvider``
     wired to ``cfg.base_url`` / ``cfg.model`` / ``cfg.api_key`` (or the env var
-    named by ``cfg.api_key_env``). A live provider with no base_url is a
-    configuration error and raises clearly rather than silently failing.
+    named by ``cfg.api_key_env``).
+
+    A live provider that is misconfigured (missing base_url) or whose transport
+    is unavailable (httpx not installed) DEGRADES to offline with a warning,
+    rather than crashing the gateway at startup — a bad LLM config should never
+    make the whole agent unstartable. The offline fallback still serves the web
+    UI and the governance/audit machinery.
     """
     provider = (getattr(cfg, "provider", "offline") or "offline").lower()
     if provider == "offline":
@@ -193,10 +198,18 @@ def make_provider(cfg) -> LLMProvider | None:
     if provider in ("openai_compat", "ollama"):
         base_url = getattr(cfg, "base_url", None)
         if not base_url:
-            raise ValueError(
-                f"provider={provider!r} requires base_url "
-                f"(e.g. http://localhost:11434/v1 for Ollama). Set it in taiyi.yaml."
-            )
+            _warn(f"provider={provider!r} but base_url is unset — degrading to offline. "
+                  f"Set base_url (e.g. http://localhost:11434/v1) in taiyi.yaml and restart.")
+            return None
+        # Verify the transport is importable NOW (not lazily at first call), so a
+        # missing [live] extra surfaces at startup with a clear message instead of
+        # a bare ModuleNotFoundError deep in a task.
+        try:
+            import httpx  # noqa: F401
+        except ImportError:
+            _warn(f"provider={provider!r} needs httpx — run `pip install -e '.[live]'` "
+                  f"and restart. Degrading to offline for now.")
+            return None
         model = getattr(cfg, "model", None)
         # api_key_env (a variable name) takes precedence over api_key (a value),
         # so a deployment can avoid storing the key in the file.
@@ -211,10 +224,16 @@ def make_provider(cfg) -> LLMProvider | None:
             name=f"live:{provider}",
         )
 
-    # Unknown provider — refuse rather than fabricate.
-    raise ValueError(
-        f"unknown provider {provider!r}; use offline | openai_compat | ollama"
-    )
+    # Unknown provider — degrade with a warning rather than crash.
+    _warn(f"unknown provider {provider!r} — use offline | openai_compat | ollama. "
+          f"Degrading to offline.")
+    return None
+
+
+def _warn(msg: str) -> None:
+    import sys
+
+    print(f"[taiyi] WARNING: {msg}", file=sys.stderr)
 
 
 __all__ = ["OpenAICompatProvider", "make_provider"]
