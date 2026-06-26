@@ -6,7 +6,7 @@
 > separated.** A module that both does the work and signs off on the work has an
 > incentive to skip the sign-off — Taiyi removes that incentive by design.
 >
-> 中文说明见 [`README_cn.md`](./README_cn.md)。
+> 中文说明见 [`README_zh.md`](./README_zh.md)。
 
 The project started from a real incident: an agent reported "task complete" while
 silently swapping the git commit author, recording the user's code under someone
@@ -14,19 +14,28 @@ else's name. Surface success ≠ actually correct. Taiyi's goal is to make the
 *implicit* acceptance criteria — authorship, compliance, safety — into code the
 model **cannot bypass**, rather than rules it is merely asked to remember.
 
-## Where things are
+## Where things are — organized as 学 · 研 · 产 · 用 (learning · research · production · practices)
 
 | Path | What |
 |---|---|
-| [`DEVELOPMENT_PLAN.md`](./DEVELOPMENT_PLAN.md) | **The build order** — modular roadmap, one module per "move forward" |
-| [`docs/00_Design_Document.md`](./docs/00_Design_Document.md) | Design philosophy + the five-layer architecture |
-| [`docs/01_Feasibility_Report.md`](./docs/01_Feasibility_Report.md) | Phase 0 demo evidence |
-| [`prd/00_PRD.md`](./prd/00_PRD.md) | Product requirements & version plan |
-| [`tech/00_Technical_Architecture.md`](./tech/00_Technical_Architecture.md) | Components, interfaces, deployment |
-| [`research/`](./research/) | The originating article + borrowed-pattern analysis |
-| `src/taiyi/` | **Production code** (built module by module) |
-| `demo/` | Phase 0 throwaway demo (mock everything; kept as reference) |
-| `examples/` | Runnable examples against the production package |
+| **Production (产)** — the Agent itself, stays at root | |
+| `src/taiyi/` | **Production code** — 17 modules, built module by module |
+| `tests/` | 208 tests, all green |
+| `web/` | Bundled React web UI (build output in `web/dist`) |
+| `deploy/` | Dockerfile + docker-compose |
+| `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
+| **Learning (学)** — why it's designed this way (`learning/`) | |
+| [`learning/docs/`](./learning/docs/) | Design philosophy + five-layer architecture |
+| [`learning/prd/`](./learning/prd/) | Product requirements & version plan |
+| [`learning/tech/`](./learning/tech/) | Components, interfaces, deployment |
+| [`learning/research/`](./learning/research/) | Borrowed-pattern analysis (how others do it) |
+| [`learning/assets/`](./learning/assets/) | Interactive architecture diagram |
+| [`learning/DEVELOPMENT_PLAN.md`](./learning/DEVELOPMENT_PLAN.md) | The modular build order |
+| **Research (研)** — turning theory into a path; test & demo (`research/`) | |
+| [`research/examples/`](./research/examples/) | Runnable examples against the production package |
+| [`research/demo/`](./research/demo/) | Phase 0 throwaway demo (mock everything; reference only) |
+| **Practices (用)** — production-baked best practices (`practices/`) | |
+| [`practices/`](./practices/) | Field-tested skills, prompts, ops notes (growing) |
 
 ## Current status
 

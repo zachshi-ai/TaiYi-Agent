@@ -13,7 +13,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "src"))
 
 from taiyi.core.audit import AuditLog  # noqa: E402
 from taiyi.governance import GovernanceEngine, LocalPermitClient  # noqa: E402
