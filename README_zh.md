@@ -41,6 +41,16 @@
 
 ### 自己跑起来
 
+一条命令，直接从 GitHub 装（仓库公开，无需 clone）：
+
+```bash
+pip install "taiyi[live] @ git+https://github.com/zachshi-ai/TaiYi-Agent.git"
+taiyi serve                                 # 装完即有 taiyi 命令
+# 卸载:  pip uninstall taiyi
+```
+
+或克隆后本地可编辑安装（开发用）：
+
 ```bash
 pip install -e ".[dev]"                     # 核心 + 测试
 pip install -e ".[live]"                    # 加 httpx —— 接真实 LLM 必须

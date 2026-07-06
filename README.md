@@ -83,6 +83,16 @@ the config, restart. (Phase 0's demo remains under `demo/` as reference.)
 
 ### Run it yourself
 
+One command, straight from GitHub (repo is public, no clone needed):
+
+```bash
+pip install "taiyi[live] @ git+https://github.com/zachshi-ai/TaiYi-Agent.git"
+taiyi serve                                 # the `taiyi` command is now on your PATH
+# uninstall:  pip uninstall taiyi
+```
+
+Or clone and install editable (for development):
+
 ```bash
 pip install -e ".[dev]"                     # core + tests
 pip install -e ".[live]"                    # adds httpx — required for a real LLM

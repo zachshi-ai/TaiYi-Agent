@@ -8,7 +8,7 @@
 > - zachshi-ai 的五层架构 + 治理-调度分离理论是 太一的**理论起点**,被直接作为顶层骨架。
 >
 > 资料来源:
-> - zachshi-ai 原创(理论骨架,GitHub: zachshi-ai/Agent_Architecture)
+> - zachshi-ai 原创(理论骨架,GitHub: zachshi-ai/TaiYi-Agent)
 > - https://github.com/openclaw/openclaw (工程实现参考:Gateway、多通道、Markdown 记忆、Skills)
 > - https://github.com/NousResearch/hermes-agent (工程实现参考:闭环学习、5 层记忆、Honcho、RL 数据飞轮)
 
