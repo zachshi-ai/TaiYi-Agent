@@ -297,6 +297,7 @@ class GatewayApp:
                 base_url=base_url,
                 model=payload.get("model"),
                 api_key=payload.get("api_key"),
+                timeout=10.0,  # fail fast — a UI probe should not hang on a bad endpoint
             )
             from taiyi.llm.base import LLMMessage
 

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from taiyi.gateway.app import GatewayApp
@@ -44,7 +44,14 @@ def _make_handler(app: GatewayApp, static_dir: Path | None = None):
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length).decode("utf-8") if length else ""
             path = self.path.split("?", 1)[0]
-            status, data = app.handle(method, path, self.headers, body)
+            try:
+                status, data = app.handle(method, path, self.headers, body)
+            except Exception as exc:  # noqa: BLE001
+                # Never let a handler exception drop the connection with no
+                # response — the browser would show a bare "Failed to fetch"
+                # with no clue. Return a 500 with the error instead.
+                status = 500
+                data = {"error": f"{type(exc).__name__}: {exc}"}
             if isinstance(data, str):  # e.g. Prometheus /metrics text
                 payload = data.encode("utf-8")
                 content_type = "text/plain; version=0.0.4"
@@ -110,6 +117,10 @@ def make_server(
     host: str = "127.0.0.1",
     port: int = 8080,
     static_dir: str | Path | None = None,
-) -> HTTPServer:
+) -> ThreadingHTTPServer:
     sd = Path(static_dir).resolve() if static_dir else None
-    return HTTPServer((host, port), _make_handler(app, sd))
+    # Threaded so one slow request (e.g. a live-LLM connection test that blocks
+    # on the network) never freezes the whole gateway — which would make every
+    # other request, including a config write-back, fail with "Failed to fetch".
+    # The SQLite memory/iteration layers already open with check_same_thread=False.
+    return ThreadingHTTPServer((host, port), _make_handler(app, sd))
