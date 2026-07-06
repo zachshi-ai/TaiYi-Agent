@@ -175,13 +175,16 @@ export default function Config() {
           可写字段: {writable.join(", ")}
         </div>
         <div className="row gap">
-          <button onClick={save}>写回配置</button>
+          <button onClick={save}>保存配置（写回 taiyi.yaml）</button>
           {provider !== "offline" && (
             <button className="secondary" onClick={test} disabled={testing || !baseUrl}>
               {testing ? "测试中…" : "测试连接"}
             </button>
           )}
         </div>
+        <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
+          不会自动保存——改完点「保存配置」写回文件，再重启 taiyi 生效。
+        </p>
         {testResult && (
           <div className={testResult.ok ? "notice" : "error"} style={{ marginTop: 10 }}>
             {testResult.ok
