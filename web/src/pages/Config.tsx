@@ -185,6 +185,8 @@ export default function Config() {
         <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
           不会自动保存——改完点「保存配置」写回文件，再重启 taiyi 生效。
         </p>
+        {saved && <div className="notice" style={{ marginTop: 10 }}>{saved}</div>}
+        {error && <div className="error" style={{ marginTop: 10 }}>{error}</div>}
         {testResult && (
           <div className={testResult.ok ? "notice" : "error"} style={{ marginTop: 10 }}>
             {testResult.ok

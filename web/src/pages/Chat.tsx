@@ -2,8 +2,11 @@ import { useEffect, useState } from "react";
 import { api } from "../api";
 
 interface Step {
-  step: { tool: string; args: string[] };
+  tool: string;
+  args: string[];
   verdict: string;
+  reason?: string;
+  matched_rule_id?: string | null;
   executed: boolean;
   output: string | null;
 }
@@ -137,11 +140,11 @@ export default function Chat() {
               <span className="badge warn">需审批: {lastResult.approval_id}</span>
             )}
           </div>
-          {lastResult.steps.length > 0 && (
+          {lastResult.steps && lastResult.steps.length > 0 && (
             <div className="steps">
               {lastResult.steps.map((s, i) => (
                 <div key={i} className="step-line">
-                  {i + 1}. {s.step.tool} {JSON.stringify(s.step.args)}
+                  {i + 1}. {s.tool} {JSON.stringify(s.args)}
                   <span className={`badge ${verdictClass(s.verdict)}`}>{s.verdict}</span>
                   {s.output && <div className="muted">→ {s.output}</div>}
                 </div>
