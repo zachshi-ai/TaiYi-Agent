@@ -83,12 +83,15 @@ the config, restart. (Phase 0's demo remains under `demo/` as reference.)
 
 ### Run it yourself
 
-One command, straight from GitHub (repo is public, no clone needed):
+One command, straight from GitHub (repo is public, no clone needed). pipx is
+recommended — a global `taiyi` command in its own isolated environment:
 
 ```bash
-pip install "taiyi[live] @ git+https://github.com/zachshi-ai/TaiYi-Agent.git"
-taiyi serve                                 # the `taiyi` command is now on your PATH
-# uninstall:  pip uninstall taiyi
+pipx install "taiyi[live] @ git+https://github.com/zachshi-ai/TaiYi-Agent.git"
+# or with pip:  pip install "taiyi[live] @ git+https://github.com/zachshi-ai/TaiYi-Agent.git"
+taiyi init                                  # interactively write taiyi.yaml (optional — defaults work)
+taiyi serve --config taiyi.yaml             # the `taiyi` command is now on your PATH
+# uninstall:  pipx uninstall taiyi   (or pip uninstall taiyi)
 ```
 
 Or clone and install editable (for development):

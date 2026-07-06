@@ -41,12 +41,14 @@
 
 ### 自己跑起来
 
-一条命令，直接从 GitHub 装（仓库公开，无需 clone）：
+一条命令，直接从 GitHub 装（仓库公开，无需 clone）。推荐用 pipx（全局命令 + 自动隔离环境）：
 
 ```bash
-pip install "taiyi[live] @ git+https://github.com/zachshi-ai/TaiYi-Agent.git"
-taiyi serve                                 # 装完即有 taiyi 命令
-# 卸载:  pip uninstall taiyi
+pipx install "taiyi[live] @ git+https://github.com/zachshi-ai/TaiYi-Agent.git"
+# 或用 pip:  pip install "taiyi[live] @ git+https://github.com/zachshi-ai/TaiYi-Agent.git"
+taiyi init                                  # 交互式生成 taiyi.yaml（可省略，有默认值）
+taiyi serve --config taiyi.yaml             # 装完即有 taiyi 命令
+# 卸载:  pipx uninstall taiyi   (或 pip uninstall taiyi)
 ```
 
 或克隆后本地可编辑安装（开发用）：
