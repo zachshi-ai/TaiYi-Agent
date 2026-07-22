@@ -26,7 +26,7 @@ def runtime():
 
 def test_normal_commit_completes(runtime):
     ctx = runtime.run("commit my changes", "dev.git")
-    assert ctx.state is TaskState.COMPLETED
+    assert ctx.state is TaskState.SIMULATED
     assert len(ctx.executed_steps) == 4
     assert ctx.state.is_terminal
 
@@ -65,7 +65,7 @@ def test_large_refund_needs_review_small_completes(runtime):
     big = runtime.run("处理一个 200 元的退款", "customer_service.refund")
     assert big.state is TaskState.NEEDS_REVIEW
     small = runtime.run("处理一个 50 元的退款", "customer_service.refund")
-    assert small.state is TaskState.COMPLETED
+    assert small.state is TaskState.SIMULATED
 
 
 # --- Replayability from the shared audit chain -------------------------------
@@ -77,7 +77,7 @@ def test_task_is_replayable_from_audit(runtime):
     assert "plan_created" in events
     assert events.count("permit_decision") == 4   # one per step, from governance
     assert events.count("step_executed") == 4     # one per cleared step, from runtime
-    assert events[-1] == "task_completed"
+    assert events[-1] == "task_simulated"
 
 
 def test_audit_chain_intact_after_runs(runtime):

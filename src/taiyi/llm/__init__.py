@@ -19,8 +19,9 @@ from taiyi.llm.base import (
     LLMResponse,
     ToolCall,
 )
-from taiyi.llm.live import OpenAICompatProvider, make_provider
+from taiyi.llm.live import OpenAICompatProvider, make_provider, make_provider_router
 from taiyi.llm.offline import KeywordOfflineProvider, ScriptedProvider
+from taiyi.llm.router import ProviderRouter, ProviderSelection
 
 __all__ = [
     "DEFAULT_LIVE_MODEL",
@@ -31,5 +32,8 @@ __all__ = [
     "KeywordOfflineProvider",
     "ScriptedProvider",
     "OpenAICompatProvider",
+    "ProviderRouter",
+    "ProviderSelection",
     "make_provider",
+    "make_provider_router",
 ]

@@ -21,8 +21,16 @@ from taiyi.core.audit import AuditLog
 from taiyi.core.types import Verdict
 from taiyi.approvals import ApprovalStore, PendingApproval
 from taiyi.llm.base import LLMMessage, LLMProvider
+from taiyi.llm.router import ProviderRouter
+from taiyi.policy import (
+    CompletionAction,
+    CompletionController,
+    OperatingMode,
+    resolve_policy,
+)
 from taiyi.runtime.context import StepResult, TaskContext
 from taiyi.runtime.executor import Executor, MockExecutor
+from taiyi.runtime.quality import prepare_quality_contract
 from taiyi.runtime.state import TaskState
 from taiyi.scheduler import PlanStep, SchedulerEngine
 from taiyi.validation import ValidationContext, ValidationEngine
@@ -69,14 +77,17 @@ class AgentRuntime:
         iteration=None,
         approvals: ApprovalStore | None = None,
         committee=None,
-        max_steps: int = 8,
+        max_steps: int | None = None,
         history_limit: int = 20,
         system_prompt: str | None = None,
         tool_names: list[str] | None = None,
+        default_operating_mode: str | OperatingMode = OperatingMode.BALANCED,
+        provider_router: ProviderRouter | None = None,
     ):
         self.scheduler = scheduler
         self.audit = audit_log
         self.provider = provider
+        self.provider_router = provider_router or ProviderRouter(provider)
         self.executor = executor or MockExecutor()
         self.validator = validator
         self.memory = memory
@@ -85,8 +96,10 @@ class AgentRuntime:
         self.iteration = iteration
         self.approvals = approvals
         self.committee = committee
-        self.max_steps = max(1, max_steps)
+        self.max_steps = max(1, max_steps) if max_steps is not None else None
         self.history_limit = max(0, history_limit)
+        self.default_operating_mode = OperatingMode.parse(default_operating_mode)
+        self.completion = CompletionController()
         # Build the system prompt the model actually sees. The default prompt
         # alone is too vague for a real model — it must know the tool-call syntax
         # AND the exact tool ids (with prefixes) governance/executor expect, or it
@@ -97,26 +110,88 @@ class AgentRuntime:
         self.tool_names = tool_names
 
     def run(
-        self, prompt: str, scenario: str = "default", *, user_id: str = "u1", session_id: str = "s1"
+        self,
+        prompt: str,
+        scenario: str = "default",
+        *,
+        user_id: str = "u1",
+        session_id: str = "s1",
+        operating_mode: str | OperatingMode | None = None,
+        scenario_definition: str | None = None,
+        skill_name: str | None = None,
+        skill_instructions: str | None = None,
+        capability_error: str | None = None,
     ) -> TaskContext:
+        policy = resolve_policy(operating_mode or self.default_operating_mode, scenario=scenario)
+        provider_selection = self.provider_router.select(policy)
+        contract, checklist = prepare_quality_contract(
+            validator=self.validator,
+            prompt=prompt,
+            scenario=scenario,
+            policy=policy,
+            selected_skill=skill_name,
+        )
         ctx = TaskContext(
             task_id=f"a_{int(time.time() * 1000)}_{len(self.audit)}",
             prompt=prompt,
             scenario=scenario,
             user_id=user_id,
             session_id=session_id,
+            operating_mode=policy.requested_mode.value,
+            execution_environment=getattr(self.executor, "environment", "custom"),
+            selected_skill=skill_name,
+            scenario_definition=scenario_definition,
+            skill_instructions=skill_instructions,
+            policy=policy,
+            provider_route=provider_selection.to_dict(),
+            contract=contract,
+            validation_checklist=checklist,
         )
         start = time.time()
-        self.audit.append("task_start", task_id=ctx.task_id, prompt=prompt, scenario=scenario, mode="agent")
+        self.audit.append(
+            "task_start", task_id=ctx.task_id, prompt=prompt, scenario=scenario,
+            mode="agent", operating_mode=ctx.operating_mode, policy=policy.to_dict(),
+            execution_environment=ctx.execution_environment,
+            provider_route=ctx.provider_route,
+            contract=contract.to_dict(),
+        )
 
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         if self.obs is not None:
             self.obs.tasks_total.inc()
 
+        capability_error = capability_error or contract.coverage_problem
+        if capability_error:
+            if self.memory is not None:
+                self.memory.add_message(session_id, "user", prompt)
+            ctx.error = capability_error
+            ctx.final_output = capability_error
+            ctx.touch(TaskState.CAPABILITY_UNAVAILABLE)
+            self.audit.append(
+                "capability_unavailable",
+                task_id=ctx.task_id,
+                scenario=scenario,
+                error=capability_error,
+            )
+            self._finish(ctx, start)
+            return ctx
+
         messages = [
             LLMMessage("system", self.system),
             LLMMessage("system", f"scenario: {scenario}"),
+            LLMMessage("system", policy.system_guidance),
+            LLMMessage("system", ctx.contract.prompt_block()),
         ]
+        if scenario_definition:
+            messages.append(LLMMessage(
+                "system", "Trusted scenario definition and constraints:\n" + scenario_definition
+            ))
+        if skill_instructions:
+            messages.append(LLMMessage(
+                "system",
+                f"Selected production-eligible skill ({skill_name or 'unnamed'}):\n"
+                + skill_instructions,
+            ))
         # Multi-turn context: replay recent prior turns for this session BEFORE
         # recording the current prompt, so the current prompt is not double-counted.
         # Only user/assistant turns are replayed — tool observations stay inside
@@ -133,7 +208,7 @@ class AgentRuntime:
             ctx.goal = self.value_stream.anchor(prompt, scenario)
         try:
             with self._span(trace, "agent_task"):
-                self._loop(ctx, messages, trace)
+                self._loop(ctx, messages, trace, provider_selection.provider)
         except Exception as e:  # noqa: BLE001
             ctx.error = f"{type(e).__name__}: {e}"
             ctx.touch(TaskState.FAILED)
@@ -142,15 +217,33 @@ class AgentRuntime:
         self._finish(ctx, start)
         return ctx
 
-    def _loop(self, ctx: TaskContext, messages: list[LLMMessage], trace) -> None:
-        for step in range(1, self.max_steps + 1):
+    def _loop(
+        self,
+        ctx: TaskContext,
+        messages: list[LLMMessage],
+        trace,
+        provider: LLMProvider,
+    ) -> None:
+        assert ctx.policy is not None
+        step_limit = self.max_steps or ctx.policy.max_steps
+        for step in range(1, step_limit + 1):
             ctx.round = step
             ctx.touch(TaskState.PLANNING)
             with self._span(trace, "think"):
-                resp = self.provider.complete(messages, tools=self.tool_names)
+                resp = provider.complete(messages, tools=self.tool_names)
+            if ctx.provider_route is not None and resp.model:
+                ctx.provider_route["last_response_model"] = resp.model
 
             # No tool call → the model believes it is done. Validate before accepting.
             if not resp.tool_calls:
+                if (resp.text or "").strip().upper().startswith("QUESTION:"):
+                    ctx.final_output = resp.text.strip()
+                    ctx.touch(TaskState.NEEDS_INPUT)
+                    self.audit.append(
+                        "task_needs_input", task_id=ctx.task_id,
+                        operating_mode=ctx.operating_mode, question=ctx.final_output,
+                    )
+                    return
                 # Guard against the model answering in prose before doing any work
                 # (a common failure: it narrates "I'll run X" instead of calling
                 # the tool). If nothing has executed yet and the text looks like a
@@ -164,14 +257,40 @@ class AgentRuntime:
                     continue
                 ctx.final_output = resp.text or self._synthesize(ctx)
                 vr = self._validate(ctx)
-                if vr is None or vr.passed:
-                    ctx.touch(TaskState.COMPLETED)
-                    self.audit.append("task_completed", task_id=ctx.task_id, steps=len(ctx.executed_steps))
-                    self._remember(ctx)
+                action = (
+                    CompletionAction.COMPLETE
+                    if vr is None
+                    else self.completion.assess(ctx.contract, ctx.evidence, vr)
+                )
+                if action is CompletionAction.COMPLETE:
+                    self._accept_completion(ctx)
                     return
-                ctx.validation_summary = vr.summary
+                if action is CompletionAction.NEEDS_HUMAN:
+                    ctx.validation_summary = vr.repair_feedback
+                    ctx.final_output = (
+                        f"QUESTION: Please review this validation result: {vr.repair_feedback}"
+                    )
+                    ctx.touch(TaskState.NEEDS_INPUT)
+                    self.audit.append(
+                        "validation_needs_human", task_id=ctx.task_id,
+                        summary=ctx.validation_summary,
+                    )
+                    return
+                ctx.validation_attempts += 1
+                ctx.validation_summary = vr.repair_feedback
                 self.audit.append("validation_failed", task_id=ctx.task_id, step=step, failed=vr.failed_checks)
-                messages.append(LLMMessage("user", f"Validation failed: {vr.summary}. Please correct it."))
+                if ctx.validation_attempts >= ctx.policy.max_validation_rounds:
+                    ctx.error = (
+                        f"validation failed after {ctx.validation_attempts} attempt(s): "
+                        f"{ctx.validation_summary}"
+                    )
+                    ctx.touch(TaskState.FAILED)
+                    self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+                    return
+                messages.append(LLMMessage(
+                    "user", f"Validation failed with this evidence:\n{vr.repair_feedback}\n"
+                    "Correct the failed acceptance criteria; do not repeat the same plan."
+                ))
                 continue
 
             call = resp.tool_calls[0]
@@ -245,6 +364,7 @@ class AgentRuntime:
                 result = self.executor.execute(step_obj)
             sr.executed = True
             sr.output = result.output
+            ctx.executed_action_count += 1
             self.audit.append("step_executed", task_id=ctx.task_id, tool=step_obj.tool, ok=result.ok)
             # Feed the observation back to the model. OpenAI/Ollama reject a bare
             # `role: "tool"` message (it requires a tool_call_id we don't carry),
@@ -258,7 +378,7 @@ class AgentRuntime:
                 self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
                 return
 
-        ctx.error = f"step budget ({self.max_steps}) exhausted"
+        ctx.error = f"step budget ({step_limit}) exhausted"
         ctx.touch(TaskState.FAILED)
         self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
 
@@ -343,6 +463,7 @@ class AgentRuntime:
         held_sr.verdict = "ALLOW(human)"
         held_sr.executed = True
         held_sr.output = result.output
+        ctx.executed_action_count += 1
         self.audit.append("step_executed", task_id=ctx.task_id, tool=held_step.tool,
                           ok=result.ok, approved_by="human")
 
@@ -357,12 +478,16 @@ class AgentRuntime:
         # and its freshly observed result, then continue the ReAct loop.
         messages: list[LLMMessage] = list(pending.messages or [])
         messages.append(LLMMessage("assistant", f"tool_call: {held_step.tool} {held_step.args}"))
-        messages.append(LLMMessage("tool", result.output))
+        messages.append(LLMMessage("user", f"[tool result] {held_step.tool}\n{result.output}"))
 
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
+        assert ctx.policy is not None
+        provider_selection = self.provider_router.select(ctx.policy)
+        ctx.provider_route = provider_selection.to_dict()
+        ctx.provider_route["resumed"] = True
         try:
             with self._span(trace, "agent_task"):
-                self._loop(ctx, messages, trace)
+                self._loop(ctx, messages, trace, provider_selection.provider)
         except Exception as e:  # noqa: BLE001
             ctx.error = f"{type(e).__name__}: {e}"
             ctx.touch(TaskState.FAILED)
@@ -379,16 +504,33 @@ class AgentRuntime:
     def _validate(self, ctx: TaskContext):
         if self.validator is None:
             return None
+        if ctx.validation_checklist is None:
+            raise RuntimeError("validator configured without a frozen validation checklist")
         ctx.touch(TaskState.VALIDATING)
         vctx = ValidationContext(
             prompt=ctx.prompt,
             scenario=ctx.scenario,
-            task_type=(ctx.plan.skill_name or "generic") if ctx.plan else "generic",
+            task_type=ctx.validation_checklist.task_type,
             executed_tools=[sr.step.tool for sr in ctx.executed_steps],
+            executed_calls=[
+                {"tool": sr.step.tool, "args": list(sr.step.args)}
+                for sr in ctx.executed_steps
+            ],
             outputs=[sr.output for sr in ctx.executed_steps if sr.output],
             final_output=ctx.final_output or "",
+            extras={"require_step_outputs": True},
         )
-        return self.validator.validate(vctx)
+        assert ctx.policy is not None
+        result = self.validator.validate(
+            vctx,
+            checklist=ctx.validation_checklist,
+        )
+        ctx.evidence.record_validation(
+            result,
+            attempt=ctx.validation_attempts + 1,
+            contract_id=ctx.contract.contract_id,
+        )
+        return result
 
     @staticmethod
     def _synthesize(ctx: TaskContext) -> str:
@@ -410,10 +552,34 @@ class AgentRuntime:
                 tags=("agent", ctx.scenario), source_task_id=ctx.task_id,
             )
 
+    def _accept_completion(self, ctx: TaskContext) -> None:
+        state = TaskState.successful(
+            execution_environment=ctx.execution_environment,
+            executed_actions=ctx.executed_action_count,
+        )
+        ctx.touch(state)
+        self.audit.append(
+            "task_simulated" if state is TaskState.SIMULATED else "task_completed",
+            task_id=ctx.task_id,
+            steps=len(ctx.executed_steps),
+            execution_environment=ctx.execution_environment,
+        )
+        if state is TaskState.COMPLETED:
+            self._remember(ctx)
+
     def _finish(self, ctx: TaskContext, start: float) -> None:
         # Record the assistant's final answer into the session so the next turn
         # in this session can replay it as conversation history (multi-turn).
-        if self.memory is not None and ctx.final_output and ctx.state is TaskState.COMPLETED:
+        if (
+            self.memory is not None
+            and ctx.final_output
+            and ctx.state in (
+                TaskState.COMPLETED,
+                TaskState.SIMULATED,
+                TaskState.NEEDS_INPUT,
+                TaskState.CAPABILITY_UNAVAILABLE,
+            )
+        ):
             self.memory.add_message(ctx.session_id, "assistant", ctx.final_output)
         if self.iteration is not None:
             self.iteration.record(ctx)

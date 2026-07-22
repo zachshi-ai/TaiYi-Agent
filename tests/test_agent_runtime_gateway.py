@@ -25,7 +25,7 @@ def test_gateway_runs_agent_mode_with_provider():
     assert isinstance(gw.runtime, AgentRuntime)
 
     ctx = gw.submit("commit my changes", scenario="dev.git")
-    assert ctx.state is TaskState.COMPLETED
+    assert ctx.state is TaskState.SIMULATED
     assert [s.step.tool for s in ctx.executed_steps] == ["shell:git status", "shell:git commit"]
     assert ctx.final_output == "Committed."
 
@@ -52,5 +52,5 @@ def test_gateway_agent_suspends_and_resumes():
     assert ctx.approval_id is not None
 
     resumed = gw.resume(ctx.approval_id, approve=True)
-    assert resumed.state is TaskState.COMPLETED
+    assert resumed.state is TaskState.SIMULATED
     assert [s.step.tool for s in resumed.executed_steps] == ["shell:git push"]

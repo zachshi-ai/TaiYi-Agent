@@ -83,13 +83,32 @@ export default function Observe() {
       {tab === "skills" && (
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           <table>
-            <thead><tr><th>技能</th><th>标签</th><th>摘要</th></tr></thead>
+            <thead><tr><th>技能</th><th>当前资格</th><th>验证证据</th><th>摘要</th></tr></thead>
             <tbody>
-              {skills.length === 0 && <tr><td colSpan={3} className="muted">无技能</td></tr>}
+              {skills.length === 0 && <tr><td colSpan={4} className="muted">无技能</td></tr>}
               {skills.map((s) => (
                 <tr key={s.name}>
-                  <td className="mono">{s.name}</td>
-                  <td>{(s.tags || []).join(", ")}</td>
+                  <td>
+                    <div className="mono">{s.name}</div>
+                    <div className="muted">{s.category} · {(s.tags || []).join(", ")}</div>
+                  </td>
+                  <td>
+                    <span className={`badge ${s.runtime_eligible ? "ok" : "danger"}`}>
+                      {s.runtime_eligible ? "当前运行时通过" : "隔离"}
+                    </span>
+                    {s.live_ready && <span className="badge ok">真实环境就绪</span>}
+                  </td>
+                  <td>
+                    <span className="badge">
+                      {s.verification_environment || "无"} · {s.verification_cases || 0} cases
+                    </span>
+                    {!s.live_ready && s.runtime_eligible && (
+                      <div className="muted">仅证明无副作用 harness 行为</div>
+                    )}
+                    {(s.problems || []).length > 0 && (
+                      <div className="error">{s.problems.join("；")}</div>
+                    )}
+                  </td>
                   <td className="muted">{s.summary}</td>
                 </tr>
               ))}

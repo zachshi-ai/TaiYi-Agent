@@ -35,10 +35,20 @@ async function req(path: string, opts: RequestInit = {}): Promise<any> {
 
 export const api = {
   // tasks / chat
-  submitTask: (prompt: string, scenario?: string, sessionId?: string) =>
+  submitTask: (
+    prompt: string,
+    scenario?: string,
+    sessionId?: string,
+    operatingMode: "quality" | "balanced" | "efficiency" = "balanced",
+  ) =>
     req("/v1/tasks", {
       method: "POST",
-      body: JSON.stringify({ prompt, scenario, session_id: sessionId }),
+      body: JSON.stringify({
+        prompt,
+        scenario,
+        session_id: sessionId,
+        operating_mode: operatingMode,
+      }),
     }),
 
   // approvals

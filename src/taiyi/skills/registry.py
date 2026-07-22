@@ -1,9 +1,4 @@
-"""The Skill registry — separates production-eligible skills from the sandbox.
-
-Skills with a passing quality gate are production-eligible; everything else is
-held in the sandbox and refused from the production path. ``get_production`` is the
-guarded accessor the runtime would use; a sandbox skill is never returned from it.
-"""
+"""Skill registry with static release evidence and current-runtime revalidation."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -52,19 +47,71 @@ class SkillRegistry:
     def sandbox_skills(self) -> list[Skill]:
         return [s for s in self._skills.values() if not s.production_eligible]
 
+    def verify_release_candidates(self, runner=None) -> dict[str, object]:
+        """Rerun statically attested Skills against the current governed harness.
+
+        A stale/missing release lock is rejected before execution.  Passing the
+        old publication suite is not enough: every process that builds a runtime
+        catalog gets fresh evidence against its own Taiyi code.
+        """
+
+        if runner is None:
+            from taiyi.skills.verification import SkillGateRunner
+            runner = SkillGateRunner()
+        reports: dict[str, object] = {}
+        for skill in self._skills.values():
+            skill.runtime_verification = None
+            if skill.release_problems:
+                continue
+            report = runner.run(skill)
+            skill.runtime_verification = report
+            reports[skill.name] = report
+        return reports
+
     def get(self, name: str) -> Skill | None:
         return self._skills.get(name)
 
     def get_production(self, name: str) -> Skill:
-        """Return a skill only if it is production-eligible; refuse otherwise."""
+        """Return a currently reverified skill; refuse declarations and stale locks."""
         skill = self._skills.get(name)
         if skill is None:
             raise SkillError(f"unknown skill: {name}")
         if not skill.production_eligible:
             raise SkillError(
-                f"skill {name!r} is not production-eligible: {', '.join(skill.gate_problems)}"
+                f"skill {name!r} is not production-eligible: "
+                f"{', '.join(skill.production_problems)}"
             )
         return skill
+
+    def match(self, prompt: str, scenario: str | None = None) -> Skill | None:
+        """Select the best production skill for a task.
+
+        A skill's body is useful only if it reaches the runtime.  Selection stays
+        deterministic and only considers production-eligible skills; an ungated
+        sandbox draft can never enter the model context through this path.
+        """
+        best = self.match_candidate(prompt, scenario)
+        return best if best is not None and best.production_eligible else None
+
+    def match_candidate(self, prompt: str, scenario: str | None = None) -> Skill | None:
+        """Return the best semantic match regardless of eligibility.
+
+        The gateway uses this to distinguish "no Skill applies" from "a Skill
+        applies but failed its gate". Falling through to the generic planner in
+        the latter case would bypass the release boundary.
+        """
+
+        low = prompt.lower()
+        best: Skill | None = None
+        best_score = 0
+        for skill in self._skills.values():
+            trigger_hits = sum(1 for t in skill.triggers if t.lower() in low)
+            scenario_bonus = 2 if scenario and skill.scenario == scenario else 0
+            score = trigger_hits * 3 + scenario_bonus
+            if score > best_score:
+                best = skill
+                best_score = score
+        return best
 
     def index_into(self, memory) -> int:
         """Register production skills into a MemoryEngine's L2 index. Returns count."""

@@ -27,15 +27,48 @@ class LLMPlanner:
         self._system = system_prompt or _DEFAULT_SYSTEM
 
     def plan(self, prompt: str, scenario: str) -> ExecutionPlan:
+        return self.plan_with_context(prompt, scenario, context=None)
+
+    def plan_with_context(
+        self,
+        prompt: str,
+        scenario: str,
+        *,
+        context: str | None,
+    ) -> ExecutionPlan:
+        return self.plan_with_provider(
+            prompt,
+            scenario,
+            context=context,
+            provider=self._provider,
+        )
+
+    def plan_with_provider(
+        self,
+        prompt: str,
+        scenario: str,
+        *,
+        context: str | None,
+        provider: LLMProvider,
+    ) -> ExecutionPlan:
+        """Plan with a task-selected provider.
+
+        ``SchedulerEngine`` only calls this seam when a Provider Router selected
+        a concrete route. The planner still has no execution or permit authority.
+        """
         messages = [
             LLMMessage("system", self._system),
             LLMMessage("system", f"scenario: {scenario}"),
-            LLMMessage("user", prompt),
         ]
-        resp = self._provider.complete(messages)
+        if context:
+            messages.append(LLMMessage("system", context))
+        messages.append(LLMMessage("user", prompt))
+        resp = provider.complete(messages)
         steps = [PlanStep(tool=tc.tool, args=list(tc.args)) for tc in resp.tool_calls]
         return ExecutionPlan(
             skill_name=None,
             steps=steps,
             rationale=f"LLM ({resp.model}) proposed {len(steps)} tool call(s)",
+            provider_model=resp.model,
+            planner_output=(resp.text or "").strip() or None,
         )

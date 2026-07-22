@@ -17,6 +17,9 @@ from taiyi.skills import SkillError, SkillRegistry
 class SkillMarket:
     def __init__(self, registry_dir: str | Path):
         self.registry = SkillRegistry.load_dir(registry_dir)
+        # Installation is a publication boundary, so do not trust the release
+        # lock alone. Re-run every attested candidate under the current harness.
+        self.registry.verify_release_candidates()
 
     def list_available(self) -> list[str]:
         return sorted(s.name for s in self.registry.all())
@@ -35,7 +38,8 @@ class SkillMarket:
             raise SkillError(f"unknown skill: {name}")
         if not skill.production_eligible:
             raise SkillError(
-                f"refused: {name!r} does not pass its quality gate ({', '.join(skill.gate_problems)})"
+                f"refused: {name!r} is not production-eligible "
+                f"({', '.join(skill.production_problems)})"
             )
         if skill.path is None:
             raise SkillError(f"{name!r} has no source path")

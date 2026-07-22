@@ -83,7 +83,6 @@ def test_runtime_anchors_and_scores():
     sched = SchedulerEngine(LocalPermitClient(gov))
     runtime = TaskRuntime(sched, audit_log=audit, value_stream=ValueStreamEngine())
     ctx = runtime.run("commit my changes", "dev.git")
-    assert ctx.state is TaskState.COMPLETED
+    assert ctx.state is TaskState.SIMULATED
     assert ctx.goal is not None
-    assert ctx.value_contribution is not None
-    assert ctx.value_contribution.task_layer_completion == 1.0
+    assert ctx.value_contribution is None  # mock work cannot claim delivered value

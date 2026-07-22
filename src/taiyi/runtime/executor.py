@@ -26,6 +26,8 @@ class Executor(Protocol):
 class MockExecutor:
     """Side-effect-free executor (ported from the Phase 0 demo)."""
 
+    environment = "mock"
+
     def execute(self, step: PlanStep) -> ExecResult:
         tool, args = step.tool, step.args
         if tool.startswith("shell:git"):

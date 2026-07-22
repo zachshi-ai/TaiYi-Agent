@@ -39,6 +39,8 @@ _REAL_PREFIXES = ("shell:", "file:read", "file:write", "http:", "https:")
 
 
 class SandboxExecutor:
+    environment = "workspace"
+
     def __init__(
         self,
         sandbox: str | Path,
@@ -76,7 +78,7 @@ class SandboxExecutor:
             if tool.startswith(("http:", "https:")):
                 return self._screen_url(step.args)
             # No connector yet — do not pretend to perform a side effect.
-            return ExecResult(f"[deferred:{tool}] no connector yet (args={step.args})", ok=True)
+            return ExecResult(f"[deferred:{tool}] no connector configured (args={step.args})", ok=False)
         except Exception as e:  # noqa: BLE001 — surface as a failed step, not a crash
             return ExecResult(f"executor error: {type(e).__name__}: {e}", ok=False)
 

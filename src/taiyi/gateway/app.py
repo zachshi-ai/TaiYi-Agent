@@ -20,9 +20,18 @@ def task_summary(ctx: TaskContext) -> dict:
         "task_id": ctx.task_id,
         "state": ctx.state.value,
         "scenario": ctx.scenario,
-        "skill": ctx.plan.skill_name if ctx.plan else None,
+        "skill": ctx.selected_skill or (ctx.plan.skill_name if ctx.plan else None),
         "approval_id": ctx.approval_id,
+        "executed_action_count": ctx.executed_action_count,
         "final_output": ctx.final_output,
+        "error": ctx.error,
+        "validation_summary": ctx.validation_summary,
+        "operating_mode": ctx.operating_mode,
+        "execution_environment": ctx.execution_environment,
+        "policy": ctx.policy.to_dict() if ctx.policy else None,
+        "provider_route": ctx.provider_route,
+        "contract": ctx.contract.to_dict() if ctx.contract else None,
+        "evidence": ctx.evidence.to_dict(),
         "steps": [s.to_dict() for s in ctx.step_results],
         "goal": ctx.goal.to_dict() if ctx.goal else None,
         "value_contribution": ctx.value_contribution.to_dict() if ctx.value_contribution else None,
@@ -108,12 +117,16 @@ class GatewayApp:
         prompt = payload.get("prompt")
         if not prompt:
             return 400, {"error": "missing prompt"}
-        ctx = self.gateway.submit(
-            prompt,
-            scenario=payload.get("scenario"),
-            user_id=payload.get("user_id", "u1"),
-            session_id=payload.get("session_id", "s1"),
-        )
+        try:
+            ctx = self.gateway.submit(
+                prompt,
+                scenario=payload.get("scenario"),
+                user_id=payload.get("user_id", "u1"),
+                session_id=payload.get("session_id", "s1"),
+                operating_mode=payload.get("operating_mode"),
+            )
+        except ValueError as e:
+            return 400, {"error": str(e)}
         return 200, task_summary(ctx)
 
     def _chat(self, payload: dict) -> tuple[int, dict]:
@@ -122,11 +135,15 @@ class GatewayApp:
             return 400, {"error": "no user message"}
         # Pass session_id through so multi-turn OpenAI-compatible clients can keep
         # context across requests (the runtime reads history by session_id).
-        ctx = self.gateway.submit(
-            prompt,
-            scenario=payload.get("scenario"),
-            session_id=payload.get("session_id", "s1"),
-        )
+        try:
+            ctx = self.gateway.submit(
+                prompt,
+                scenario=payload.get("scenario"),
+                session_id=payload.get("session_id", "s1"),
+                operating_mode=payload.get("operating_mode"),
+            )
+        except ValueError as e:
+            return 400, {"error": str(e)}
         return 200, to_openai_response(ctx, payload.get("model", "taiyi"))
 
     def _review(self, payload: dict) -> tuple[int, dict]:
@@ -207,9 +224,23 @@ class GatewayApp:
         return 200, {"memories": self.gateway.memory.list_memories()}
 
     def _list_skills(self) -> tuple[int, dict]:
-        if self.gateway.memory is None:
-            return 404, {"error": "memory not enabled"}
-        return 200, {"skills": self.gateway.memory.list_skills_full()}
+        skills = []
+        for skill in sorted(self.gateway.skills.all(), key=lambda s: s.name):
+            report = skill.runtime_verification
+            skills.append({
+                "name": skill.name,
+                "summary": skill.applicability or "",
+                "tags": list(skill.triggers),
+                "category": skill.category,
+                "release_eligible": skill.release_eligible,
+                "runtime_eligible": skill.production_eligible,
+                "live_ready": skill.live_ready,
+                "verification_environment": skill.verification_environment,
+                "verification_cases": len(skill.gate.verification) if skill.gate else 0,
+                "current_run": report.to_dict() if report is not None else None,
+                "problems": skill.production_problems,
+            })
+        return 200, {"skills": skills}
 
     def _list_trajectories(self) -> tuple[int, dict]:
         if self.gateway.iteration is None:
@@ -247,14 +278,51 @@ class GatewayApp:
         from taiyi.config import WRITABLE_FIELDS
 
         prov = getattr(self.gateway.runtime, "provider", None)
+        router = getattr(self.gateway.runtime, "provider_router", None)
         provider_name = getattr(prov, "name", None) if prov else "offline"
-        has_key = bool(getattr(prov, "_api_key", None))
+        has_key = bool(getattr(prov, "api_key_set", False))
+        provider_routes = router.configured_routes() if router else {}
+        validator = getattr(self.gateway.runtime, "validator", None)
+        validation_authorities = (
+            validator.configured_authorities()
+            if validator is not None and hasattr(validator, "configured_authorities")
+            else []
+        )
         return 200, {
             "config_path": self.config_path,
+            "runtime_mode": "agent" if type(self.gateway.runtime).__name__ == "AgentRuntime" else "workflow",
             "mode": "agent" if type(self.gateway.runtime).__name__ == "AgentRuntime" else "workflow",
+            "operating_mode": getattr(
+                getattr(self.gateway.runtime, "default_operating_mode", None),
+                "value",
+                "balanced",
+            ),
             "provider": provider_name,
-            "model": getattr(prov, "_model", None) if prov else None,
-            "base_url": getattr(prov, "_base_url", None) if prov else None,
+            "model": getattr(prov, "model", None) if prov else None,
+            "quality_model": (
+                None if provider_routes.get("strongest_capable", {}).get("fallback")
+                else provider_routes.get("strongest_capable", {}).get("model")
+            ),
+            "balanced_model": (
+                None if provider_routes.get("adaptive", {}).get("fallback")
+                else provider_routes.get("adaptive", {}).get("model")
+            ),
+            "efficiency_model": (
+                None if provider_routes.get("fastest_capable", {}).get("fallback")
+                else provider_routes.get("fastest_capable", {}).get("model")
+            ),
+            "provider_routes": provider_routes,
+            "validation_authorities": validation_authorities,
+            "external_git_validation": any(
+                a.get("name") == "git-cli" for a in validation_authorities
+            ),
+            "external_git_remote_validation": any(
+                a.get("name") == "git-remote-cli" for a in validation_authorities
+            ),
+            "external_github_validation": any(
+                a.get("name") == "github-cli" for a in validation_authorities
+            ),
+            "base_url": getattr(prov, "base_url", None) if prov else None,
             "api_key_set": has_key,
             "base_dir": self.gateway.base_dir,
             "writable_fields": sorted(WRITABLE_FIELDS),

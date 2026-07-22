@@ -115,6 +115,30 @@ class OpenAICompatProvider(LLMProvider):
         data = resp.json()
         return self._to_response(data, self._model)
 
+    @property
+    def model(self) -> str:
+        return self._model
+
+    @property
+    def base_url(self) -> str:
+        return self._base_url
+
+    @property
+    def api_key_set(self) -> bool:
+        return bool(self._api_key)
+
+    def with_model(self, model: str, *, route: str) -> "OpenAICompatProvider":
+        """Clone endpoint/auth settings while selecting a route-specific model."""
+
+        return OpenAICompatProvider(
+            base_url=self._base_url,
+            model=model,
+            api_key=self._api_key,
+            name=f"{self.name}:{route}",
+            timeout=self._timeout,
+            transport=self._transport,
+        )
+
     @staticmethod
     def _to_response(data: dict, model: str) -> LLMResponse:
         choice = (data.get("choices") or [{}])[0]
@@ -230,10 +254,37 @@ def make_provider(cfg) -> LLMProvider | None:
     return None
 
 
+def make_provider_router(cfg, default: LLMProvider | None = None):
+    """Build the three-strategy router from one OpenAI-compatible endpoint.
+
+    ``model`` remains the universal fallback. Optional quality/balanced/
+    efficiency model ids create explicit routes on the same endpoint. Programmatic
+    users can construct :class:`ProviderRouter` directly for cross-provider pools.
+    """
+
+    from taiyi.llm.router import ProviderRouter
+
+    default = default or make_provider(cfg)
+    if default is None:
+        return None
+
+    routes = {}
+    if isinstance(default, OpenAICompatProvider):
+        for field, strategy, route in (
+            ("quality_model", "strongest_capable", "quality"),
+            ("balanced_model", "adaptive", "balanced"),
+            ("efficiency_model", "fastest_capable", "efficiency"),
+        ):
+            model = getattr(cfg, field, None)
+            if model:
+                routes[strategy] = default.with_model(str(model), route=route)
+    return ProviderRouter(default, **routes)
+
+
 def _warn(msg: str) -> None:
     import sys
 
     print(f"[taiyi] WARNING: {msg}", file=sys.stderr)
 
 
-__all__ = ["OpenAICompatProvider", "make_provider"]
+__all__ = ["OpenAICompatProvider", "make_provider", "make_provider_router"]

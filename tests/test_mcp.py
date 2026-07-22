@@ -30,7 +30,7 @@ def test_tools_list_exposes_taiyi_tools():
 def test_run_task_tool_is_governed():
     s = server()
     ok = s.handle(req("tools/call", name="taiyi_run_task", arguments={"prompt": "commit my changes"}))
-    assert "COMPLETED" in ok["result"]["content"][0]["text"]
+    assert "SIMULATED" in ok["result"]["content"][0]["text"]
 
     blocked = s.handle(
         req("tools/call", name="taiyi_run_task",

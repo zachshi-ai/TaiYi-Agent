@@ -14,8 +14,17 @@ auth_tokens: []
 #   sandbox — real shell/file execution inside sandbox_dir (governed + credential-isolated)
 executor: mock
 sandbox_dir: ./state/sandbox
+# When executor=sandbox, independently inspect Git HEAD and repository-local
+# identity after Git tasks. This verifier is read-only and does not trust the
+# executor's success text.
+external_git_validation: true
+external_git_remote_validation: false  # opt in: verifies pushed remote ref over network
+external_github_validation: false      # opt in: verifies GitHub ref + account attribution
+github_expected_login: null            # required above, e.g. zachshi-ai
 
-max_rounds: 1              # PDCA correction rounds before a validation failure is terminal
+# Optional hard override. null uses the selected operating-mode profile:
+# quality=3 validation attempts, balanced=2, efficiency=1.
+max_rounds: null
 
 # Runtime shape:
 #   agent     — ReAct loop: the model proposes one tool call at a time, governance
@@ -23,7 +32,15 @@ max_rounds: 1              # PDCA correction rounds before a validation failure 
 #               This is the default and the "highest decision-maker" path.
 #   workflow  — plan-once: a planner emits a fixed plan that is then cleared and
 #               executed step by step. Use when a task has a known fixed procedure.
-mode: agent
+runtime_mode: agent
+
+# User-facing operating strategy. This is independent of runtime shape and can
+# also be overridden per task through POST /v1/tasks or the Web UI:
+#   quality    — material ambiguity is clarified; exhaustive evidence; 3 attempts
+#   balanced   — impact-weighted questions; standard evidence; 2 attempts (default)
+#   efficiency — AI leads with reversible defaults; critical evidence; 1 attempt
+# All three use exactly the same governance, authorization, and red-line rules.
+operating_mode: balanced
 
 # LLM provider. The system is offline-first: provider=offline runs the whole loop
 # on deterministic offline providers (zero tokens, zero network). To use a real
@@ -44,6 +61,11 @@ mode: agent
 provider: offline
 base_url: null
 model: null
+# Optional mode routes on the same endpoint. Omitted routes use `model` and the
+# task evidence records fallback=true, so the UI never pretends a route existed.
+quality_model: null
+balanced_model: null
+efficiency_model: null
 api_key: null
 # api_key_env is an alternative: name an env var that holds the key value
 # (useful for secrets managers). Overrides api_key if set.

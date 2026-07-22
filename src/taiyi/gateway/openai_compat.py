@@ -18,6 +18,10 @@ def last_user_message(messages: list[dict]) -> str:
 def _content(ctx: TaskContext) -> str:
     if ctx.state is TaskState.COMPLETED:
         return ctx.final_output or "(completed)"
+    if ctx.state is TaskState.SIMULATED:
+        return f"[simulation only; no real action was delivered] {ctx.final_output or ''}"
+    if ctx.state is TaskState.NEEDS_INPUT:
+        return ctx.final_output or "[needs user input]"
     if ctx.state is TaskState.NEEDS_REVIEW:
         return f"[needs human review] {ctx.final_output}"
     if ctx.state is TaskState.REJECTED:
@@ -44,5 +48,12 @@ def to_openai_response(ctx: TaskContext, model: str) -> dict:
             "state": ctx.state.value,
             "scenario": ctx.scenario,
             "approval_id": ctx.approval_id,
+            "executed_action_count": ctx.executed_action_count,
+            "operating_mode": ctx.operating_mode,
+            "execution_environment": ctx.execution_environment,
+            "policy": ctx.policy.to_dict() if ctx.policy else None,
+            "provider_route": ctx.provider_route,
+            "contract": ctx.contract.to_dict() if ctx.contract else None,
+            "evidence": ctx.evidence.to_dict(),
         },
     }

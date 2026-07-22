@@ -25,7 +25,11 @@ class TaiyiConfig:
     executor: str = "mock"               # mock | sandbox
     sandbox_dir: str | None = None       # working dir for the sandbox executor
     sandbox_backend: str = "local"       # local | sandbox_exec (macOS deny-all isolation)
-    max_rounds: int = 1                  # PDCA correction rounds
+    external_git_validation: bool = True # sandbox Git tasks get independent read-only verification
+    external_git_remote_validation: bool = False # opt-in read-only remote-ref verification
+    external_github_validation: bool = False # opt-in GitHub ref/account verification
+    github_expected_login: str | None = None # required when GitHub verification is enabled
+    max_rounds: int | None = None        # explicit override; None → operating-mode profile
     rules_dirs: tuple[str, ...] = ()     # extra rule dirs, merged with built-ins
     scenarios_dirs: tuple[str, ...] = ()
     skills_dirs: tuple[str, ...] = ()
@@ -33,11 +37,16 @@ class TaiyiConfig:
     # --- web UI ----------------------------------------------------------------
     static_dir: str | None = None       # directory of built web assets (web/dist); None disables UI
     config_path: str | None = None      # path the config was loaded from (for write-back via /v1/config)
-    # --- runtime shape -------------------------------------------------------
-    mode: str = "agent"                  # agent (ReAct, default) | workflow (plan-once)
+    # --- control plane -------------------------------------------------------
+    runtime_mode: str = "agent"          # agent (ReAct) | workflow (plan-once)
+    operating_mode: str = "balanced"     # quality | balanced | efficiency
+    mode: str | None = None              # deprecated alias for runtime_mode
     # --- LLM provider seam (opt-in; offline until a live adapter is wired) ---
     provider: str = "offline"            # offline | openai_compat | ollama
     model: str | None = None             # model id; None → provider default
+    quality_model: str | None = None     # strongest-capable route; None → model
+    balanced_model: str | None = None    # adaptive route; None → model
+    efficiency_model: str | None = None  # fastest-capable route; None → model
     base_url: str | None = None          # OpenAI-compatible endpoint, e.g. http://localhost:11434/v1
     api_key: str | None = None           # the key value itself (empty for local Ollama)
     api_key_env: str | None = None       # alt: name of env var holding the key (overrides api_key)
@@ -45,8 +54,11 @@ class TaiyiConfig:
 
 # Fields the web UI is allowed to write back via PUT /v1/config. Anything else
 # is read-only from the UI to avoid clobbering deployment-specific settings.
-WRITABLE_FIELDS = {"provider", "model", "mode", "base_url", "api_key", "api_key_env",
-                   "max_rounds", "executor", "host", "port", "log_level"}
+WRITABLE_FIELDS = {
+    "provider", "model", "quality_model", "balanced_model", "efficiency_model",
+    "runtime_mode", "operating_mode", "mode", "base_url",
+    "api_key", "api_key_env", "max_rounds", "executor", "host", "port", "log_level",
+}
 
 
 def load_config(path: str | Path | None = None) -> TaiyiConfig:
@@ -63,6 +75,11 @@ def load_config(path: str | Path | None = None) -> TaiyiConfig:
         if k not in valid:
             continue
         kwargs[k] = tuple(v) if k in _LIST_FIELDS and v is not None else v
+
+    # Backward compatibility with v0.1, where ``mode`` meant execution shape.
+    # The new user-facing operating mode is deliberately a separate field.
+    if "runtime_mode" not in kwargs and kwargs.get("mode"):
+        kwargs["runtime_mode"] = kwargs["mode"]
 
     cfg = _apply_env(TaiyiConfig(**kwargs))
     if path:
@@ -86,6 +103,8 @@ def save_config(path: str | Path, updates: dict) -> None:
         if isinstance(loaded, dict):
             data = loaded
     for k, v in updates.items():
+        if k == "mode":
+            k = "runtime_mode"
         if k in WRITABLE_FIELDS and v is not None:
             data[k] = list(v) if isinstance(v, tuple) else v
     p.parent.mkdir(parents=True, exist_ok=True)
@@ -107,16 +126,40 @@ def _apply_env(cfg: TaiyiConfig) -> TaiyiConfig:
         over["sandbox_dir"] = env["TAIYI_SANDBOX_DIR"]
     if env.get("TAIYI_SANDBOX_BACKEND"):
         over["sandbox_backend"] = env["TAIYI_SANDBOX_BACKEND"]
+    if env.get("TAIYI_EXTERNAL_GIT_VALIDATION"):
+        over["external_git_validation"] = env["TAIYI_EXTERNAL_GIT_VALIDATION"].strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+    if env.get("TAIYI_EXTERNAL_GIT_REMOTE_VALIDATION"):
+        over["external_git_remote_validation"] = env[
+            "TAIYI_EXTERNAL_GIT_REMOTE_VALIDATION"
+        ].strip().lower() in {"1", "true", "yes", "on"}
+    if env.get("TAIYI_EXTERNAL_GITHUB_VALIDATION"):
+        over["external_github_validation"] = env[
+            "TAIYI_EXTERNAL_GITHUB_VALIDATION"
+        ].strip().lower() in {"1", "true", "yes", "on"}
+    if env.get("TAIYI_GITHUB_EXPECTED_LOGIN"):
+        over["github_expected_login"] = env["TAIYI_GITHUB_EXPECTED_LOGIN"]
     if env.get("TAIYI_MAX_ROUNDS"):
         over["max_rounds"] = int(env["TAIYI_MAX_ROUNDS"])
     if env.get("TAIYI_AUTH_TOKENS"):
         over["auth_tokens"] = tuple(t for t in env["TAIYI_AUTH_TOKENS"].split(",") if t)
-    if env.get("TAIYI_MODE"):
-        over["mode"] = env["TAIYI_MODE"]
+    if env.get("TAIYI_RUNTIME_MODE"):
+        over["runtime_mode"] = env["TAIYI_RUNTIME_MODE"]
+    elif env.get("TAIYI_MODE"):
+        over["runtime_mode"] = env["TAIYI_MODE"]
+    if env.get("TAIYI_OPERATING_MODE"):
+        over["operating_mode"] = env["TAIYI_OPERATING_MODE"]
     if env.get("TAIYI_PROVIDER"):
         over["provider"] = env["TAIYI_PROVIDER"]
     if env.get("TAIYI_MODEL"):
         over["model"] = env["TAIYI_MODEL"]
+    if env.get("TAIYI_QUALITY_MODEL"):
+        over["quality_model"] = env["TAIYI_QUALITY_MODEL"]
+    if env.get("TAIYI_BALANCED_MODEL"):
+        over["balanced_model"] = env["TAIYI_BALANCED_MODEL"]
+    if env.get("TAIYI_EFFICIENCY_MODEL"):
+        over["efficiency_model"] = env["TAIYI_EFFICIENCY_MODEL"]
     if env.get("TAIYI_API_KEY_ENV"):
         over["api_key_env"] = env["TAIYI_API_KEY_ENV"]
     if env.get("TAIYI_BASE_URL"):

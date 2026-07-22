@@ -32,6 +32,19 @@ def test_push_routes_before_commit(scheduler):
     assert [s.tool for s in plan.steps] == ["shell:git push"]
 
 
+def test_push_preserves_the_requested_remote_and_ref(scheduler):
+    plan = scheduler.plan("git push upstream feature/quality", "dev.git")
+
+    assert plan.steps == [PlanStep("shell:git push", ["upstream", "feature/quality"])]
+
+
+def test_negated_push_request_never_routes_to_push(scheduler):
+    plan = scheduler.plan("commit my changes, but do not push", "dev.git")
+
+    assert plan.steps[-1].tool == "shell:git commit"
+    assert all(step.tool != "shell:git push" for step in plan.steps)
+
+
 def test_commit_decomposes_into_atomic_steps(scheduler):
     plan = scheduler.plan("帮我把测试脚本 commit 一下", "dev.git")
     assert len(plan.steps) == 4

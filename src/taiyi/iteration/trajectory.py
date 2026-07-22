@@ -101,7 +101,9 @@ def _extract_value(ctx) -> float | None:
 
 def record_from_ctx(ctx) -> TaskRecord:
     """Build a TaskRecord from a TaskContext (duck-typed; no runtime import)."""
-    skill = ctx.plan.skill_name if getattr(ctx, "plan", None) else None
+    skill = getattr(ctx, "selected_skill", None) or (
+        ctx.plan.skill_name if getattr(ctx, "plan", None) else None
+    )
     steps = _extract_steps(ctx)
     tools = tuple(s.tool for s in steps)
     state = ctx.state.value if hasattr(ctx.state, "value") else str(ctx.state)

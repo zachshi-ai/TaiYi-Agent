@@ -62,6 +62,13 @@ def test_skills_endpoint(tmp_path):
     assert "skills" in data
     # Built-in skills are indexed on build_gateway.
     assert isinstance(data["skills"], list)
+    git = next(s for s in data["skills"] if s["name"] == "git_safe_commit")
+    assert git["release_eligible"] is True
+    assert git["runtime_eligible"] is True
+    assert git["verification_environment"] == "mock"
+    assert git["verification_cases"] == 3
+    assert git["live_ready"] is False
+    assert git["current_run"]["outcome"] == "PASS"
 
 
 def test_trajectories_and_report_endpoints(tmp_path):
@@ -97,6 +104,13 @@ def test_get_config_does_not_leak_key(tmp_path):
     assert status == 200
     assert "provider" in data
     assert "base_url" in data
+    assert "provider_routes" in data
+    assert data["validation_authorities"] == []
+    assert data["external_git_validation"] is False
+    assert data["external_git_remote_validation"] is False
+    assert data["external_github_validation"] is False
+    assert "quality_model" in data
+    assert "efficiency_model" in data
     assert "writable_fields" in data
     assert data["restart_required_after_write"] is True
     # The key is surfaced only as a presence boolean, never its value.

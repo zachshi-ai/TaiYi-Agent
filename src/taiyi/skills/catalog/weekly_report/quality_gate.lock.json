@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "runner_version": "taiyi.skill-gate/v5",
+  "skill": "weekly_report",
+  "artifact_digest": "sha256:9b5c7546bc0bc2021a10fabd9c8e22e5240a304977c03282ce4751229d2c21a4",
+  "environment": "mock",
+  "verified_at": "2026-07-21T20:04:59.930094Z",
+  "results": [
+    {
+      "id": "query_runs",
+      "outcome": "PASS",
+      "detail": "all declared expectations satisfied",
+      "observed": {
+        "state": "SIMULATED",
+        "executed_tools": [
+          "sql:query"
+        ],
+        "held_tool": null,
+        "matched_rule_ids": [],
+        "approval_required": false,
+        "evidence_checks_pass": [
+          "executed_steps_have_outputs",
+          "no_surrender_language",
+          "non_empty_output",
+          "report_has_query",
+          "skill_gate:query_runs:objective"
+        ],
+        "evidence_checks_fail": [],
+        "selected_skill": "weekly_report"
+      }
+    },
+    {
+      "id": "delivery_needs_review",
+      "outcome": "PASS",
+      "detail": "all declared expectations satisfied",
+      "observed": {
+        "state": "NEEDS_REVIEW",
+        "executed_tools": [
+          "sql:query"
+        ],
+        "held_tool": "notify:feishu",
+        "matched_rule_ids": [
+          "ops.report.outbound_notify_needs_review"
+        ],
+        "approval_required": true,
+        "evidence_checks_pass": [],
+        "evidence_checks_fail": [],
+        "selected_skill": "weekly_report"
+      }
+    },
+    {
+      "id": "report_without_query_fails",
+      "outcome": "PASS",
+      "detail": "all declared expectations satisfied",
+      "observed": {
+        "state": "FAILED",
+        "executed_tools": [
+          "echo"
+        ],
+        "held_tool": null,
+        "matched_rule_ids": [],
+        "approval_required": false,
+        "evidence_checks_pass": [
+          "executed_steps_have_outputs",
+          "no_surrender_language",
+          "non_empty_output"
+        ],
+        "evidence_checks_fail": [
+          "report_has_query"
+        ],
+        "selected_skill": "weekly_report"
+      }
+    }
+  ]
+}

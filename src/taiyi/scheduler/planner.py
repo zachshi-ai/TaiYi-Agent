@@ -16,6 +16,59 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 
+_GIT_PUSH_TERMS = (
+    "git push",
+    "push to",
+    "push 到",
+    "push到",
+    "push 一下",
+    "推送到",
+    "推送代码",
+)
+_GIT_PUSH_NEGATIONS = (
+    "do not push",
+    "don't push",
+    "dont push",
+    "no push",
+    "不要 push",
+    "别 push",
+    "不要推送",
+    "别推送",
+    "无需推送",
+    "不推送",
+)
+
+
+def is_git_push_prompt(prompt: str) -> bool:
+    low = prompt.casefold()
+    return (
+        not any(term in low for term in _GIT_PUSH_NEGATIONS)
+        and any(term in low for term in _GIT_PUSH_TERMS)
+    )
+
+
+def git_push_target(prompt: str) -> tuple[str, str]:
+    """Extract a simple ``remote ref`` target, with the planner's safe default."""
+
+    patterns = (
+        r"\bgit\s+push(?:\s+(?:to|到))?\s+([\w./-]+)\s+([\w./-]+)",
+        r"(?:推送代码|推送)到\s*([\w./-]+)\s+([\w./-]+)",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, prompt, flags=re.IGNORECASE)
+        if match:
+            return match.group(1), match.group(2)
+    return "origin", "main"
+
+
+def refund_amount(prompt: str) -> str:
+    low = prompt.casefold()
+    match = re.search(r"(\d+)\s*元|(\d+)\s*rmb|amount=(\d+)", low)
+    if not match:
+        return "100"
+    return match.group(1) or match.group(2) or match.group(3)
+
+
 @dataclass(frozen=True)
 class PlanStep:
     """One tool call the scheduler intends to request a permit for."""
@@ -31,6 +84,12 @@ class ExecutionPlan:
     skill_name: str | None
     steps: list[PlanStep]
     rationale: str
+    # Set by model-backed planners so the runtime can expose the model that
+    # actually produced this plan without parsing a human-readable rationale.
+    provider_model: str | None = None
+    # A planner may return a direct answer or clarification when no tool is
+    # needed. Workflow Runtime must not silently discard that response.
+    planner_output: str | None = None
 
 
 class Planner(Protocol):
@@ -44,14 +103,18 @@ class KeywordPlanner:
         p = prompt.lower()
 
         # git push — check before the broader git/commit route.
-        if any(k in p for k in ["git push", "push 到", "push到", "push 一下"]):
+        if is_git_push_prompt(prompt):
+            remote, ref = git_push_target(prompt)
             return ExecutionPlan(
                 skill_name="git_safe_commit",
-                steps=[PlanStep("shell:git push", ["origin", "main"])],
-                rationale="route: git push (single step; expected to need review)",
+                steps=[PlanStep("shell:git push", [remote, ref])],
+                rationale=(
+                    f"route: git push {remote} {ref} "
+                    "(single step; expected to need review)"
+                ),
             )
 
-        if any(k in p for k in ["commit", "git"]) and "push" not in p:
+        if any(k in p for k in ["commit", "git"]):
             return ExecutionPlan(
                 skill_name="git_safe_commit",
                 steps=[
@@ -74,7 +137,7 @@ class KeywordPlanner:
             )
 
         if any(k in p for k in ["退款", "refund"]):
-            amount = self._extract_amount(p)
+            amount = refund_amount(prompt)
             return ExecutionPlan(
                 skill_name="refund_request",
                 steps=[PlanStep("tool:refund", ["refund", f"amount={amount}"])],
@@ -98,10 +161,3 @@ class KeywordPlanner:
     @staticmethod
     def _commit_message(prompt: str) -> str:
         return prompt[:80]
-
-    @staticmethod
-    def _extract_amount(prompt_lower: str) -> str:
-        m = re.search(r"(\d+)\s*元|(\d+)\s*rmb|amount=(\d+)", prompt_lower)
-        if not m:
-            return "100"
-        return m.group(1) or m.group(2) or m.group(3)

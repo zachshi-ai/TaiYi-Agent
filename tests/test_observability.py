@@ -68,10 +68,10 @@ def test_runtime_emits_traces_and_metrics():
     runtime = TaskRuntime(sched, audit_log=audit, observability=obs)
 
     ctx = runtime.run("commit my changes", "dev.git")
-    assert ctx.state is TaskState.COMPLETED
+    assert ctx.state is TaskState.SIMULATED
 
     assert obs.tasks_total.value() == 1
-    assert obs.task_state.value(state="COMPLETED") == 1
+    assert obs.task_state.value(state="SIMULATED") == 1
     assert obs.governance_verdict.value(verdict="ALLOW") == 4  # four cleared steps
     assert obs.task_duration.count == 1
 

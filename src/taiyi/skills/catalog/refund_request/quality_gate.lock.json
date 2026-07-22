@@ -1,0 +1,73 @@
+{
+  "schema_version": 1,
+  "runner_version": "taiyi.skill-gate/v5",
+  "skill": "refund_request",
+  "artifact_digest": "sha256:55785e5d080aa248cc6a852637236b7a4b7e0f9493c735cea9e8d97c4d9ac24a",
+  "environment": "mock",
+  "verified_at": "2026-07-21T20:04:59.929972Z",
+  "results": [
+    {
+      "id": "large_refund_needs_review",
+      "outcome": "PASS",
+      "detail": "all declared expectations satisfied",
+      "observed": {
+        "state": "NEEDS_REVIEW",
+        "executed_tools": [],
+        "held_tool": "tool:refund",
+        "matched_rule_ids": [
+          "customer_service.refund.amount_over_threshold"
+        ],
+        "approval_required": true,
+        "evidence_checks_pass": [],
+        "evidence_checks_fail": [],
+        "selected_skill": "refund_request"
+      }
+    },
+    {
+      "id": "small_refund_auto",
+      "outcome": "PASS",
+      "detail": "all declared expectations satisfied",
+      "observed": {
+        "state": "SIMULATED",
+        "executed_tools": [
+          "tool:refund"
+        ],
+        "held_tool": null,
+        "matched_rule_ids": [],
+        "approval_required": false,
+        "evidence_checks_pass": [
+          "executed_steps_have_outputs",
+          "no_surrender_language",
+          "non_empty_output",
+          "refund_executed",
+          "skill_gate:small_refund_auto:objective"
+        ],
+        "evidence_checks_fail": [],
+        "selected_skill": "refund_request"
+      }
+    },
+    {
+      "id": "threshold_refund_auto",
+      "outcome": "PASS",
+      "detail": "all declared expectations satisfied",
+      "observed": {
+        "state": "SIMULATED",
+        "executed_tools": [
+          "tool:refund"
+        ],
+        "held_tool": null,
+        "matched_rule_ids": [],
+        "approval_required": false,
+        "evidence_checks_pass": [
+          "executed_steps_have_outputs",
+          "no_surrender_language",
+          "non_empty_output",
+          "refund_executed",
+          "skill_gate:threshold_refund_auto:objective"
+        ],
+        "evidence_checks_fail": [],
+        "selected_skill": "refund_request"
+      }
+    }
+  ]
+}

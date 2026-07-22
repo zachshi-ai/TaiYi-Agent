@@ -16,6 +16,41 @@ interface TaskResult {
   scenario: string;
   final_output: string | null;
   approval_id: string | null;
+  operating_mode: "quality" | "balanced" | "efficiency";
+  execution_environment: "mock" | "workspace" | "custom" | "unknown";
+  policy?: { verification_depth?: string; max_validation_rounds?: number };
+  provider_route?: { model?: string | null; provider?: string; fallback?: boolean };
+  contract?: {
+    contract_id: string;
+    checklist_id: string;
+    task_type: string;
+    task_parameters: Record<string, string>;
+    validation_required: boolean;
+    objective_evidence_required: boolean;
+    objective_covered: boolean;
+    coverage: "objective" | "baseline_only";
+    acceptance_criteria: {
+      id: string;
+      description: string;
+      evidence_kind: string;
+      scope: "baseline" | "objective";
+      authority: string;
+      environment: string;
+      configuration_digest: string;
+    }[];
+  };
+  evidence?: {
+    records?: {
+      criterion_id: string;
+      outcome: string;
+      source: string;
+      subject_digest: string;
+      contract_id: string;
+      authority: string;
+      environment: string;
+      configuration_digest: string;
+    }[];
+  };
   steps: Step[];
 }
 interface Session {
@@ -30,6 +65,7 @@ export default function Chat() {
   const [newSession, setNewSession] = useState("");
   const [prompt, setPrompt] = useState("");
   const [scenario, setScenario] = useState("");
+  const [operatingMode, setOperatingMode] = useState<"quality" | "balanced" | "efficiency">("balanced");
   const [messages, setMessages] = useState<{ role: string; content: string }[]>([]);
   const [lastResult, setLastResult] = useState<TaskResult | null>(null);
   const [loading, setLoading] = useState(false);
@@ -55,6 +91,13 @@ export default function Chat() {
 
   useEffect(() => {
     loadSessions();
+    api.getConfig()
+      .then((c) => {
+        if (["quality", "balanced", "efficiency"].includes(c.operating_mode)) {
+          setOperatingMode(c.operating_mode);
+        }
+      })
+      .catch(() => undefined);
   }, []);
 
   useEffect(() => {
@@ -67,10 +110,15 @@ export default function Chat() {
     setError("");
     setLastResult(null);
     try {
-      const res: TaskResult = await api.submitTask(prompt, scenario || undefined, sessionId);
+      const res: TaskResult = await api.submitTask(
+        prompt,
+        scenario || undefined,
+        sessionId,
+        operatingMode,
+      );
       setLastResult(res);
       setMessages((m) => [...m, { role: "user", content: prompt }]);
-      if (res.state === "COMPLETED" && res.final_output) {
+      if (["COMPLETED", "SIMULATED", "NEEDS_INPUT", "CAPABILITY_UNAVAILABLE"].includes(res.state) && res.final_output) {
         setMessages((m) => [...m, { role: "assistant", content: res.final_output! }]);
       }
       setPrompt("");
@@ -88,6 +136,8 @@ export default function Chat() {
     setNewSession("");
     setMessages([]);
   };
+
+  const contractStatus = lastResult ? acceptanceStatus(lastResult) : null;
 
   return (
     <div>
@@ -136,10 +186,28 @@ export default function Chat() {
           <div className="row">
             <strong>任务 {lastResult.task_id}</strong>
             <span className={`badge ${stateClass(lastResult.state)}`}>{lastResult.state}</span>
+            <span className="badge">{modeLabel(lastResult.operating_mode)}</span>
+            {lastResult.policy?.verification_depth && (
+              <span className="badge">验证: {lastResult.policy.verification_depth}</span>
+            )}
+            {lastResult.provider_route && (
+              <span className={`badge ${lastResult.provider_route.fallback ? "warn" : "ok"}`}>
+                模型: {lastResult.provider_route.model || lastResult.provider_route.provider}
+                {lastResult.provider_route.fallback ? "（回退）" : ""}
+              </span>
+            )}
             {lastResult.approval_id && (
               <span className="badge warn">需审批: {lastResult.approval_id}</span>
             )}
+            <span className={`badge ${lastResult.execution_environment === "mock" ? "warn" : ""}`}>
+              {lastResult.execution_environment === "mock" ? "模拟执行" : lastResult.execution_environment}
+            </span>
           </div>
+          {lastResult.state === "SIMULATED" && (
+            <div className="notice" style={{ marginTop: 10 }}>
+              本次只完成了无副作用模拟：治理与验收链路已通过，但没有向真实系统交付任何动作。
+            </div>
+          )}
           {lastResult.steps && lastResult.steps.length > 0 && (
             <div className="steps">
               {lastResult.steps.map((s, i) => (
@@ -151,12 +219,73 @@ export default function Chat() {
               ))}
             </div>
           )}
+          {contractStatus && (
+            <div className="contract-status">
+              <div className="row">
+                <strong>验收合同</strong>
+                <span className="badge">{lastResult.contract?.task_type}</span>
+                {lastResult.contract && Object.keys(lastResult.contract.task_parameters || {}).length > 0 && (
+                  <span className="mono muted">
+                    {JSON.stringify(lastResult.contract.task_parameters)}
+                  </span>
+                )}
+                <span className={`badge ${contractStatus.complete ? "ok" : "warn"}`}>
+                  {contractStatus.passed}/{contractStatus.criteria.length} 当前产物通过
+                </span>
+                <span className="mono muted" title={lastResult.contract?.contract_id}>
+                  {shortDigest(lastResult.contract?.contract_id || "")}
+                </span>
+                {!lastResult.contract?.objective_covered && (
+                  <span className="badge warn" title="这些检查不能证明未知任务的目标已经实现">
+                    仅基础检查
+                  </span>
+                )}
+              </div>
+              <details>
+                <summary>查看执行前冻结的验收标准</summary>
+                {contractStatus.criteria.map((criterion) => (
+                  <div className="criterion-line" key={criterion.id}>
+                    <span className={`badge ${criterion.outcome === "PASS" ? "ok" : "warn"}`}>
+                      {criterion.outcome}
+                    </span>
+                    <span>
+                      <strong>{criterion.id}</strong> · {criterion.description}
+                      <span className="muted">
+                        （{criterion.scope === "objective" ? "目标" : "基础"} · {criterion.evidence_kind}
+                        · {criterion.authority}/{criterion.environment}）
+                      </span>
+                    </span>
+                  </div>
+                ))}
+              </details>
+            </div>
+          )}
         </div>
       )}
 
       {error && <div className="error">{error}</div>}
 
-      <div className="row">
+      <div className="mode-switch" role="group" aria-label="Agent 运行模式">
+        {([
+          ["quality", "质量", "多验证，重要歧义先问"],
+          ["balanced", "平衡", "该问就问，该快就快"],
+          ["efficiency", "效率", "AI 主导，直达目标"],
+        ] as const).map(([value, label, hint]) => (
+          <button
+            key={value}
+            type="button"
+            className={operatingMode === value ? "active" : ""}
+            onClick={() => setOperatingMode(value)}
+            aria-pressed={operatingMode === value}
+            aria-label={`${label}模式：${hint}`}
+            title={hint}
+          >
+            <strong>{label}</strong>
+            <span>{hint}</span>
+          </button>
+        ))}
+      </div>
+      <div className="row" style={{ marginTop: 8 }}>
         <textarea
           placeholder="输入任务…"
           value={prompt}
@@ -170,7 +299,7 @@ export default function Chat() {
         <button onClick={send} disabled={loading || !prompt.trim()}>
           {loading ? "执行中…" : "发送 (⌘↵)"}
         </button>
-        <span className="muted">每步工具调用都经治理 permit 校验</span>
+        <span className="muted">每步工具调用都经治理 permit 校验 · 本任务使用{modeLabel(operatingMode)}</span>
       </div>
     </div>
   );
@@ -178,10 +307,46 @@ export default function Chat() {
 
 function stateClass(s: string) {
   if (s === "COMPLETED") return "ok";
-  if (s === "NEEDS_REVIEW") return "warn";
-  if (s === "REJECTED" || s === "FAILED") return "danger";
+  if (s === "SIMULATED") return "warn";
+  if (s === "NEEDS_REVIEW" || s === "NEEDS_INPUT") return "warn";
+  if (s === "REJECTED" || s === "FAILED" || s === "CAPABILITY_UNAVAILABLE") return "danger";
   return "";
 }
+
+function modeLabel(mode: string) {
+  if (mode === "quality") return "质量模式";
+  if (mode === "efficiency") return "效率模式";
+  return "平衡模式";
+}
+
+function acceptanceStatus(result: TaskResult) {
+  const contract = result.contract;
+  if (!contract || !contract.validation_required) return null;
+  const records = result.evidence?.records || [];
+  const currentRecord = [...records]
+    .reverse()
+    .find((r) => r.contract_id === contract.contract_id);
+  const subjectDigest = currentRecord?.subject_digest;
+  const criteria = contract.acceptance_criteria.map((criterion) => {
+    const evidence = [...records].reverse().find(
+      (r) => r.contract_id === contract.contract_id
+        && r.subject_digest === subjectDigest
+        && r.criterion_id === criterion.id
+        && r.source === criterion.evidence_kind
+        && r.authority === criterion.authority
+        && r.environment === criterion.environment
+        && r.configuration_digest === criterion.configuration_digest,
+    );
+    return { ...criterion, outcome: evidence?.outcome || "PENDING" };
+  });
+  const passed = criteria.filter((c) => c.outcome === "PASS").length;
+  return { criteria, passed, complete: criteria.length > 0 && passed === criteria.length };
+}
+
+function shortDigest(digest: string) {
+  return digest ? `合同 ${digest.replace(/^sha256:/, "").slice(0, 10)}` : "";
+}
+
 function verdictClass(v: string) {
   if (v.includes("ALLOW")) return "ok";
   if (v.includes("DENY") || v.includes("REJECT")) return "danger";

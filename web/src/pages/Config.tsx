@@ -8,9 +8,13 @@ export default function Config() {
   const [config, setConfig] = useState<any>(null);
   const [provider, setProvider] = useState("offline");
   const [model, setModel] = useState("");
+  const [qualityModel, setQualityModel] = useState("");
+  const [balancedModel, setBalancedModel] = useState("");
+  const [efficiencyModel, setEfficiencyModel] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [apiKey, setApiKey] = useState("");
-  const [mode, setMode] = useState("agent");
+  const [runtimeMode, setRuntimeMode] = useState("agent");
+  const [operatingMode, setOperatingMode] = useState("balanced");
   const [token, setTokenInput] = useState(getToken());
   const [saved, setSaved] = useState("");
   const [error, setError] = useState("");
@@ -23,8 +27,12 @@ export default function Config() {
       setConfig(c);
       setProvider(c.provider?.replace(/^live:/, "") || "offline");
       setModel(c.model || "");
+      setQualityModel(c.quality_model || "");
+      setBalancedModel(c.balanced_model || "");
+      setEfficiencyModel(c.efficiency_model || "");
       setBaseUrl(c.base_url || "");
-      setMode(c.mode || "agent");
+      setRuntimeMode(c.runtime_mode || c.mode || "agent");
+      setOperatingMode(c.operating_mode || "balanced");
       setApiKey(""); // never echo the stored value; user re-types to change
       setError("");
     } catch (e: any) {
@@ -39,7 +47,14 @@ export default function Config() {
   const needsKey = !NO_KEY_PROVIDERS.has(provider);
 
   const buildUpdates = () => {
-    const updates: Record<string, any> = { provider, mode };
+    const updates: Record<string, any> = {
+      provider,
+      runtime_mode: runtimeMode,
+      operating_mode: operatingMode,
+      quality_model: qualityModel,
+      balanced_model: balancedModel,
+      efficiency_model: efficiencyModel,
+    };
     if (model) updates.model = model;
     if (baseUrl) updates.base_url = baseUrl;
     if (needsKey) {
@@ -101,7 +116,8 @@ export default function Config() {
         <div className="card">
           <h2 style={{ marginTop: 0 }}>当前运行状态</h2>
           <div className="mono">
-            mode: <span className="badge">{config.mode}</span>　
+            runtime: <span className="badge">{config.runtime_mode || config.mode}</span>　
+            operating: <span className="badge">{config.operating_mode || "balanced"}</span>　
             provider: <span className="badge">{config.provider}</span>　
             model: <span className="badge">{config.model || "默认"}</span>　
             {config.base_url && <span>base_url: {config.base_url}</span>}
@@ -110,16 +126,40 @@ export default function Config() {
             config_path: {config.config_path || "(无配置文件)"} · base_dir: {config.base_dir || "(内存)"}
             {config.api_key_set != null && ` · api_key: ${config.api_key_set ? "已设置" : "未设置"}`}
           </p>
+          <div className="row" style={{ marginTop: 8 }}>
+            <span className="muted">独立权威检查:</span>
+            {(config.validation_authorities || []).length === 0 ? (
+              <span className="badge warn">未配置（仅 Harness 检查）</span>
+            ) : (
+              config.validation_authorities.map((authority: any) => (
+                <span
+                  className="badge ok"
+                  key={`${authority.name}:${authority.environment}`}
+                  title="验证器只读，不信任执行器的成功文本"
+                >
+                  {authority.name} · {authority.environment} ·
+                  {authority.network_access ? " 网络只读" : " 本地只读"}
+                  {authority.expected_login ? ` · 预期账号 ${authority.expected_login}` : ""}
+                </span>
+              ))
+            )}
+          </div>
         </div>
       )}
 
       <div className="card">
         <h2 style={{ marginTop: 0 }}>LLM 配置</h2>
         <div className="row" style={{ marginBottom: 10 }}>
-          <label>mode</label>
-          <select value={mode} onChange={(e) => setMode(e.target.value)}>
+          <label>执行形态</label>
+          <select value={runtimeMode} onChange={(e) => setRuntimeMode(e.target.value)}>
             <option value="agent">agent (ReAct)</option>
             <option value="workflow">workflow (plan-once)</option>
+          </select>
+          <label style={{ marginLeft: 16 }}>默认运行策略</label>
+          <select value={operatingMode} onChange={(e) => setOperatingMode(e.target.value)}>
+            <option value="quality">质量优先</option>
+            <option value="balanced">平衡（默认）</option>
+            <option value="efficiency">效率优先</option>
           </select>
           <label style={{ marginLeft: 16 }}>协议</label>
           <select value={provider} onChange={(e) => setProvider(e.target.value)}>
@@ -150,6 +190,37 @@ export default function Config() {
                 onChange={(e) => setModel(e.target.value)}
                 style={{ flex: 1 }}
               />
+            </div>
+            <div style={{ marginBottom: 10 }}>
+              <p className="muted" style={{ fontSize: 12, margin: "0 0 6px" }}>
+                三档模型路由（留空时回退到上面的默认 model，并在任务证据中标记 fallback）
+              </p>
+              <div className="row">
+                <label>质量</label>
+                <input
+                  type="text"
+                  placeholder="最强胜任模型"
+                  value={qualityModel}
+                  onChange={(e) => setQualityModel(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+                <label>平衡</label>
+                <input
+                  type="text"
+                  placeholder="自适应模型"
+                  value={balancedModel}
+                  onChange={(e) => setBalancedModel(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+                <label>效率</label>
+                <input
+                  type="text"
+                  placeholder="最快胜任模型"
+                  value={efficiencyModel}
+                  onChange={(e) => setEfficiencyModel(e.target.value)}
+                  style={{ flex: 1 }}
+                />
+              </div>
             </div>
             {needsKey && (
               <div className="row" style={{ marginBottom: 10 }}>

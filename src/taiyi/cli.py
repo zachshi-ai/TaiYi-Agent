@@ -16,14 +16,22 @@ from taiyi.gateway.server import make_server
 def _gateway(args):
     if getattr(args, "config", None):
         return build_gateway_from_config(load_config(args.config))
-    return build_gateway(base_dir=args.base_dir)
+    return build_gateway(
+        base_dir=args.base_dir,
+        operating_mode=getattr(args, "operating_mode", None) or "balanced",
+    )
 
 
 def _run(args) -> int:
     gw = _gateway(args)
-    ctx = gw.submit(args.prompt, scenario=args.scenario)
+    ctx = gw.submit(
+        args.prompt,
+        scenario=args.scenario,
+        operating_mode=args.operating_mode,
+    )
     print(f"state:    {ctx.state.value}")
     print(f"scenario: {ctx.scenario}")
+    print(f"mode:     {ctx.operating_mode}")
     if ctx.plan and ctx.plan.skill_name:
         print(f"skill:    {ctx.plan.skill_name}")
     executed = [s.step.tool for s in ctx.executed_steps]
@@ -34,7 +42,7 @@ def _run(args) -> int:
     if ctx.final_output:
         print("---")
         print(ctx.final_output)
-    return 0 if ctx.state.value in ("COMPLETED", "NEEDS_REVIEW") else 1
+    return 0 if ctx.state.value in ("COMPLETED", "SIMULATED", "NEEDS_REVIEW") else 1
 
 
 def _serve(args) -> int:
@@ -123,6 +131,51 @@ def _review(args) -> int:
     return 0
 
 
+def _verify_skills(args) -> int:
+    """Execute Skill quality-gate cases and optionally write fresh release locks."""
+    import json
+
+    from taiyi.skills import DEFAULT_SKILLS_DIR, SkillRegistry
+    from taiyi.skills.verification import SkillGateRunner
+
+    registry = SkillRegistry.load_dir(args.skills_dir or DEFAULT_SKILLS_DIR)
+    selected = registry.all()
+    if args.skill:
+        wanted = set(args.skill)
+        selected = [s for s in selected if s.name in wanted]
+        missing = sorted(wanted - {s.name for s in selected})
+        if missing:
+            print(f"unknown skill(s): {', '.join(missing)}", file=sys.stderr)
+            return 2
+    if not selected:
+        print("no skills found", file=sys.stderr)
+        return 2
+
+    runner = SkillGateRunner()
+    reports = [runner.run(skill) for skill in selected]
+    if args.write_lock:
+        for skill, report in zip(selected, reports):
+            if report.passes and skill.path is not None:
+                report.write_lock(skill.path)
+
+    if args.json:
+        print(json.dumps(
+            {"outcome": "PASS" if all(r.passes for r in reports) else "FAIL",
+             "reports": [r.to_dict() for r in reports]},
+            ensure_ascii=False,
+            indent=2,
+        ))
+    else:
+        for report in reports:
+            mark = "PASS" if report.passes else "FAIL"
+            print(f"[{mark}] {report.skill} ({report.environment})")
+            for case in report.results:
+                print(f"  {case.outcome:4} {case.case_id}: {case.detail}")
+        if args.write_lock:
+            print("release locks updated for passing skills")
+    return 0 if all(r.passes for r in reports) else 1
+
+
 def _prompt(question: str, default: str = "", *, choices=None) -> str:
     """Ask on stdin with a default shown in brackets. Empty input keeps default."""
     hint = f" [{default}]" if default else ""
@@ -158,15 +211,25 @@ auth_tokens: {cfg['auth_tokens']}
 executor: {cfg['executor']}
 sandbox_dir: {cfg['sandbox_dir']}
 sandbox_backend: {cfg['sandbox_backend']}   # local | sandbox_exec (macOS deny-all)
+external_git_validation: {str(cfg['external_git_validation']).lower()}  # read-only Git authority
+external_git_remote_validation: {str(cfg['external_git_remote_validation']).lower()}  # opt-in remote ref authority
+external_github_validation: {str(cfg['external_github_validation']).lower()}  # opt-in GitHub platform authority
+github_expected_login: {y(cfg['github_expected_login'])}
 
-max_rounds: {cfg['max_rounds']}
-mode: {cfg['mode']}                # agent (ReAct, default) | workflow (plan-once)
+# null uses the operating-mode profile (quality=3, balanced=2, efficiency=1).
+max_rounds: {y(cfg['max_rounds'])}
+runtime_mode: {cfg['runtime_mode']}        # agent (ReAct) | workflow (plan-once)
+operating_mode: {cfg['operating_mode']}   # quality | balanced | efficiency
 
 # LLM provider. offline = deterministic, zero tokens/network. For a real model,
 # set provider + base_url + model (+ api_key). Requires:  pip install "taiyi[live] @ ..."
 provider: {cfg['provider']}
 base_url: {y(cfg['base_url'])}
 model: {y(cfg['model'])}
+# Optional per-mode models on the same endpoint. null falls back to model.
+quality_model: {y(cfg['quality_model'])}
+balanced_model: {y(cfg['balanced_model'])}
+efficiency_model: {y(cfg['efficiency_model'])}
 api_key: {y(cfg['api_key'])}
 api_key_env: {y(cfg['api_key_env'])}
 
@@ -192,8 +255,12 @@ def _init(args) -> int:
     cfg = {
         "base_dir": "./state", "host": "127.0.0.1", "port": 8080,
         "auth_tokens": "[]", "executor": "mock", "sandbox_dir": "./state/sandbox",
-        "sandbox_backend": "local", "max_rounds": 1, "mode": "agent",
+        "sandbox_backend": "local", "external_git_validation": True,
+        "external_git_remote_validation": False, "external_github_validation": False,
+        "github_expected_login": None, "max_rounds": None,
+        "runtime_mode": "agent", "operating_mode": "balanced",
         "provider": "offline", "base_url": None, "model": None,
+        "quality_model": None, "balanced_model": None, "efficiency_model": None,
         "api_key": None, "api_key_env": None, "log_level": "info",
     }
 
@@ -213,6 +280,10 @@ def _init(args) -> int:
             cfg["api_key"] = key or None
         cfg["executor"] = _prompt("executor (mock/sandbox)", "mock",
                                   choices=["mock", "sandbox"])
+        cfg["operating_mode"] = _prompt(
+            "default operating mode (quality/balanced/efficiency)", "balanced",
+            choices=["quality", "balanced", "efficiency"],
+        )
         if cfg["executor"] == "sandbox" and sys.platform == "darwin":
             cfg["sandbox_backend"] = _prompt(
                 "sandbox_backend (local/sandbox_exec)", "sandbox_exec",
@@ -238,6 +309,12 @@ def main(argv=None) -> int:
     run = sub.add_parser("run", help="run a single task")
     run.add_argument("prompt")
     run.add_argument("--scenario", default=None)
+    run.add_argument(
+        "--operating-mode",
+        choices=["quality", "balanced", "efficiency"],
+        default=None,
+        help="per-task execution strategy (default: config or balanced)",
+    )
     run.add_argument("--base-dir", default=None)
     run.add_argument("--config", default=None, help="path to taiyi.yaml")
     run.set_defaults(func=_run)
@@ -247,6 +324,12 @@ def main(argv=None) -> int:
     serve.add_argument("--port", type=int, default=None, help="bind port (default: config or 8080)")
     serve.add_argument("--token", action="append", help="valid bearer token (repeatable)")
     serve.add_argument("--base-dir", default=None)
+    serve.add_argument(
+        "--operating-mode",
+        choices=["quality", "balanced", "efficiency"],
+        default=None,
+        help="default execution strategy when no config file is used",
+    )
     serve.add_argument("--config", default=None, help="path to taiyi.yaml")
     serve.add_argument("--static-dir", default=None, help="directory of built web assets (default: web/dist)")
     serve.set_defaults(func=_serve)
@@ -262,6 +345,20 @@ def main(argv=None) -> int:
     review.add_argument("--base-dir", default=None)
     review.add_argument("--config", default=None, help="path to taiyi.yaml")
     review.set_defaults(func=_review)
+
+    verify = sub.add_parser(
+        "verify-skills",
+        help="run executable Skill quality gates in the side-effect-free harness",
+    )
+    verify.add_argument("--skills-dir", default=None, help="Skill catalog directory")
+    verify.add_argument("--skill", action="append", help="verify only this Skill (repeatable)")
+    verify.add_argument(
+        "--write-lock",
+        action="store_true",
+        help="write quality_gate.lock.json only for passing Skills",
+    )
+    verify.add_argument("--json", action="store_true", help="emit a machine-readable report")
+    verify.set_defaults(func=_verify_skills)
 
     init = sub.add_parser("init", help="interactively generate a taiyi.yaml")
     init.add_argument("-o", "--output", default="taiyi.yaml", help="path to write (default: taiyi.yaml)")

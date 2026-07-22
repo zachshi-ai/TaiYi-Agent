@@ -1,4 +1,4 @@
-"""太一 / The One (Taiyi) — a production-grade Agent OS.
+"""太一 / The One (Taiyi) — a governed Agent harness evolving toward production.
 
 Core thesis: governance authority and scheduling authority must be physically
 separated. A module that both *does* the work and *signs off* on the work has a

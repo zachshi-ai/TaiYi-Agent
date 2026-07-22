@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
+from taiyi.policy import EvidenceLedger, TaskContract, TaskPolicy
 from taiyi.runtime.state import TaskState
 from taiyi.scheduler import ExecutionPlan, PlanStep
 from taiyi.value_stream.goals import TaskGoal, ValueContribution
@@ -52,7 +53,19 @@ class TaskContext:
     error: str | None = None
     approval_id: str | None = None
     round: int = 0
+    executed_action_count: int = 0
+    validation_attempts: int = 0
     validation_summary: str | None = None
+    operating_mode: str = "balanced"
+    execution_environment: str = "unknown"
+    selected_skill: str | None = None
+    scenario_definition: str | None = field(default=None, repr=False)
+    skill_instructions: str | None = field(default=None, repr=False)
+    policy: TaskPolicy | None = None
+    provider_route: dict | None = None
+    contract: TaskContract | None = None
+    validation_checklist: object | None = field(default=None, repr=False)
+    evidence: EvidenceLedger = field(default_factory=EvidenceLedger)
     goal: TaskGoal | None = None
     value_contribution: ValueContribution | None = None
     created_at: float = field(default_factory=time.time)
@@ -72,13 +85,22 @@ class TaskContext:
             "prompt": self.prompt,
             "scenario": self.scenario,
             "state": self.state.value,
-            "skill": self.plan.skill_name if self.plan else None,
+            "skill": self.selected_skill or (self.plan.skill_name if self.plan else None),
             "steps": [s.to_dict() for s in self.step_results],
             "final_output": self.final_output,
             "error": self.error,
             "approval_id": self.approval_id,
             "round": self.round,
+            "executed_action_count": self.executed_action_count,
+            "validation_attempts": self.validation_attempts,
             "validation_summary": self.validation_summary,
+            "operating_mode": self.operating_mode,
+            "execution_environment": self.execution_environment,
+            "selected_skill": self.selected_skill,
+            "policy": self.policy.to_dict() if self.policy else None,
+            "provider_route": self.provider_route,
+            "contract": self.contract.to_dict() if self.contract else None,
+            "evidence": self.evidence.to_dict(),
             "goal": self.goal.to_dict() if self.goal else None,
             "value_contribution": self.value_contribution.to_dict() if self.value_contribution else None,
         }
