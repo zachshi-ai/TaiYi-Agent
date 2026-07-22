@@ -21,10 +21,18 @@ from taiyi.approvals import ApprovalStore, PendingApproval
 from taiyi.core.audit import AuditLog
 from taiyi.core.types import Verdict
 from taiyi.iteration import IterationEngine
+from taiyi.llm.router import ProviderRouter
 from taiyi.memory import MemoryEngine
 from taiyi.observability import Observability
+from taiyi.policy import (
+    CompletionAction,
+    CompletionController,
+    OperatingMode,
+    resolve_policy,
+)
 from taiyi.runtime.context import StepResult, TaskContext
 from taiyi.runtime.executor import Executor, MockExecutor
+from taiyi.runtime.quality import prepare_quality_contract
 from taiyi.runtime.state import TaskState
 from taiyi.scheduler import SchedulerEngine
 from taiyi.validation import ValidationContext, ValidationEngine
@@ -45,7 +53,9 @@ class TaskRuntime:
         iteration: IterationEngine | None = None,
         approvals: ApprovalStore | None = None,
         committee=None,
-        max_rounds: int = 1,
+        max_rounds: int | None = None,
+        default_operating_mode: str | OperatingMode = OperatingMode.BALANCED,
+        provider_router: ProviderRouter | None = None,
     ):
         self.scheduler = scheduler
         self.audit = audit_log
@@ -57,7 +67,11 @@ class TaskRuntime:
         self.iteration = iteration
         self.approvals = approvals
         self.committee = committee
-        self.max_rounds = max(1, max_rounds)
+        self.max_rounds = max(1, max_rounds) if max_rounds is not None else None
+        self.default_operating_mode = OperatingMode.parse(default_operating_mode)
+        self.provider_router = provider_router
+        self.provider = provider_router.default_provider if provider_router else None
+        self.completion = CompletionController()
 
     def run(
         self,
@@ -66,20 +80,63 @@ class TaskRuntime:
         *,
         user_id: str = "u1",
         session_id: str = "s1",
+        operating_mode: str | OperatingMode | None = None,
+        scenario_definition: str | None = None,
+        skill_name: str | None = None,
+        skill_instructions: str | None = None,
+        capability_error: str | None = None,
     ) -> TaskContext:
+        policy = resolve_policy(operating_mode or self.default_operating_mode, scenario=scenario)
+        provider_selection = self.provider_router.select(policy) if self.provider_router else None
+        contract, checklist = prepare_quality_contract(
+            validator=self.validator,
+            prompt=prompt,
+            scenario=scenario,
+            policy=policy,
+            selected_skill=skill_name,
+        )
         ctx = TaskContext(
             task_id=f"t_{int(time.time() * 1000)}_{len(self.audit)}",
             prompt=prompt,
             scenario=scenario,
             user_id=user_id,
             session_id=session_id,
+            operating_mode=policy.requested_mode.value,
+            execution_environment=getattr(self.executor, "environment", "custom"),
+            selected_skill=skill_name,
+            scenario_definition=scenario_definition,
+            skill_instructions=skill_instructions,
+            policy=policy,
+            provider_route=(provider_selection.to_dict() if provider_selection else None),
+            contract=contract,
+            validation_checklist=checklist,
         )
         start = time.time()
-        self.audit.append("task_start", task_id=ctx.task_id, prompt=prompt, scenario=scenario)
+        self.audit.append(
+            "task_start", task_id=ctx.task_id, prompt=prompt, scenario=scenario,
+            mode="workflow", operating_mode=ctx.operating_mode, policy=policy.to_dict(),
+            execution_environment=ctx.execution_environment,
+            provider_route=ctx.provider_route,
+            contract=contract.to_dict(),
+        )
         if self.memory is not None:
             self.memory.add_message(session_id, "user", prompt)
         if self.value_stream is not None:
             ctx.goal = self.value_stream.anchor(prompt, scenario)  # L1: anchor goal
+
+        capability_error = capability_error or contract.coverage_problem
+        if capability_error:
+            ctx.error = capability_error
+            ctx.final_output = capability_error
+            ctx.touch(TaskState.CAPABILITY_UNAVAILABLE)
+            self.audit.append(
+                "capability_unavailable",
+                task_id=ctx.task_id,
+                scenario=scenario,
+                error=capability_error,
+            )
+            self._finish(ctx, start)
+            return ctx
 
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         if self.obs is not None:
@@ -98,34 +155,68 @@ class TaskRuntime:
         return ctx
 
     def _execute_rounds(self, ctx: TaskContext, trace) -> None:
-        for rnd in range(1, self.max_rounds + 1):
+        assert ctx.policy is not None
+        round_limit = self.max_rounds or ctx.policy.max_validation_rounds
+        for rnd in range(1, round_limit + 1):
             ctx.round = rnd
             ctx.step_results = []
             with self._span(trace, "plan"):
                 self._plan(ctx)
+            if (
+                ctx.plan is not None
+                and not ctx.plan.steps
+                and (ctx.plan.planner_output or "").upper().startswith("QUESTION:")
+            ):
+                ctx.final_output = ctx.plan.planner_output
+                ctx.touch(TaskState.NEEDS_INPUT)
+                self.audit.append(
+                    "task_needs_input",
+                    task_id=ctx.task_id,
+                    operating_mode=ctx.operating_mode,
+                    question=ctx.final_output,
+                )
+                return
             with self._span(trace, "do"):
                 completed = self._do(ctx)
             if not completed:
                 return  # DENY / NEEDS_REVIEW / failed execution: terminal state set
 
-            ctx.final_output = self._synthesize(ctx)
+            ctx.final_output = (
+                ctx.plan.planner_output
+                if ctx.plan is not None and not ctx.plan.steps and ctx.plan.planner_output
+                else self._synthesize(ctx)
+            )
             with self._span(trace, "validate"):
                 vr = self._validate(ctx)
-            if vr is None or vr.passed:
-                ctx.touch(TaskState.COMPLETED)
-                self.audit.append(
-                    "task_completed", task_id=ctx.task_id, round=rnd, steps=len(ctx.executed_steps)
+            action = (
+                CompletionAction.COMPLETE
+                if vr is None
+                else self.completion.assess(ctx.contract, ctx.evidence, vr)
+            )
+            if action is CompletionAction.COMPLETE:
+                self._accept_completion(ctx, round_number=rnd)
+                return
+
+            if action is CompletionAction.NEEDS_HUMAN:
+                ctx.validation_summary = vr.repair_feedback
+                ctx.final_output = (
+                    f"QUESTION: Please review this validation result: {vr.repair_feedback}"
                 )
-                self._remember_completion(ctx)
+                ctx.touch(TaskState.NEEDS_INPUT)
+                self.audit.append(
+                    "validation_needs_human", task_id=ctx.task_id,
+                    summary=ctx.validation_summary,
+                )
                 return
 
             # Validation failed → bounce back into PDCA.
-            ctx.validation_summary = vr.summary
+            ctx.validation_attempts += 1
+            ctx.validation_summary = vr.repair_feedback
             self.audit.append(
                 "validation_failed", task_id=ctx.task_id, round=rnd, failed=vr.failed_checks
             )
 
-        ctx.error = f"validation failed after {self.max_rounds} round(s): {ctx.validation_summary}"
+        ctx.error = f"validation failed after {round_limit} round(s): {ctx.validation_summary}"
         ctx.touch(TaskState.FAILED)
         self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
 
@@ -134,6 +225,17 @@ class TaskRuntime:
         return trace.span(name) if trace is not None else nullcontext()
 
     def _finish(self, ctx: TaskContext, start: float) -> None:
+        if (
+            self.memory is not None
+            and ctx.final_output
+            and ctx.state in (
+                TaskState.COMPLETED,
+                TaskState.SIMULATED,
+                TaskState.NEEDS_INPUT,
+                TaskState.CAPABILITY_UNAVAILABLE,
+            )
+        ):
+            self.memory.add_message(ctx.session_id, "assistant", ctx.final_output)
         if self.iteration is not None:
             self.iteration.record(ctx)  # L5: feed the OODA outer loop
         if self.obs is None:
@@ -151,13 +253,55 @@ class TaskRuntime:
     # --- P -------------------------------------------------------------------
     def _plan(self, ctx: TaskContext) -> None:
         ctx.touch(TaskState.PLANNING)
-        ctx.plan = self.scheduler.plan(ctx.prompt, ctx.scenario)
+        planning_prompt = ctx.prompt
+        assert ctx.policy is not None
+        trusted_parts = [ctx.policy.system_guidance]
+        if ctx.contract is not None:
+            trusted_parts.append(ctx.contract.prompt_block())
+        if ctx.scenario_definition:
+            trusted_parts.append("Trusted scenario definition:\n" + ctx.scenario_definition)
+        if ctx.skill_instructions:
+            trusted_parts.append(
+                f"Selected production-eligible skill ({ctx.selected_skill or 'unnamed'}):\n"
+                + ctx.skill_instructions
+            )
+        if ctx.validation_summary:
+            planning_prompt += (
+                "\n\nPrevious attempt failed these acceptance checks:\n"
+                f"{ctx.validation_summary}\n"
+                "Produce a corrected plan that addresses this evidence; do not repeat the same plan."
+            )
+        ctx.plan = self.scheduler.plan(
+            planning_prompt,
+            ctx.scenario,
+            context="\n\n".join(trusted_parts),
+            provider=(
+                self.provider_router.select(ctx.policy).provider
+                if self.provider_router is not None
+                else None
+            ),
+        )
+        if len(ctx.plan.steps) > ctx.policy.max_steps:
+            self.audit.append(
+                "plan_budget_exceeded",
+                task_id=ctx.task_id,
+                round=ctx.round,
+                planned_steps=len(ctx.plan.steps),
+                max_steps=ctx.policy.max_steps,
+            )
+            raise RuntimeError(
+                f"planner proposed {len(ctx.plan.steps)} steps; "
+                f"{ctx.operating_mode} mode permits at most {ctx.policy.max_steps}"
+            )
+        if ctx.provider_route is not None and ctx.plan.provider_model:
+            ctx.provider_route["last_response_model"] = ctx.plan.provider_model
         self.audit.append(
             "plan_created",
             task_id=ctx.task_id,
             round=ctx.round,
             skill=ctx.plan.skill_name,
             steps=[s.tool for s in ctx.plan.steps],
+            provider_route=ctx.provider_route,
         )
 
     # --- D --------------------------------------------------------------------
@@ -241,6 +385,7 @@ class TaskRuntime:
             result = self.executor.execute(step)
             sr.executed = True
             sr.output = result.output
+            ctx.executed_action_count += 1
             self.audit.append("step_executed", task_id=ctx.task_id, tool=step.tool, ok=result.ok)
             if not result.ok:
                 ctx.error = f"step failed: {step.tool}: {result.output}"
@@ -323,6 +468,7 @@ class TaskRuntime:
         held_sr.verdict = "ALLOW(human)"
         held_sr.executed = True
         held_sr.output = result.output
+        ctx.executed_action_count += 1
         self.audit.append("step_executed", task_id=ctx.task_id, tool=held_step.tool, ok=result.ok,
                           approved_by="human")
         if not result.ok:
@@ -335,13 +481,23 @@ class TaskRuntime:
 
         ctx.final_output = self._synthesize(ctx)
         vr = self._validate(ctx)
-        if vr is None or vr.passed:
-            ctx.touch(TaskState.COMPLETED)
-            self.audit.append("task_completed", task_id=ctx.task_id, steps=len(ctx.executed_steps))
-            self._remember_completion(ctx)
+        action = (
+            CompletionAction.COMPLETE
+            if vr is None
+            else self.completion.assess(ctx.contract, ctx.evidence, vr)
+        )
+        if action is CompletionAction.COMPLETE:
+            self._accept_completion(ctx)
+        elif action is CompletionAction.NEEDS_HUMAN:
+            ctx.validation_summary = vr.repair_feedback
+            ctx.final_output = (
+                f"QUESTION: Please review this validation result: {vr.repair_feedback}"
+            )
+            ctx.touch(TaskState.NEEDS_INPUT)
         else:
-            ctx.validation_summary = vr.summary
-            ctx.error = f"validation failed after resume: {vr.summary}"
+            ctx.validation_attempts += 1
+            ctx.validation_summary = vr.repair_feedback
+            ctx.error = f"validation failed after resume: {vr.repair_feedback}"
             ctx.touch(TaskState.FAILED)
         return ctx
 
@@ -349,19 +505,36 @@ class TaskRuntime:
     def _validate(self, ctx: TaskContext):
         if self.validator is None:
             return None
+        if ctx.validation_checklist is None:
+            raise RuntimeError("validator configured without a frozen validation checklist")
         ctx.touch(TaskState.VALIDATING)
         vctx = ValidationContext(
             prompt=ctx.prompt,
             scenario=ctx.scenario,
-            task_type=(ctx.plan.skill_name or "generic") if ctx.plan else "generic",
+            task_type=ctx.validation_checklist.task_type,
             executed_tools=[sr.step.tool for sr in ctx.executed_steps],
+            executed_calls=[
+                {"tool": sr.step.tool, "args": list(sr.step.args)}
+                for sr in ctx.executed_steps
+            ],
             outputs=[sr.output for sr in ctx.executed_steps if sr.output],
             final_output=ctx.final_output or "",
+            extras={"require_step_outputs": True},
         )
-        return self.validator.validate(vctx)
+        assert ctx.policy is not None
+        result = self.validator.validate(
+            vctx,
+            checklist=ctx.validation_checklist,
+        )
+        ctx.evidence.record_validation(
+            result,
+            attempt=ctx.validation_attempts + 1,
+            contract_id=ctx.contract.contract_id,
+        )
+        return result
 
     def _remember_completion(self, ctx: TaskContext) -> None:
-        skill = ctx.plan.skill_name if ctx.plan else None
+        skill = ctx.selected_skill or (ctx.plan.skill_name if ctx.plan else None)
         if self.value_stream is not None and ctx.goal is not None:  # L4: score contribution
             ctx.value_contribution = self.value_stream.score(
                 ctx.goal,
@@ -377,6 +550,31 @@ class TaskRuntime:
             source_task_id=ctx.task_id,
         )
         self.memory.observe_user(f"asked for: {ctx.prompt[:60]}")
+
+    def _accept_completion(
+        self,
+        ctx: TaskContext,
+        *,
+        round_number: int | None = None,
+    ) -> None:
+        state = TaskState.successful(
+            execution_environment=ctx.execution_environment,
+            executed_actions=ctx.executed_action_count,
+        )
+        ctx.touch(state)
+        payload = {
+            "task_id": ctx.task_id,
+            "steps": len(ctx.executed_steps),
+            "execution_environment": ctx.execution_environment,
+        }
+        if round_number is not None:
+            payload["round"] = round_number
+        self.audit.append(
+            "task_simulated" if state is TaskState.SIMULATED else "task_completed",
+            **payload,
+        )
+        if state is TaskState.COMPLETED:
+            self._remember_completion(ctx)
 
     @staticmethod
     def _synthesize(ctx: TaskContext) -> str:

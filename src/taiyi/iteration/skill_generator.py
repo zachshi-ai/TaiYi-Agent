@@ -1,9 +1,10 @@
 """Skill auto-generation — sediment a repeated task shape into a gated Skill.
 
 When the same skill-less task shape recurs, draft a Skill from its tool sequence.
-The draft is category ``auto_generated`` and ships a complete quality gate, so it
-passes the M8 gate check and can enter the *sandbox* — but, like any skill, it
-needs human approval to be promoted to ``managed`` (production).
+The draft is category ``auto_generated`` and includes one seed verification case.
+It deliberately does not meet the three-case release minimum: a human must add
+boundary/failure coverage, review the procedure, promote its category, and run
+the gate before it can enter the governed runtime catalog.
 """
 from __future__ import annotations
 
@@ -46,7 +47,21 @@ class SkillDraft:
             "admission": ["Auto-generated; pending human approval to promote to managed"],
             "exit_criteria": ["Success rate falls below the agreed baseline"],
             "verification": [
-                {"id": "runs_to_completion", "description": "the recorded tool sequence completes"}
+                {
+                    "id": "runs_to_completion",
+                    "description": "the recorded tool sequence passes in simulation",
+                    "purpose": "skill_contract",
+                    "runner": "declared_plan_workflow",
+                    "prompt": f"Execute the observed workflow for {self.scenario}",
+                    "scenario": self.scenario,
+                    "operating_mode": "quality",
+                    "plan": [{"tool": tool, "args": []} for tool in self.tools],
+                    "expect": {
+                        "state": "SIMULATED",
+                        "selected_skill": self.name,
+                        "executed_tools_contains": list(self.tools),
+                    },
+                }
             ],
             "side_effects": ["Inherits the side effects of the underlying tools"],
             "upgrade": ["Human approval required to promote to managed"],

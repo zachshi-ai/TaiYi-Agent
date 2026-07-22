@@ -111,6 +111,6 @@ def test_resume_still_executes_when_governance_still_allows():
 
     resumed = rt.resume(ctx.approval_id, approve=True)
 
-    assert resumed.state is TaskState.COMPLETED
+    assert resumed.state is TaskState.SIMULATED
     # The held step WAS executed this time.
     assert [s.step.tool for s in resumed.executed_steps] == ["notify:feishu"]

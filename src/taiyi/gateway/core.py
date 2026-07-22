@@ -17,15 +17,16 @@ from taiyi.core.audit import AuditLog
 from taiyi.governance import GovernanceEngine, LocalPermitClient
 from taiyi.approvals import ApprovalStore
 from taiyi.iteration import IterationEngine
-from taiyi.llm import LLMProvider, make_provider
+from taiyi.llm import LLMProvider, ProviderRouter, make_provider, make_provider_router
 from taiyi.memory import MemoryEngine
 from taiyi.multi_agent import ExpertCommittee
 from taiyi.observability import Observability
+from taiyi.policy import OperatingMode
 from taiyi.agent import AgentRuntime
 from taiyi.runtime import TaskContext, TaskRuntime
 from taiyi.runtime.executor import Executor
 from taiyi.scenarios import DEFAULT_SCENARIOS_DIR, ScenarioMatcher, ScenarioRegistry
-from taiyi.scheduler import SchedulerEngine
+from taiyi.scheduler import LLMPlanner, SchedulerEngine
 from taiyi.skills import DEFAULT_SKILLS_DIR, SkillRegistry
 from taiyi.validation import ValidationEngine
 from taiyi.value_stream import ValueStreamEngine
@@ -64,9 +65,29 @@ class Gateway:
         scenario: str | None = None,
         user_id: str = "u1",
         session_id: str = "s1",
+        operating_mode: str | OperatingMode | None = None,
     ) -> TaskContext:
         scenario = scenario or self.matcher.match(prompt)
-        return self.runtime.run(prompt, scenario, user_id=user_id, session_id=session_id)
+        scenario_obj = self.matcher.registry.get(scenario)
+        candidate = self.skills.match_candidate(prompt, scenario)
+        skill = candidate if candidate is not None and candidate.production_eligible else None
+        capability_error = None
+        if candidate is not None and skill is None:
+            capability_error = (
+                f"matched Skill {candidate.name!r} is unavailable: "
+                f"{'; '.join(candidate.production_problems)}"
+            )
+        return self.runtime.run(
+            prompt,
+            scenario,
+            user_id=user_id,
+            session_id=session_id,
+            operating_mode=operating_mode,
+            scenario_definition=scenario_obj.body if scenario_obj else None,
+            skill_name=candidate.name if candidate else None,
+            skill_instructions=skill.body if skill else None,
+            capability_error=capability_error,
+        )
 
     def resume(self, approval_id: str, *, approve: bool) -> TaskContext:
         """Resume a task suspended for human review.
@@ -104,9 +125,11 @@ def build_gateway(
     *,
     executor: Executor | None = None,
     provider: LLMProvider | None = None,
+    provider_router: ProviderRouter | None = None,
     mode: str = "agent",
+    operating_mode: str | OperatingMode = OperatingMode.BALANCED,
     validator: ValidationEngine | None = None,
-    max_rounds: int = 1,
+    max_rounds: int | None = None,
     extra_rules_dirs: tuple[str, ...] = (),
     extra_scenarios_dirs: tuple[str, ...] = (),
     extra_skills_dirs: tuple[str, ...] = (),
@@ -124,7 +147,15 @@ def build_gateway(
     skills_dirs = list(extra_skills_dirs) + ([auto_skills_dir] if auto_skills_dir else [])
 
     governance = GovernanceEngine(audit_log=audit, extra_rules_dirs=rules_dirs or None)
-    scheduler = SchedulerEngine(LocalPermitClient(governance))
+    active_provider = provider or (
+        provider_router.default_provider if provider_router is not None else None
+    )
+    workflow_planner = (
+        LLMPlanner(active_provider)
+        if mode == "workflow" and active_provider is not None
+        else None
+    )
+    scheduler = SchedulerEngine(LocalPermitClient(governance), planner=workflow_planner)
     memory = MemoryEngine(base)
     observability = Observability()
     iteration = IterationEngine(base)
@@ -148,12 +179,13 @@ def build_gateway(
     # One instance, two consumers — so the same expert matrix reviews both at
     # permit time and on demand.
     committee = ExpertCommittee()
-    use_agent = mode == "agent" and provider is not None
+    use_agent = mode == "agent" and (provider is not None or provider_router is not None)
     if use_agent:
         runtime = AgentRuntime(
             scheduler,
             audit_log=audit,
-            provider=provider,
+            provider=active_provider,
+            provider_router=provider_router,
             executor=executor,
             validator=val,
             memory=memory,
@@ -162,8 +194,12 @@ def build_gateway(
             iteration=iteration,
             approvals=approvals,
             committee=committee,
+            default_operating_mode=operating_mode,
         )
     else:
+        workflow_router = provider_router or (
+            ProviderRouter(active_provider) if active_provider is not None else None
+        )
         runtime = TaskRuntime(
             scheduler,
             audit_log=audit,
@@ -176,16 +212,22 @@ def build_gateway(
             approvals=approvals,
             committee=committee,
             max_rounds=max_rounds,
+            default_operating_mode=operating_mode,
+            provider_router=workflow_router,
         )
 
     if extra_scenarios_dirs:
         scenarios = ScenarioRegistry.load_dirs([DEFAULT_SCENARIOS_DIR, *extra_scenarios_dirs])
     else:
         scenarios = ScenarioRegistry.load_dir()
-    if extra_skills_dirs:
-        skills = SkillRegistry.load_dirs([DEFAULT_SKILLS_DIR, *extra_skills_dirs])
+    if skills_dirs:
+        skills = SkillRegistry.load_dirs([DEFAULT_SKILLS_DIR, *skills_dirs])
     else:
         skills = SkillRegistry.load_dir()
+    # A release lock proves what was run when the Skill was published; this
+    # fresh, side-effect-free rerun proves it still behaves under *this* Taiyi
+    # runtime. Only then may the Skill be indexed or matched into task context.
+    skills.verify_release_candidates()
     skills.index_into(memory)
 
     return Gateway(
@@ -204,17 +246,38 @@ def build_gateway(
 def build_gateway_from_config(config) -> Gateway:
     """Build a Gateway from a TaiyiConfig — the self-operated entry point."""
     executor = None
+    validator = None
     if config.executor == "sandbox":
         from taiyi.tools import SandboxExecutor
+        from taiyi.validation import GitAuthority, GitHubAuthority, GitRemoteAuthority
 
         sandbox = config.sandbox_dir or (str(Path(config.base_dir or ".") / "sandbox"))
         executor = SandboxExecutor(sandbox, backend=config.sandbox_backend)
+        authorities = []
+        if config.external_git_validation:
+            authorities.append(GitAuthority(sandbox))
+        if config.external_git_remote_validation:
+            authorities.append(GitRemoteAuthority(sandbox))
+        if config.external_github_validation:
+            if not config.github_expected_login:
+                raise ValueError(
+                    "github_expected_login is required when external_github_validation is enabled"
+                )
+            authorities.append(GitHubAuthority(sandbox, config.github_expected_login))
+        if authorities:
+            validator = ValidationEngine(
+                external_authorities=tuple(authorities)
+            )
     provider = make_provider(config)  # None when offline
+    provider_router = make_provider_router(config, provider) if provider else None
     return build_gateway(
         base_dir=config.base_dir,
         executor=executor,
         provider=provider,
-        mode=config.mode,
+        provider_router=provider_router,
+        validator=validator,
+        mode=config.runtime_mode,
+        operating_mode=config.operating_mode,
         max_rounds=config.max_rounds,
         extra_rules_dirs=tuple(config.rules_dirs),
         extra_scenarios_dirs=tuple(config.scenarios_dirs),

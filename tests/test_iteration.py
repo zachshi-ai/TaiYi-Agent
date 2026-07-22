@@ -48,14 +48,18 @@ def test_below_threshold_no_suggestion():
     assert suggest_rules(store, threshold=3) == []
 
 
-# --- Skill auto-generation passes the gate -----------------------------------
+# --- Skill auto-generation stays a draft until humans add sufficient coverage -
 
-def test_generated_skill_passes_quality_gate(tmp_path):
+def test_generated_skill_requires_human_coverage_and_promotion(tmp_path):
     draft = generate_skill_draft("dev.git", ("shell:git status", "shell:git commit"), 5)
     skill_dir = write_draft(draft, tmp_path)
     skill = load_skill(skill_dir)
     assert skill.category == "auto_generated"
-    assert skill.production_eligible  # ships a complete gate
+    assert skill.gate is not None and not skill.gate.passes
+    assert skill.gate.verification[0]["expect"]["state"] == "SIMULATED"
+    assert any("at least 3 executable cases" in p for p in skill.gate_problems)
+    assert not skill.production_eligible
+    assert any("not a production tier" in p for p in skill.production_problems)
 
 
 def test_repeat_candidates_become_skill_drafts():
@@ -89,10 +93,10 @@ def test_runtime_feeds_iteration_engine():
     iteration = IterationEngine()
     runtime = TaskRuntime(sched, audit_log=audit, iteration=iteration)
 
-    assert runtime.run("commit my changes", "dev.git").state is TaskState.COMPLETED
+    assert runtime.run("commit my changes", "dev.git").state is TaskState.SIMULATED
     assert runtime.run("用 -c user.name=Evil commit", "dev.git").state is TaskState.REJECTED
 
     report = iteration.report()
     assert report["tasks"] == 2
     assert report["failures"] == 1            # the rejected task
-    assert report["regression_cases"] == 1    # only the completed task is labelled PASS
+    assert report["regression_cases"] == 0    # mock simulation is not labelled as a real PASS

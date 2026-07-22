@@ -13,6 +13,7 @@ external check can settle it, a model may judge — but under strict conditions
 """
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 
 from taiyi.llm.base import LLMMessage, LLMProvider
@@ -49,30 +50,59 @@ class ModelJudge:
         self.check_id = check_id
         self.stats = JudgeStats()
 
+    @property
+    def criterion_id(self) -> str:
+        return f"{self.check_id}@{self.rubric_version}"
+
+    @property
+    def authority(self) -> str:
+        return f"model:{getattr(self.provider, 'name', type(self.provider).__name__)}"
+
+    @property
+    def configuration_digest(self) -> str:
+        raw = f"{self.criterion_id}\0{self.rubric}".encode("utf-8")
+        return "sha256:" + hashlib.sha256(raw).hexdigest()
+
     def evaluate(self, ctx: ValidationContext) -> CheckResult:
         messages = [
             LLMMessage("system", f"{self.rubric}\n(rubric {self.rubric_version}) "
                                  "Reply with exactly PASS, FAIL, or NEEDS_HUMAN."),
-            LLMMessage("user", ctx.final_output),
+            LLMMessage(
+                "user",
+                "Task objective:\n"
+                f"{ctx.prompt}\n\n"
+                f"Scenario: {ctx.scenario}\n"
+                f"Task type: {ctx.task_type}\n"
+                f"Executed calls: {ctx.executed_calls or ctx.executed_tools}\n\n"
+                "Candidate output:\n"
+                f"{ctx.final_output}",
+            ),
         ]
         resp = self.provider.complete(messages)
         outcome = self._parse(resp.text)
         return CheckResult(
-            check_id=f"{self.check_id}@{self.rubric_version}",
+            check_id=self.criterion_id,
             kind=CheckKind.MODEL_JUDGE,
             outcome=outcome,
             detail=resp.text.strip()[:200],
+            authority=self.authority,
+            environment="model",
+            configuration_digest=self.configuration_digest,
         )
 
     @staticmethod
     def _parse(text: str) -> Outcome:
         up = text.strip().upper()
-        if "FAIL" in up:
-            return Outcome.FAIL
-        if "NEEDS_HUMAN" in up or "HUMAN" in up:
-            return Outcome.NEEDS_HUMAN
-        if "PASS" in up:
+        # The protocol asks for one exact verdict. Accept an optional explanation
+        # after whitespace or a colon, but never let a word in that explanation
+        # override the leading verdict (for example "NEEDS_HUMAN: cannot pass").
+        verdict = up.split(maxsplit=1)[0].rstrip(":") if up else ""
+        if verdict == "PASS":
             return Outcome.PASS
+        if verdict == "FAIL":
+            return Outcome.FAIL
+        if verdict in {"NEEDS_HUMAN", "HUMAN"}:
+            return Outcome.NEEDS_HUMAN
         return Outcome.NEEDS_HUMAN  # ambiguous -> escalate, never silently pass
 
     def calibrate(self, labelled: list[tuple[ValidationContext, Outcome]]) -> JudgeStats:

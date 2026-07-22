@@ -100,7 +100,7 @@ def test_agent_committee_passes_when_no_veto():
         memory=MemoryEngine(), approvals=ApprovalStore(), committee=ExpertCommittee(),
     )
     ctx = rt.run("do safe thing", "default")
-    assert ctx.state is TaskState.COMPLETED
+    assert ctx.state is TaskState.SIMULATED
     assert [s.step.tool for s in ctx.executed_steps] == ["tool:safe"]
 
 

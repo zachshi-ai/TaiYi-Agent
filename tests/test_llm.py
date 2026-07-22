@@ -70,11 +70,11 @@ def test_llm_benign_plan_completes():
     )
     runtime = build_runtime(ScriptedProvider([benign]))
     ctx = runtime.run("commit my work", "dev.git")
-    assert ctx.state is TaskState.COMPLETED
+    assert ctx.state is TaskState.SIMULATED
     assert len(ctx.executed_steps) == 2
 
 
 def test_keyword_offline_provider_runs_end_to_end():
     runtime = build_runtime(KeywordOfflineProvider())
     ctx = runtime.run("commit my changes", "dev.git")
-    assert ctx.state is TaskState.COMPLETED
+    assert ctx.state is TaskState.SIMULATED

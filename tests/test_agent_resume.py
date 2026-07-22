@@ -47,7 +47,7 @@ def test_agent_suspends_and_resumes_to_completion():
     assert len(approvals) == 1
 
     resumed = rt.resume(ctx.approval_id, approve=True)
-    assert resumed.state is TaskState.COMPLETED
+    assert resumed.state is TaskState.SIMULATED
     # The held step was executed on resume, then the loop finished.
     assert [s.step.tool for s in resumed.executed_steps] == ["shell:git push"]
     assert resumed.final_output == "Pushed to origin/main."

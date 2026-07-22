@@ -100,6 +100,15 @@ def test_path_traversal_is_blocked(tmp_path):
     assert not r.ok
 
 
+def test_unconfigured_business_connector_fails_closed(tmp_path):
+    ex = SandboxExecutor(tmp_path)
+
+    for tool in ("sql:query", "notify:feishu", "tool:refund"):
+        result = ex.execute(PlanStep(tool, ["example"]))
+        assert not result.ok
+        assert "no connector configured" in result.output
+
+
 # --- End-to-end: the founding case against a real git repo -------------------
 
 def _git(repo, *args):

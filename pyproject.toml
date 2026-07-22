@@ -5,10 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "taiyi"
 version = "0.1.0"
-description = "太一 / The One — a production-grade Agent OS where governance authority is physically separated from scheduling authority."
+description = "太一 / The One — an Agent harness for governed execution and evidence-based output quality."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Apache-2.0" }
+license = "Apache-2.0"
 authors = [{ name = "zachshi" }]
 keywords = ["agent", "llm", "governance", "agent-os"]
 dependencies = [
@@ -21,6 +21,9 @@ taiyi = "taiyi.cli:main"
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4",
+    # The test suite exercises the real OpenAI-compatible adapter and router.
+    # Keep a clean `pip install -e .[dev]` sufficient for CI.
+    "httpx>=0.27",
 ]
 # Live LLM provider adapter. Adds httpx for the OpenAI-compatible provider
 # (Ollama / DeepSeek / 智谱 / Moonshot / OpenAI / …). The core stays zero-dependency
@@ -35,6 +38,7 @@ taiyi = [
     "rules/**/*.yaml",
     "scenarios/catalog/*.md",
     "skills/catalog/**/*.md",
+    "skills/catalog/**/*.json",
     "value_stream/*.yaml",
 ]
 

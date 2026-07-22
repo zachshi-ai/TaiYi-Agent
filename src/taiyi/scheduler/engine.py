@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 
 from taiyi.core.types import PermitRequest, PermitResponse, Verdict
 from taiyi.governance.client import PermitClient
+from taiyi.llm.base import LLMProvider
 from taiyi.scheduler.planner import ExecutionPlan, KeywordPlanner, PlanStep, Planner
 
 
@@ -49,7 +50,23 @@ class SchedulerEngine:
         self._permits = permit_client
         self._planner = planner or KeywordPlanner()
 
-    def plan(self, prompt: str, scenario: str) -> ExecutionPlan:
+    def plan(
+        self,
+        prompt: str,
+        scenario: str,
+        *,
+        context: str | None = None,
+        provider: LLMProvider | None = None,
+    ) -> ExecutionPlan:
+        if provider is not None and hasattr(self._planner, "plan_with_provider"):
+            return self._planner.plan_with_provider(
+                prompt,
+                scenario,
+                context=context,
+                provider=provider,
+            )
+        if context and hasattr(self._planner, "plan_with_context"):
+            return self._planner.plan_with_context(prompt, scenario, context=context)
         return self._planner.plan(prompt, scenario)
 
     def request_permit(

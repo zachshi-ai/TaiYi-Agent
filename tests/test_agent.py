@@ -26,7 +26,7 @@ def test_agent_runs_multiple_steps_then_finishes():
         LLMResponse(text="Committed the changes."),
     ])
     ctx = build(provider, validator=ValidationEngine()).run("commit my changes", "dev.git")
-    assert ctx.state is TaskState.COMPLETED
+    assert ctx.state is TaskState.SIMULATED
     assert [s.step.tool for s in ctx.executed_steps] == ["shell:git status", "shell:git commit"]
     assert ctx.final_output == "Committed the changes."
 
@@ -64,7 +64,7 @@ def test_validation_failure_feeds_back_and_agent_recovers():
         LLMResponse(text="now actually done"),
     ])
     ctx = build(provider, validator=ValidationEngine()).run("commit my work", "dev.git")
-    assert ctx.state is TaskState.COMPLETED
+    assert ctx.state is TaskState.SIMULATED
     assert any(s.step.tool == "shell:git commit" for s in ctx.executed_steps)
 
 

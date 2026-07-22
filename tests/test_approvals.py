@@ -29,8 +29,12 @@ def test_suspended_task_resumes_on_approval():
     assert [s.step.tool for s in ctx.executed_steps] == ["sql:query"]
 
     resumed = rt.resume(ctx.approval_id, approve=True)
-    assert resumed.state is TaskState.COMPLETED
+    assert resumed.state is TaskState.SIMULATED
     assert [s.step.tool for s in resumed.executed_steps] == ["sql:query", "notify:feishu"]
+    assert resumed.contract.task_type == "weekly_report"
+    assert "report_delivered" in {
+        record.criterion_id for record in resumed.evidence.records
+    }
     assert len(rt.approvals) == 0  # cleared
 
 
@@ -41,6 +45,27 @@ def test_rejection_marks_task_rejected():
     resumed = rt.resume(ctx.approval_id, approve=False)
     assert resumed.state is TaskState.REJECTED
     assert "rejected by human" in resumed.final_output
+
+
+def test_push_freezes_a_push_contract_and_completes_without_a_commit_criterion():
+    rt = runtime()
+
+    ctx = rt.run("git push 到 origin main", "dev.git")
+
+    assert ctx.state is TaskState.NEEDS_REVIEW
+    assert ctx.contract.task_type == "git_push"
+    assert ctx.contract.parameters == {"remote": "origin", "ref": "main"}
+    assert ctx.validation_checklist.task_type == "git_push"
+    criterion_ids = {c.criterion_id for c in ctx.contract.acceptance_criteria}
+    assert "git_push_executed" in criterion_ids
+    assert "git_commit_executed" not in criterion_ids
+
+    resumed = rt.resume(ctx.approval_id, approve=True)
+
+    assert resumed.state is TaskState.SIMULATED
+    evidence_ids = {r.criterion_id for r in resumed.evidence.records}
+    assert "git_push_executed" in evidence_ids
+    assert "git_commit_executed" not in evidence_ids
 
 
 def test_unknown_approval_raises():
@@ -65,12 +90,12 @@ def test_gateway_approval_flow():
     _, listing = app.handle("GET", "/v1/approvals", {}, "")
     assert any(p["approval_id"] == approval_id for p in listing["pending"])
 
-    # Approve it → the task completes.
+    # Approve it → the mock action is honestly reported as a simulation.
     status, resolved = app.handle(
         "POST", "/v1/approvals/resolve", {}, json.dumps({"approval_id": approval_id, "decision": "approve"})
     )
     assert status == 200
-    assert resolved["state"] == "COMPLETED"
+    assert resolved["state"] == "SIMULATED"
 
     # And it is gone from the pending list.
     _, listing2 = app.handle("GET", "/v1/approvals", {}, "")

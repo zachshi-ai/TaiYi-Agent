@@ -1,7 +1,7 @@
 # 太一 / The One (Taiyi)
 
-> A production-grade Agent OS for *deterministic* production tasks (code,
-> transactions, compliance, process execution). Its reason to exist is one design
+> An Agent harness / Agent OS prototype for *deterministic* production tasks
+> (code, transactions, compliance, process execution). Its reason to exist is one design
 > decision: **governance authority and scheduling authority are physically
 > separated.** A module that both does the work and signs off on the work has an
 > incentive to skip the sign-off — Taiyi removes that incentive by design.
@@ -20,7 +20,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
 | `src/taiyi/` | **Production code** — 17 modules, built module by module |
-| `tests/` | 208 tests, all green |
+| `tests/` | 263 tests covering governance, operating modes, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -39,20 +39,83 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 
 ## Current status
 
-**All 17 modules are built — the complete architecture, a closed-loop Agent OS at
-maturity level L4.** Every layer is implemented and tested (208 tests), and a
-**real LLM runs end-to-end** (verified with DeepSeek: model → tool call →
-governance permit → sandbox exec → result fed back → final answer, COMPLETED).
+**The 17-module skeleton and the core vertical paths are built; Taiyi is an L3
+production prototype evolving toward L4.** Governance, permits, ReAct, sandboxing,
+validation, audit, and human resume have runnable implementations, and a real LLM
+path has been verified with DeepSeek. The default mock executor and deferred
+business connectors remain explicit non-production boundaries: green tests are
+not treated as proof of real-world task quality.
 A request enters via the CLI, HTTP, or the bundled web UI, is anchored to a
 business goal, matched to a scenario, planned (rule- or LLM-driven), gated
 step-by-step by governance, given a second-opinion review by the expert
-committee, executed for real but sandboxed only when cleared, independently
+committee, executed by the configured backend only when cleared, independently
 validated (a failed check bounces it back), scored for value contribution,
 traced/metered, remembered, and fed to the OODA outer loop — which turns a
 recurring failure into a permanent governance check and sediments repeated work
 into a gated skill. The loop is real: trajectories persist across restarts,
 suggestions are filed automatically every task, and a human approves them into
-the read-only rule/skill set on the next start.
+the read-only rule/skill set on the next start. Every request also resolves a
+quality/balanced/efficiency policy, freezes a Task Contract, and records per-
+criterion evidence bound to the immutable contract, checker kind, and current
+artifact digest before the independent completion controller can say done. The
+contract also freezes operation parameters (for example Git remote/ref and refund
+amount), and validation observes full tool calls rather than tool names alone. See
+[`learning/docs/05_Immutable_Acceptance_Contracts.md`](./learning/docs/05_Immutable_Acceptance_Contracts.md).
+
+Completion truth is independent from operating mode. A tool action run by the
+side-effect-free mock executor ends in `SIMULATED`, even when every Harness check
+passes; only a non-mock execution can end in `COMPLETED`. Simulations are not
+remembered, value-scored, or mined into new Skills as delivered work.
+
+Skill admission is no longer inferred from a complete Markdown file. Every
+Skill needs at least three automatic cases; the nine cases shipped with the
+three built-in Skills execute through the current
+governance, scheduling, and validation path, produce an artifact-bound release
+lock, and rerun when the gateway loads. Their evidence environment is explicitly
+`mock`, and successful action cases end in `SIMULATED`: they prove Harness
+behaviour, not live SQL, notification, refund, or Git
+connector readiness. See
+[`learning/docs/03_Executable_Skill_Quality_Gates.md`](./learning/docs/03_Executable_Skill_Quality_Gates.md).
+
+### Three operating modes
+
+- **Quality** — clarify material ambiguity, exhaustive evidence, up to 3 validation attempts.
+- **Balanced** — ask on high-impact ambiguity, standard evidence, risk-triggered independent review, up to 2 attempts.
+- **Efficiency** — AI-led reversible defaults, critical evidence, 1 attempt.
+
+In Agent Runtime and model-backed Workflow Runtime the modes route to `quality_model`, `balanced_model`, and
+`efficiency_model`. An unset route falls back to the default `model` and records
+`fallback=true` in task evidence. All modes share the same governance and
+authorization floor. See
+[`learning/docs/02_Operating_Modes.md`](./learning/docs/02_Operating_Modes.md) and
+[`learning/docs/04_Provider_Routing.md`](./learning/docs/04_Provider_Routing.md).
+
+Quality mode also requires at least one objective-specific checker. Baseline
+hygiene such as non-empty output cannot certify an unknown task as correct;
+low-risk efficiency work may use that path only with an explicit
+`coverage=baseline_only` label.
+
+With `executor: sandbox`, Taiyi can also enable a read-only Git authority. It
+snapshots HEAD and repository-local identity before execution, then independently
+proves that a new commit exists and that both author and committer match the
+frozen identity. See
+[`learning/docs/06_External_Authority_Checks.md`](./learning/docs/06_External_Authority_Checks.md).
+
+An opt-in Git remote authority freezes the intended commit, remote URL digest,
+and branch before a push, then runs a separate read-only `git ls-remote` check.
+A successful executor receipt cannot certify a remote branch that did not move.
+
+For GitHub remotes, an additional opt-in platform authority queries GitHub after
+the push. It separately proves that the GitHub branch points to the frozen SHA
+and that GitHub maps both author and committer to the configured expected login.
+This closes the gap between a locally correct email and the account attribution
+shown by GitHub.
+
+Sandbox business tools fail closed when no SQL, notification, or refund Connector
+is configured; a `[deferred:...]` result is never treated as successful execution.
+Task responses expose `execution_environment=mock|workspace|custom` so simulated
+work cannot be mistaken for workspace execution; mock tool actions have the
+distinct terminal state `SIMULATED` rather than `COMPLETED`.
 
 The layers: M1
 Governance Core (rules-as-data, fail-closed, audit log); M2 Scheduler + boundary
@@ -64,7 +127,8 @@ execution, credential isolation, SSRF, **macOS `sandbox-exec` deny-all
 isolation**); M6 Validation Engine (cheapest-first checklists, isolated/
 calibrated model judge, bounce-back); M7 Memory (5-layer SQLite/FTS5/vector/
 Honcho, **multi-turn session history**); M8 Scenario + Skill engine (scenarios
-as data; **no skill enters production without a passing quality gate**); M9
+as data; runtime admission requires executable cases, an artifact-bound release
+lock, and a current-process rerun); M9
 Gateway (stdlib HTTP + CLI, auth/rate-limit, OpenAI-compatible endpoint,
 **bundled React web UI served same-origin**); M10 Value Stream (dual-mode goal
 anchoring, value-contribution scoring, bottleneck detection); M11 Observability
@@ -97,7 +161,7 @@ taiyi serve --config taiyi.yaml             # the `taiyi` command is now on your
 Or clone and install editable (for development):
 
 ```bash
-pip install -e ".[dev]"                     # core + tests
+pip install -e ".[dev]"                     # core + tests (including live-adapter tests)
 pip install -e ".[live]"                    # adds httpx — required for a real LLM
 cp taiyi.example.yaml taiyi.yaml            # edit: provider/base_url/model/api_key, executor, auth…
 taiyi serve --config taiyi.yaml             # HTTP gateway (+ /metrics, OpenAI API)
@@ -173,6 +237,7 @@ python3 examples/scheduler_demo.py    # planning + the governance boundary
 # Run the test suite
 pip install -e ".[dev]"
 pytest
+taiyi verify-skills  # execute the 9 built-in Skill gate cases
 ```
 
 Expected from the example:

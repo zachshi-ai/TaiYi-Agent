@@ -15,7 +15,7 @@ from taiyi.skills.loader import load_skill
 def test_in_process_channel_runs_a_task():
     channel = InProcessChannel(build_gateway())
     reply = channel.handle_text("commit my changes")
-    assert reply.state == "COMPLETED"
+    assert reply.state == "SIMULATED"
     assert reply.task_id
 
 
@@ -33,8 +33,12 @@ def test_market_lists_and_installs_gated_skill(tmp_path):
 
     dst = market.install("git_safe_commit", tmp_path)
     installed = load_skill(dst)
-    assert installed.production_eligible
+    assert installed.release_eligible
+    # Runtime eligibility is deliberately process-local and must be rerun after
+    # installation; the copied release lock alone is not enough.
+    assert not installed.production_eligible
     assert (dst / "quality_gate.md").exists()
+    assert (dst / "quality_gate.lock.json").exists()
 
 
 def test_market_refuses_ungated_skill(tmp_path):

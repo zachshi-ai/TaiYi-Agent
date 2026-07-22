@@ -96,7 +96,7 @@ def test_runtime_records_to_memory():
     runtime = TaskRuntime(sched, audit_log=audit, memory=mem)
 
     ctx = runtime.run("commit my changes", "dev.git")
-    assert ctx.state is TaskState.COMPLETED
-    assert len(mem.get_messages(ctx.session_id)) >= 1     # L1 recorded the prompt
-    assert mem.search_fulltext("commit")                  # L5 archived the task
-    assert mem.get_user_model()                            # L4 updated
+    assert ctx.state is TaskState.SIMULATED
+    assert len(mem.get_messages(ctx.session_id)) >= 2     # conversation records the simulation
+    assert not mem.search_fulltext("commit")              # simulation is not archived as delivered work
+    assert not mem.get_user_model()                        # simulation does not update the learned user model

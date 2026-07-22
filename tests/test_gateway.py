@@ -27,7 +27,7 @@ def app(gateway):
 def test_submit_matches_scenario_and_completes(gateway):
     ctx = gateway.submit("commit my changes")
     assert ctx.scenario == "dev.git"
-    assert ctx.state is TaskState.COMPLETED
+    assert ctx.state is TaskState.SIMULATED
 
 
 def test_submit_governance_still_applies(gateway):
@@ -44,7 +44,7 @@ def test_healthz(app):
 def test_tasks_endpoint(app):
     status, data = app.handle("POST", "/v1/tasks", {}, json.dumps({"prompt": "commit my changes"}))
     assert status == 200
-    assert data["state"] == "COMPLETED"
+    assert data["state"] == "SIMULATED"
     assert data["scenario"] == "dev.git"
     assert data["task_id"]
 
@@ -67,7 +67,8 @@ def test_openai_compatible_chat(app):
     assert status == 200
     assert data["object"] == "chat.completion"
     assert data["choices"][0]["message"]["content"]
-    assert data["taiyi"]["state"] == "COMPLETED"
+    assert data["taiyi"]["state"] == "SIMULATED"
+    assert "simulation only" in data["choices"][0]["message"]["content"]
 
 
 def test_invalid_json(app):
@@ -112,7 +113,7 @@ def test_http_round_trip(app):
         with urllib.request.urlopen(req, timeout=5) as resp:
             assert resp.status == 200
             data = json.loads(resp.read())
-        assert data["state"] == "COMPLETED"
+        assert data["state"] == "SIMULATED"
     finally:
         server.shutdown()
         server.server_close()
