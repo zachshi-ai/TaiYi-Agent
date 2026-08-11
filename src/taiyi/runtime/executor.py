@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Protocol, runtime_checkable
 
-from taiyi.runtime.jobs import JobHandle
+from taiyi.runtime.jobs import JobHandle, JobRecord
 from taiyi.scheduler import PlanStep
 
 
@@ -42,6 +42,15 @@ class DurableExecutor(Protocol):
     def start(self, step: PlanStep, *, operation_id: str) -> JobHandle: ...
 
     def wait(self, job_id: str) -> ExecResult: ...
+
+
+@runtime_checkable
+class RecoverableExecutor(DurableExecutor, Protocol):
+    """Durable executor operations needed after gateway/client interruption."""
+
+    def find(self, operation_id: str) -> JobHandle | None: ...
+
+    def cancel(self, job_id: str) -> JobRecord: ...
 
 
 def execute_step(

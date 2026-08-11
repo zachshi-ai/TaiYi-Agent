@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 2 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 3 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 2 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 3 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -446,12 +446,25 @@ prevention.
 a newly constructed executor can find it by the same operation id and obtain
 the one terminal result without replaying the command.
 
-**Remaining before M18 is complete.** Runtime-level recovery that scans a
-`TOOL_RUNNING` checkpoint and continues the agent loop; an asynchronous client
-submit/poll/stream API; phase-specific LLM connect/first-token/idle/hard
-deadlines; side-effect classes; idempotent or authority-verified retry;
-structured compaction; and gateway-kill fault injection. An ambiguous side
-effect is never auto-rerun before those controls exist. See
+**Delivered in Phase 3.** Workflow and ReAct now scan typed active
+continuations, claim a per-task process lease, reattach the existing operation,
+and continue from the frozen plan/message state. LLM-wait checkpoints can replay
+the same frozen turn after process exit. The persistent async API supports
+submit, status, event polling, heartbeat observation, and durable job
+cancellation. Gateway-exit fault injection proves one side effect across restart
+and blocks duplicate recovery by a concurrent gateway.
+
+**Acceptance (Phase 3 met).** Destroying the gateway immediately after durable
+job attachment and constructing a new gateway settles both runtime shapes; the
+test marker is written once, the ReAct observation is appended once, and the
+attempt id advances without a duplicate operation.
+
+**Remaining before M18 is complete.** Phase-specific LLM
+connect/first-token/idle/hard deadlines; budgeted provider retry/backoff;
+side-effect classes; idempotent or authority-verified external retry; SSE event
+streaming; structured compaction; and the broader network/context/huge-output
+fault benchmark. An ambiguous side effect is never auto-rerun before those
+controls exist. See
 `learning/docs/07_Durable_Runtime_Protocol.md`. **Depends on.** M3–M6, M17.
 
 ### M16 — Iterative agent loop ✅ Done

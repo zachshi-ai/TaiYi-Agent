@@ -97,17 +97,48 @@ Failure kinds now distinguish `TOOL_IDLE_TIMEOUT`, `TOOL_HARD_TIMEOUT`,
 `TOOL_LOST`. A generic tool timeout remains available for legacy executors that
 raise a timeout without the durable protocol.
 
-### Deliberate Phase 2 boundary
+## Phase 3: task recovery and asynchronous clients
 
-The job substrate can be polled, cancelled, or reattached by `job_id` and
-`operation_id`, including from a new executor instance. The current task API is
-still synchronous, however, and the runtime does not yet scan a
-`TOOL_RUNNING` task checkpoint and automatically continue its model loop after a
-gateway restart. It also never retries an ambiguous external side effect.
-Those require runtime-level job recovery plus effect classes and
-authority-specific verification. LLM connect/first-token/stream-idle deadlines
-are also a separate next slice. These boundaries are explicit so a durable
-child process is not misrepresented as complete end-to-end task recovery.
+The runtime now scans active continuations as well as suspended approvals. Before
+advancing one it claims `runs/<task_id>/.task.lock`; the POSIX lease is released
+by the OS on process death. A second gateway can serve other traffic, but cannot
+continue the same task concurrently.
+
+For a `TOOL_RUNNING` checkpoint, recovery verifies the frozen round, step, tool,
+arguments, deterministic operation id, and recorded job id. It then looks up the
+operation index and waits on that same supervisor job. Workflow restores its
+frozen plan and next step. ReAct restores its exact message list and step budget,
+adds the recovered observation once, and asks the model for the next turn. A
+process exit while waiting for an LLM can likewise replay the frozen message list;
+no tool effect has occurred at that point.
+
+There is one narrow safe launch-recovery case: the runtime checkpointed the
+operation before launch, but no job or operation index exists. It asks governance
+again, then starts the same operation id. If an operation index exists, it always
+reattaches. If a non-durable tool may already have produced an effect, automatic
+recovery fails closed rather than guessing.
+
+Clients no longer need to hold a synchronous request for a long task:
+
+- `POST /v1/tasks` with `{"async": true}` or `POST /v1/tasks/async` returns `202`;
+- `GET /v1/tasks/<task_id>` returns phase, state, attempt, continuation, and job heartbeat;
+- `GET /v1/tasks/<task_id>/events?after=<revision>&limit=<n>` returns a bounded,
+  cursor-based page of the persisted typed progress stream;
+- `POST /v1/tasks/<task_id>/cancel` cancels an attached durable job and its process group.
+
+Fault tests exit the gateway immediately after job attachment, construct a new
+gateway, and prove that Workflow and ReAct both settle while a marker side effect
+occurs exactly once. They also prove that a concurrent gateway cannot recover a
+leased task, a frozen LLM turn survives restart, and cancellation is reflected as
+`TOOL_CANCELLED` rather than generic failure.
+
+### Deliberate Phase 3 boundary
+
+Progress is currently reconnectable polling over persisted events, not SSE or
+WebSocket streaming. Model timeouts are attributed to `LLM_WAITING`, but connect,
+first-token, stream-idle, and hard deadlines plus budgeted retry/backoff remain a
+separate slice. Retrying an external effect still requires an explicit effect
+class, idempotency contract, and authority-specific post-crash verification.
 
 ## Invariants
 
@@ -121,15 +152,12 @@ child process is not misrepresented as complete end-to-end task recovery.
 
 ## Next milestones
 
-1. Rehydrate `TOOL_RUNNING` checkpoints, reattach their existing job, and
-   continue the Workflow/ReAct loop without opening a duplicate operation.
-2. Separate LLM connect, first-token, stream-idle, and hard timeouts, with
+1. Separate LLM connect, first-token, stream-idle, and hard timeouts, with
    retry/backoff that respects provider and task budgets.
-3. Add side-effect classes, idempotency policies, and post-crash
+2. Add side-effect classes, idempotency policies, and post-crash
    external verification before any retry.
-4. Add an asynchronous task/job API so clients can submit, disconnect, poll,
-   stream progress, cancel, and reconnect without holding one HTTP request.
-5. Add proactive structured compaction and large-repository indexing keyed by
+3. Add SSE progress streaming on top of the persisted event cursor.
+4. Add proactive structured compaction and large-repository indexing keyed by
    Git SHA.
-6. Exercise gateway kill/restart, network loss, 429/5xx, context overflow, duplicate
+5. Exercise network loss, 429/5xx, context overflow, duplicate
    effects, and huge-output faults in the harness benchmark.

@@ -11,6 +11,8 @@ deployment without changing the gateway.
 """
 from __future__ import annotations
 
+import threading
+import uuid
 from pathlib import Path
 
 from taiyi.core.audit import AuditLog
@@ -23,8 +25,8 @@ from taiyi.multi_agent import ExpertCommittee
 from taiyi.observability import Observability
 from taiyi.policy import OperatingMode
 from taiyi.agent import AgentRuntime
-from taiyi.runtime import RunStore, TaskContext, TaskRuntime
-from taiyi.runtime.executor import Executor
+from taiyi.runtime import RunStore, TaskContext, TaskRuntime, TaskState
+from taiyi.runtime.executor import Executor, RecoverableExecutor
 from taiyi.scenarios import DEFAULT_SCENARIOS_DIR, ScenarioMatcher, ScenarioRegistry
 from taiyi.scheduler import LLMPlanner, SchedulerEngine
 from taiyi.skills import DEFAULT_SKILLS_DIR, SkillRegistry
@@ -57,6 +59,10 @@ class Gateway:
         # base_dir is where OODA-approved rules/skills land (rules/auto, skills/auto);
         # kept here so the review endpoints can resolve suggestions without re-deriving it.
         self.base_dir = base_dir
+        self._task_lock = threading.RLock()
+        self._task_threads: dict[str, threading.Thread] = {}
+        self._task_results: dict[str, TaskContext] = {}
+        self._task_errors: dict[str, BaseException] = {}
 
     def submit(
         self,
@@ -66,6 +72,7 @@ class Gateway:
         user_id: str = "u1",
         session_id: str = "s1",
         operating_mode: str | OperatingMode | None = None,
+        task_id: str | None = None,
     ) -> TaskContext:
         scenario = scenario or self.matcher.match(prompt)
         scenario_obj = self.matcher.registry.get(scenario)
@@ -87,7 +94,146 @@ class Gateway:
             skill_name=candidate.name if candidate else None,
             skill_instructions=skill.body if skill else None,
             capability_error=capability_error,
+            task_id=task_id,
         )
+
+    def submit_async(
+        self,
+        prompt: str,
+        *,
+        scenario: str | None = None,
+        user_id: str = "u1",
+        session_id: str = "s1",
+        operating_mode: str | OperatingMode | None = None,
+    ) -> str:
+        """Accept a task immediately and advance it in a background thread."""
+
+        if not self.runtime.run_store.persistent:
+            raise RuntimeError("asynchronous tasks require a persistent base_dir")
+        prefix = "a" if isinstance(self.runtime, AgentRuntime) else "t"
+        task_id = f"{prefix}_{uuid.uuid4().hex}"
+
+        def run_task() -> None:
+            try:
+                ctx = self.submit(
+                    prompt,
+                    scenario=scenario,
+                    user_id=user_id,
+                    session_id=session_id,
+                    operating_mode=operating_mode,
+                    task_id=task_id,
+                )
+            except BaseException as exc:  # a background failure must remain observable
+                with self._task_lock:
+                    self._task_errors[task_id] = exc
+            else:
+                with self._task_lock:
+                    self._task_results[task_id] = ctx
+
+        thread = threading.Thread(
+            target=run_task,
+            name=f"taiyi-task-{task_id}",
+            daemon=True,
+        )
+        with self._task_lock:
+            self._task_threads[task_id] = thread
+        thread.start()
+        return task_id
+
+    def task_status(self, task_id: str) -> dict | None:
+        """Read the authoritative persisted checkpoint for a submitted task."""
+
+        checkpoint = self.runtime.run_store.load(task_id)
+        if checkpoint is not None:
+            context = checkpoint["context"]
+            continuation = checkpoint.get("continuation") or {}
+            status = {
+                "task_id": task_id,
+                "state": context.get("state"),
+                "phase": context.get("phase"),
+                "settled": context.get("phase") == "SETTLED",
+                "attempt_id": context.get("attempt_id"),
+                "checkpoint_revision": context.get("checkpoint_revision"),
+                "scenario": context.get("scenario"),
+                "operating_mode": context.get("operating_mode"),
+                "execution_environment": context.get("execution_environment"),
+                "executed_action_count": context.get("executed_action_count", 0),
+                "approval_id": context.get("approval_id"),
+                "final_output": context.get("final_output"),
+                "error": context.get("error"),
+                "failure_kind": context.get("failure_kind"),
+                "validation_summary": context.get("validation_summary"),
+                "provider_route": context.get("provider_route"),
+                "contract": context.get("contract"),
+                "evidence": context.get("evidence"),
+                "steps": context.get("step_results", []),
+                "updated_at": context.get("updated_at"),
+                "continuation": {
+                    key: continuation[key]
+                    for key in ("kind", "operation_id", "job_id", "next_step", "next_step_index")
+                    if key in continuation
+                } or None,
+            }
+            job_id = continuation.get("job_id")
+            executor = self.runtime.executor
+            if job_id and hasattr(executor, "poll"):
+                status["job"] = executor.poll(str(job_id)).to_dict()
+            return status
+
+        with self._task_lock:
+            result = self._task_results.get(task_id)
+            error = self._task_errors.get(task_id)
+            thread = self._task_threads.get(task_id)
+        if result is not None:
+            return result.to_dict()
+        if error is not None:
+            return {
+                "task_id": task_id,
+                "state": TaskState.FAILED.value,
+                "phase": "SETTLED",
+                "settled": True,
+                "failure_kind": "INTERNAL",
+                "error": f"{type(error).__name__}: {error}",
+            }
+        if thread is not None:
+            return {
+                "task_id": task_id,
+                "state": "QUEUED",
+                "phase": "READY",
+                "settled": False,
+            }
+        return None
+
+    def task_events(self, task_id: str) -> tuple[dict, ...] | None:
+        events = self.runtime.run_store.read_events(task_id)
+        if events:
+            return events
+        with self._task_lock:
+            known = task_id in self._task_threads
+        if not known:
+            known = self.runtime.run_store.load(task_id) is not None
+        return () if known else None
+
+    def cancel_task(self, task_id: str) -> dict:
+        checkpoint = self.runtime.run_store.load(task_id)
+        if checkpoint is None:
+            raise KeyError(task_id)
+        context = checkpoint["context"]
+        if context.get("phase") == "SETTLED":
+            return {"task_id": task_id, "cancelled": False, "reason": "task already settled"}
+        continuation = checkpoint.get("continuation") or {}
+        job_id = continuation.get("job_id")
+        if not job_id:
+            raise RuntimeError("task has no cancellable durable job attached")
+        executor = self.runtime.executor
+        if not isinstance(executor, RecoverableExecutor):
+            raise RuntimeError("executor does not support durable cancellation")
+        record = executor.cancel(str(job_id))
+        return {
+            "task_id": task_id,
+            "cancelled": record.status.value == "CANCELLED",
+            "job": record.to_dict(),
+        }
 
     def resume(self, approval_id: str, *, approve: bool) -> TaskContext:
         """Resume a task suspended for human review.
@@ -219,11 +365,6 @@ def build_gateway(
             run_store=run_store,
         )
 
-    # A task waiting for human approval is not settled. Rehydrate its frozen
-    # context and continuation before accepting traffic so a process restart does
-    # not silently discard the user's pending work.
-    runtime.recover_pending()
-
     if extra_scenarios_dirs:
         scenarios = ScenarioRegistry.load_dirs([DEFAULT_SCENARIOS_DIR, *extra_scenarios_dirs])
     else:
@@ -237,6 +378,12 @@ def build_gateway(
     # runtime. Only then may the Skill be indexed or matched into task context.
     skills.verify_release_candidates()
     skills.index_into(memory)
+
+    # Finish all single-threaded startup writes before a recovery thread may use
+    # memory, validation, or iteration. Starting recovery above Skill indexing
+    # lets the two paths commit on the same SQLite connection concurrently.
+    # Recovery still starts before this gateway object is returned to traffic.
+    runtime.recover_pending()
 
     return Gateway(
         runtime=runtime,

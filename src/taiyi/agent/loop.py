@@ -14,6 +14,7 @@ LLM provider (the opt-in) drives it for real with the same control flow.
 """
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import nullcontext
 
@@ -29,12 +30,19 @@ from taiyi.policy import (
     resolve_policy,
 )
 from taiyi.runtime.context import StepResult, TaskContext
-from taiyi.runtime.executor import ExecResult, Executor, MockExecutor, execute_step
+from taiyi.runtime.executor import (
+    ExecResult,
+    Executor,
+    MockExecutor,
+    RecoverableExecutor,
+    execute_step,
+)
 from taiyi.runtime.persistence import (
     RunStore,
     agent_continuation,
     deserialize_messages,
     restore_context,
+    serialize_messages,
 )
 from taiyi.runtime.protocol import (
     CheckpointIncompatibleError,
@@ -114,6 +122,7 @@ class AgentRuntime:
         self.default_operating_mode = OperatingMode.parse(default_operating_mode)
         self.completion = CompletionController()
         self.run_store = run_store or RunStore()
+        self._recovery_threads: dict[str, threading.Thread] = {}
         # Build the system prompt the model actually sees. The default prompt
         # alone is too vague for a real model — it must know the tool-call syntax
         # AND the exact tool ids (with prefixes) governance/executor expect, or it
@@ -135,6 +144,7 @@ class AgentRuntime:
         skill_name: str | None = None,
         skill_instructions: str | None = None,
         capability_error: str | None = None,
+        task_id: str | None = None,
     ) -> TaskContext:
         policy = resolve_policy(operating_mode or self.default_operating_mode, scenario=scenario)
         provider_selection = self.provider_router.select(policy)
@@ -146,7 +156,7 @@ class AgentRuntime:
             selected_skill=skill_name,
         )
         ctx = TaskContext(
-            task_id=f"a_{int(time.time() * 1000)}_{len(self.audit)}",
+            task_id=task_id or f"a_{int(time.time() * 1000)}_{len(self.audit)}",
             runtime_mode="agent",
             prompt=prompt,
             scenario=scenario,
@@ -242,16 +252,23 @@ class AgentRuntime:
         messages: list[LLMMessage],
         trace,
         provider: LLMProvider,
+        *,
+        start_step: int = 1,
     ) -> None:
         assert ctx.policy is not None
         step_limit = self.max_steps or ctx.policy.max_steps
-        for step in range(1, step_limit + 1):
+        for step in range(start_step, step_limit + 1):
             ctx.round = step
             self._record(
                 ctx,
                 RunPhase.LLM_WAITING,
                 "llm_request_started",
                 state=TaskState.PLANNING,
+                continuation={
+                    "kind": "agent_continue",
+                    "next_step": step,
+                    "messages": serialize_messages(messages),
+                },
                 step=step,
             )
             with self._span(trace, "think"):
@@ -286,47 +303,8 @@ class AgentRuntime:
                         "complete, reply with your final answer."))
                     continue
                 ctx.final_output = resp.text or self._synthesize(ctx)
-                vr = self._validate(ctx)
-                action = (
-                    CompletionAction.COMPLETE
-                    if vr is None
-                    else self.completion.assess(ctx.contract, ctx.evidence, vr)
-                )
-                if action is CompletionAction.COMPLETE:
-                    self._accept_completion(ctx)
+                if self._finish_agent_answer(ctx, messages, step):
                     return
-                if action is CompletionAction.NEEDS_HUMAN:
-                    ctx.validation_summary = vr.repair_feedback
-                    ctx.final_output = (
-                        f"QUESTION: Please review this validation result: {vr.repair_feedback}"
-                    )
-                    self._record(
-                        ctx,
-                        RunPhase.WAITING_INPUT,
-                        "input_requested",
-                        state=TaskState.NEEDS_INPUT,
-                    )
-                    self.audit.append(
-                        "validation_needs_human", task_id=ctx.task_id,
-                        summary=ctx.validation_summary,
-                    )
-                    return
-                ctx.validation_attempts += 1
-                ctx.validation_summary = vr.repair_feedback
-                self.audit.append("validation_failed", task_id=ctx.task_id, step=step, failed=vr.failed_checks)
-                if ctx.validation_attempts >= ctx.policy.max_validation_rounds:
-                    ctx.error = (
-                        f"validation failed after {ctx.validation_attempts} attempt(s): "
-                        f"{ctx.validation_summary}"
-                    )
-                    ctx.failure_kind = FailureKind.EXTERNAL_FAILURE.value
-                    self._record(ctx, RunPhase.SETTLED, "run_settled", state=TaskState.FAILED)
-                    self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
-                    return
-                messages.append(LLMMessage(
-                    "user", f"Validation failed with this evidence:\n{vr.repair_feedback}\n"
-                    "Correct the failed acceptance criteria; do not repeat the same plan."
-                ))
                 continue
 
             call = resp.tool_calls[0]
@@ -342,6 +320,14 @@ class AgentRuntime:
                 RunPhase.AWAITING_PERMIT,
                 "permit_requested",
                 state=TaskState.AWAITING_PERMIT,
+                continuation={
+                    "kind": "agent_tool",
+                    "step": step,
+                    "step_result_index": len(ctx.step_results),
+                    "tool": step_obj.tool,
+                    "args": list(step_obj.args),
+                    "messages": serialize_messages(messages),
+                },
                 step=step,
                 tool=step_obj.tool,
             )
@@ -443,55 +429,173 @@ class AgentRuntime:
                 return
 
             with self._span(trace, "act", tool=step_obj.tool):
-                result = self._execute_tool(ctx, step_obj, len(ctx.step_results) - 1)
-            sr.executed = True
-            sr.output = result.output
-            ctx.executed_action_count += 1
-            self._record(
-                ctx,
-                RunPhase.TOOL_RESULT,
-                "tool_finished",
-                state=TaskState.EXECUTING,
-                step_index=len(ctx.step_results) - 1,
-                tool=step_obj.tool,
-                ok=result.ok,
-                operation_id=result.operation_id,
-                job_id=result.job_id,
-                exit_code=result.exit_code,
-                signal=result.signal,
-                failure_kind=result.failure_kind,
-                timeout_kind=result.timeout_kind,
-                stdout_artifact=result.stdout_artifact,
-                stderr_artifact=result.stderr_artifact,
-                output_truncated=result.output_truncated,
-                duration_seconds=result.duration_seconds,
-                error=result.error,
-            )
-            self.audit.append(
-                "step_executed", task_id=ctx.task_id, tool=step_obj.tool, ok=result.ok,
-                operation_id=result.operation_id, job_id=result.job_id,
-                exit_code=result.exit_code, signal=result.signal,
-                failure_kind=result.failure_kind, timeout_kind=result.timeout_kind,
-                duration_seconds=result.duration_seconds,
-            )
-            # Feed the observation back to the model. OpenAI/Ollama reject a bare
-            # `role: "tool"` message (it requires a tool_call_id we don't carry),
-            # so we replay it as a `user` turn — portable across every provider
-            # (断裂点 4).
-            messages.append(LLMMessage("assistant", f"tool_call: {step_obj.tool} {call.args}"))
-            messages.append(LLMMessage("user", f"[tool result] {step_obj.tool}\n{result.output}"))
-            if not result.ok:
-                self._fail(
+                result = self._execute_tool(
                     ctx,
-                    f"step failed: {step_obj.tool}: {result.error or result.output}",
-                    kind=self._result_failure_kind(result),
+                    step_obj,
+                    len(ctx.step_results) - 1,
+                    messages=messages,
                 )
+            if not self._apply_tool_result(
+                ctx,
+                step_obj,
+                len(ctx.step_results) - 1,
+                result,
+                messages,
+                next_step=step + 1,
+            ):
                 return
 
         ctx.error = f"step budget ({step_limit}) exhausted"
         ctx.failure_kind = FailureKind.BUDGET_EXHAUSTED.value
         self._record(ctx, RunPhase.SETTLED, "run_settled", state=TaskState.FAILED)
         self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+
+    def _finish_agent_answer(
+        self,
+        ctx: TaskContext,
+        messages: list[LLMMessage],
+        step: int,
+    ) -> bool:
+        """Validate a model answer; return True when the run must stop."""
+
+        vr = self._validate(
+            ctx,
+            continuation={
+                "kind": "agent_validate",
+                "step": step,
+                "messages": serialize_messages(messages),
+            },
+        )
+        action = (
+            CompletionAction.COMPLETE
+            if vr is None
+            else self.completion.assess(ctx.contract, ctx.evidence, vr)
+        )
+        if action is CompletionAction.COMPLETE:
+            self._accept_completion(ctx)
+            return True
+        if action is CompletionAction.NEEDS_HUMAN:
+            ctx.validation_summary = vr.repair_feedback
+            ctx.final_output = f"QUESTION: Please review this validation result: {vr.repair_feedback}"
+            self._record(
+                ctx,
+                RunPhase.WAITING_INPUT,
+                "input_requested",
+                state=TaskState.NEEDS_INPUT,
+            )
+            self.audit.append(
+                "validation_needs_human",
+                task_id=ctx.task_id,
+                summary=ctx.validation_summary,
+            )
+            return True
+        ctx.validation_attempts += 1
+        ctx.validation_summary = vr.repair_feedback
+        self.audit.append(
+            "validation_failed",
+            task_id=ctx.task_id,
+            step=step,
+            failed=vr.failed_checks,
+        )
+        assert ctx.policy is not None
+        if ctx.validation_attempts >= ctx.policy.max_validation_rounds:
+            ctx.error = (
+                f"validation failed after {ctx.validation_attempts} attempt(s): "
+                f"{ctx.validation_summary}"
+            )
+            ctx.failure_kind = FailureKind.EXTERNAL_FAILURE.value
+            self._record(ctx, RunPhase.SETTLED, "run_settled", state=TaskState.FAILED)
+            self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+            return True
+        messages.append(LLMMessage(
+            "user",
+            f"Validation failed with this evidence:\n{vr.repair_feedback}\n"
+            "Correct the failed acceptance criteria; do not repeat the same plan.",
+        ))
+        return False
+
+    def _apply_tool_result(
+        self,
+        ctx: TaskContext,
+        step_obj: PlanStep,
+        step_index: int,
+        result: ExecResult,
+        messages: list[LLMMessage],
+        *,
+        next_step: int,
+        recovered: bool = False,
+        approved_by: str | None = None,
+    ) -> bool:
+        sr = ctx.step_results[step_index]
+        if not sr.executed:
+            sr.executed = True
+            sr.output = result.output
+            ctx.executed_action_count += 1
+        # Feed the observation back before checkpointing. If the process dies
+        # before this checkpoint, recovery rebuilds the messages from the older
+        # TOOL_RUNNING continuation and appends the observation exactly once.
+        messages.append(LLMMessage("assistant", f"tool_call: {step_obj.tool} {step_obj.args}"))
+        messages.append(LLMMessage("user", f"[tool result] {step_obj.tool}\n{result.output}"))
+        continuation = (
+            {
+                "kind": "agent_continue",
+                "next_step": next_step,
+                "messages": serialize_messages(messages),
+            }
+            if result.ok
+            else {
+                "kind": "agent_failure",
+                "step_index": step_index,
+                "error": result.error or result.output,
+                "failure_kind": self._result_failure_kind(result).value,
+                "messages": serialize_messages(messages),
+            }
+        )
+        self._record(
+            ctx,
+            RunPhase.TOOL_RESULT,
+            "tool_recovered" if recovered else "tool_finished",
+            state=TaskState.EXECUTING,
+            continuation=continuation,
+            step_index=step_index,
+            tool=step_obj.tool,
+            ok=result.ok,
+            operation_id=result.operation_id,
+            job_id=result.job_id,
+            exit_code=result.exit_code,
+            signal=result.signal,
+            failure_kind=result.failure_kind,
+            timeout_kind=result.timeout_kind,
+            stdout_artifact=result.stdout_artifact,
+            stderr_artifact=result.stderr_artifact,
+            output_truncated=result.output_truncated,
+            duration_seconds=result.duration_seconds,
+            error=result.error,
+            recovered=recovered,
+        )
+        self.audit.append(
+            "step_executed",
+            task_id=ctx.task_id,
+            tool=step_obj.tool,
+            ok=result.ok,
+            approved_by=approved_by,
+            recovered=recovered,
+            operation_id=result.operation_id,
+            job_id=result.job_id,
+            exit_code=result.exit_code,
+            signal=result.signal,
+            failure_kind=result.failure_kind,
+            timeout_kind=result.timeout_kind,
+            duration_seconds=result.duration_seconds,
+        )
+        if result.ok:
+            return True
+        self._fail(
+            ctx,
+            f"step failed: {step_obj.tool}: {result.error or result.output}",
+            kind=self._result_failure_kind(result),
+        )
+        return False
 
     def _second_opinion(self, permit, step_obj, ctx):
         """Run the expert committee as a second gate on a governance ALLOW.
@@ -533,6 +637,18 @@ class AgentRuntime:
         if pending is None:
             raise KeyError(f"unknown approval: {approval_id}")
         ctx: TaskContext = pending.ctx
+        if not self.run_store.acquire_task_lease(ctx.task_id, blocking=False):
+            raise RuntimeError(f"task {ctx.task_id} is already being advanced by another runtime")
+        checkpoint = self.run_store.load(ctx.task_id)
+        if checkpoint is not None:
+            continuation = checkpoint.get("continuation") or {}
+            if (
+                checkpoint["context"].get("phase") != RunPhase.WAITING_APPROVAL.value
+                or continuation.get("approval_id") != approval_id
+            ):
+                self.run_store.release_task_lease(ctx.task_id)
+                self.approvals.remove(approval_id)
+                raise RuntimeError(f"approval {approval_id} is stale or already resolved")
         self.approvals.remove(approval_id)
 
         if not approve:
@@ -588,59 +704,26 @@ class AgentRuntime:
 
         # Re-check passed (ALLOW or still NEEDS_REVIEW-but-human-overrode). Execute
         # the held step, feed its result back, and let the loop continue reasoning.
+        messages: list[LLMMessage] = list(pending.messages or [])
         result = self._execute_tool(
             ctx,
             held_step,
             pending.held_index,
+            messages=messages,
             approved_by="human",
         )
         held_sr.verdict = "ALLOW(human)"
-        held_sr.executed = True
-        held_sr.output = result.output
-        ctx.executed_action_count += 1
-        self._record(
+        if not self._apply_tool_result(
             ctx,
-            RunPhase.TOOL_RESULT,
-            "tool_finished",
-            state=TaskState.EXECUTING,
-            step_index=pending.held_index,
-            tool=held_step.tool,
-            ok=result.ok,
-            operation_id=result.operation_id,
-            job_id=result.job_id,
-            exit_code=result.exit_code,
-            signal=result.signal,
-            failure_kind=result.failure_kind,
-            timeout_kind=result.timeout_kind,
-            stdout_artifact=result.stdout_artifact,
-            stderr_artifact=result.stderr_artifact,
-            output_truncated=result.output_truncated,
-            duration_seconds=result.duration_seconds,
-            error=result.error,
-        )
-        self.audit.append(
-            "step_executed", task_id=ctx.task_id, tool=held_step.tool,
-            ok=result.ok, approved_by="human", operation_id=result.operation_id,
-            job_id=result.job_id, exit_code=result.exit_code,
-            signal=result.signal, failure_kind=result.failure_kind,
-            timeout_kind=result.timeout_kind,
-            duration_seconds=result.duration_seconds,
-        )
-
-        if not result.ok:
-            self._fail(
-                ctx,
-                f"step failed: {held_step.tool}: {result.error or result.output}",
-                kind=self._result_failure_kind(result),
-            )
+            held_step,
+            pending.held_index,
+            result,
+            messages,
+            next_step=ctx.round + 1,
+            approved_by="human",
+        ):
             self._finish(ctx, time.time())
             return ctx
-
-        # Rebuild the conversation: the suspended messages, plus the held call
-        # and its freshly observed result, then continue the ReAct loop.
-        messages: list[LLMMessage] = list(pending.messages or [])
-        messages.append(LLMMessage("assistant", f"tool_call: {held_step.tool} {held_step.args}"))
-        messages.append(LLMMessage("user", f"[tool result] {held_step.tool}\n{result.output}"))
 
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         assert ctx.policy is not None
@@ -649,7 +732,13 @@ class AgentRuntime:
         ctx.provider_route["resumed"] = True
         try:
             with self._span(trace, "agent_task"):
-                self._loop(ctx, messages, trace, provider_selection.provider)
+                self._loop(
+                    ctx,
+                    messages,
+                    trace,
+                    provider_selection.provider,
+                    start_step=ctx.round + 1,
+                )
         except Exception as e:  # noqa: BLE001
             self._fail(ctx, e)
 
@@ -710,6 +799,7 @@ class AgentRuntime:
         step,
         step_index: int,
         *,
+        messages: list[LLMMessage],
         approved_by: str | None = None,
     ) -> ExecResult:
         """Checkpoint a stable operation id before attaching to durable work."""
@@ -717,10 +807,12 @@ class AgentRuntime:
         operation_id = f"{ctx.task_id}:round:{ctx.round}:step:{step_index}"
         continuation = {
             "kind": "tool_operation",
+            "round": ctx.round,
             "operation_id": operation_id,
             "step_index": step_index,
             "tool": step.tool,
             "args": list(step.args),
+            "messages": serialize_messages(messages),
         }
         if approved_by:
             continuation["approved_by"] = approved_by
@@ -766,10 +858,8 @@ class AgentRuntime:
         return FailureKind.TOOL_EXIT_NONZERO
 
     def recover_pending(self) -> int:
-        """Rehydrate ReAct approvals and their conversation after restart."""
+        """Rehydrate approvals and continue crash-interrupted ReAct runs."""
 
-        if self.approvals is None:
-            return 0
         recovered = 0
         for checkpoint in self.run_store.iter_checkpoints():
             snapshot = checkpoint.get("context") or {}
@@ -783,26 +873,27 @@ class AgentRuntime:
             continuation = checkpoint.get("continuation") or {}
             if snapshot.get("runtime_mode") != "agent":
                 continue
-            if snapshot.get("phase") != RunPhase.WAITING_APPROVAL.value:
+            kind = continuation.get("kind")
+            if (
+                snapshot.get("phase") == RunPhase.WAITING_APPROVAL.value
+                and kind == "agent_approval"
+            ):
+                if self._recover_approval(snapshot, continuation):
+                    recovered += 1
                 continue
-            if continuation.get("kind") != "agent_approval":
+            if kind not in {
+                "agent_continue",
+                "agent_tool",
+                "agent_validate",
+                "tool_operation",
+                "agent_failure",
+            }:
                 continue
-            approval_id = str(continuation.get("approval_id", ""))
-            if not approval_id or self.approvals.get(approval_id) is not None:
+            task_id = str(snapshot.get("task_id", ""))
+            if not task_id or not self.run_store.acquire_task_lease(task_id, blocking=False):
                 continue
             try:
-                ctx = restore_context(
-                    snapshot,
-                    validator=self.validator,
-                    value_stream=self.value_stream,
-                )
-                held_index = int(continuation["held_index"])
-                held = ctx.step_results[held_index].step
-                messages = deserialize_messages(continuation.get("messages", []))
-                if ctx.approval_id != approval_id:
-                    raise CheckpointIncompatibleError("approval id differs from checkpoint context")
-                if not messages:
-                    raise CheckpointIncompatibleError("agent continuation has no conversation")
+                ctx, messages = self._restore_agent_continuation(snapshot, continuation)
             except (
                 CheckpointIncompatibleError,
                 KeyError,
@@ -810,42 +901,435 @@ class AgentRuntime:
                 TypeError,
                 ValueError,
             ) as exc:
+                self.run_store.release_task_lease(task_id)
                 self.audit.append(
                     "run_recovery_failed",
-                    task_id=snapshot.get("task_id"),
+                    task_id=task_id,
                     error=f"{type(exc).__name__}: {exc}",
                 )
                 continue
             previous_attempt = ctx.attempt_id
             ctx.attempt_id += 1
-            self.approvals.add(PendingApproval(
-                approval_id=approval_id,
-                task_id=ctx.task_id,
-                tool=held.tool,
-                reason=ctx.step_results[held_index].reason,
-                scenario=ctx.scenario,
-                ctx=ctx,
-                held_index=held_index,
-                steps=[],
-                messages=messages,
-            ))
             self._record(
                 ctx,
-                RunPhase.WAITING_APPROVAL,
+                RunPhase.RECOVERING,
                 "run_recovered",
-                state=TaskState.NEEDS_REVIEW,
+                state=TaskState.EXECUTING,
                 continuation=continuation,
                 previous_attempt=previous_attempt,
             )
+            thread = threading.Thread(
+                target=self._resume_agent_continuation,
+                args=(ctx, continuation, messages),
+                name=f"taiyi-recover-{ctx.task_id}",
+                daemon=True,
+            )
+            self._recovery_threads[ctx.task_id] = thread
+            thread.start()
             recovered += 1
         return recovered
 
-    def _validate(self, ctx: TaskContext):
+    def _recover_approval(self, snapshot: dict, continuation: dict) -> bool:
+        if self.approvals is None:
+            return False
+        approval_id = str(continuation.get("approval_id", ""))
+        if not approval_id or self.approvals.get(approval_id) is not None:
+            return False
+        try:
+            ctx = restore_context(
+                snapshot,
+                validator=self.validator,
+                value_stream=self.value_stream,
+            )
+            held_index = int(continuation["held_index"])
+            if not 0 <= held_index < len(ctx.step_results):
+                raise CheckpointIncompatibleError("held approval step is out of range")
+            held = ctx.step_results[held_index].step
+            messages = deserialize_messages(continuation.get("messages", []))
+            if ctx.approval_id != approval_id:
+                raise CheckpointIncompatibleError("approval id differs from checkpoint context")
+            if not messages:
+                raise CheckpointIncompatibleError("agent continuation has no conversation")
+        except (
+            CheckpointIncompatibleError,
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            self.audit.append(
+                "run_recovery_failed",
+                task_id=snapshot.get("task_id"),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return False
+        previous_attempt = ctx.attempt_id
+        ctx.attempt_id += 1
+        self.approvals.add(PendingApproval(
+            approval_id=approval_id,
+            task_id=ctx.task_id,
+            tool=held.tool,
+            reason=ctx.step_results[held_index].reason,
+            scenario=ctx.scenario,
+            ctx=ctx,
+            held_index=held_index,
+            steps=[],
+            messages=messages,
+        ))
+        self._record(
+            ctx,
+            RunPhase.WAITING_APPROVAL,
+            "run_recovered",
+            state=TaskState.NEEDS_REVIEW,
+            continuation=continuation,
+            previous_attempt=previous_attempt,
+        )
+        return True
+
+    def _restore_agent_continuation(
+        self,
+        snapshot: dict,
+        continuation: dict,
+    ) -> tuple[TaskContext, list[LLMMessage]]:
+        ctx = restore_context(
+            snapshot,
+            validator=self.validator,
+            value_stream=self.value_stream,
+        )
+        messages = deserialize_messages(continuation.get("messages", []))
+        if not messages:
+            raise CheckpointIncompatibleError("agent continuation has no conversation")
+        kind = continuation.get("kind")
+        assert ctx.policy is not None
+        step_limit = self.max_steps or ctx.policy.max_steps
+        if kind == "agent_continue":
+            next_step = int(continuation["next_step"])
+            if next_step not in {ctx.round, ctx.round + 1}:
+                raise CheckpointIncompatibleError("agent continuation step differs from context")
+            if not 1 <= next_step <= step_limit + 1:
+                raise CheckpointIncompatibleError("agent continuation step is out of range")
+        elif kind == "agent_tool":
+            step = int(continuation["step"])
+            step_index = int(continuation["step_result_index"])
+            if (
+                step != ctx.round
+                or not 1 <= step <= step_limit
+                or step_index < 0
+                or step_index != len(ctx.step_results)
+            ):
+                raise CheckpointIncompatibleError("pending tool differs from agent progress")
+            PlanStep(
+                tool=str(continuation["tool"]),
+                args=[str(arg) for arg in continuation.get("args", [])],
+            )
+        elif kind == "agent_validate":
+            step = int(continuation["step"])
+            if step != ctx.round or not 1 <= step <= step_limit or not ctx.final_output:
+                raise CheckpointIncompatibleError("validation differs from agent answer")
+        elif kind == "tool_operation":
+            round_number = int(continuation.get("round", ctx.round))
+            step_index = int(continuation["step_index"])
+            if (
+                round_number != ctx.round
+                or not 1 <= round_number <= step_limit
+                or not 0 <= step_index < len(ctx.step_results)
+            ):
+                raise CheckpointIncompatibleError("running tool differs from agent progress")
+            step_obj = ctx.step_results[step_index].step
+            if (
+                continuation.get("tool") != step_obj.tool
+                or list(continuation.get("args", [])) != step_obj.args
+            ):
+                raise CheckpointIncompatibleError("tool operation differs from agent step")
+            expected = f"{ctx.task_id}:round:{ctx.round}:step:{step_index}"
+            if continuation.get("operation_id") != expected:
+                raise CheckpointIncompatibleError("tool operation id is not deterministic")
+        elif kind == "agent_failure":
+            step_index = int(continuation["step_index"])
+            if (
+                not 0 <= step_index < len(ctx.step_results)
+                or not ctx.step_results[step_index].executed
+            ):
+                raise CheckpointIncompatibleError("agent failure has no executed step")
+            FailureKind(str(continuation["failure_kind"]))
+        else:
+            raise CheckpointIncompatibleError(f"unsupported agent continuation: {kind!r}")
+        return ctx, messages
+
+    def _resume_agent_continuation(
+        self,
+        ctx: TaskContext,
+        continuation: dict,
+        messages: list[LLMMessage],
+    ) -> None:
+        start = time.time()
+        trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
+        try:
+            kind = continuation["kind"]
+            if kind == "agent_failure":
+                self._fail(
+                    ctx,
+                    str(continuation.get("error") or "recovered tool failure"),
+                    kind=FailureKind(str(continuation["failure_kind"])),
+                )
+                return
+            if kind == "agent_validate":
+                if self._finish_agent_answer(ctx, messages, ctx.round):
+                    return
+                next_step = ctx.round + 1
+            elif kind == "agent_tool":
+                if not self._resume_pending_tool(ctx, continuation, messages):
+                    return
+                next_step = ctx.round + 1
+            elif kind == "tool_operation":
+                step_index = int(continuation["step_index"])
+                step_obj = ctx.step_results[step_index].step
+                result = self._recover_agent_job(
+                    ctx,
+                    step_obj,
+                    step_index,
+                    continuation,
+                    messages,
+                )
+                if result is None:
+                    return
+                if not self._apply_tool_result(
+                    ctx,
+                    step_obj,
+                    step_index,
+                    result,
+                    messages,
+                    next_step=ctx.round + 1,
+                    recovered=True,
+                    approved_by=continuation.get("approved_by"),
+                ):
+                    return
+                next_step = ctx.round + 1
+            else:
+                next_step = int(continuation["next_step"])
+
+            assert ctx.policy is not None
+            provider_selection = self.provider_router.select(ctx.policy)
+            ctx.provider_route = provider_selection.to_dict()
+            ctx.provider_route["resumed"] = True
+            with self._span(trace, "agent_task"):
+                self._loop(
+                    ctx,
+                    messages,
+                    trace,
+                    provider_selection.provider,
+                    start_step=next_step,
+                )
+        except Exception as exc:  # noqa: BLE001 — recovery failures must settle visibly
+            self._fail(ctx, exc)
+        finally:
+            self._finish(ctx, start)
+            self.run_store.release_task_lease(ctx.task_id)
+            self._recovery_threads.pop(ctx.task_id, None)
+
+    def _resume_pending_tool(
+        self,
+        ctx: TaskContext,
+        continuation: dict,
+        messages: list[LLMMessage],
+    ) -> bool:
+        step_index = int(continuation["step_result_index"])
+        step_obj = PlanStep(
+            tool=str(continuation["tool"]),
+            args=[str(arg) for arg in continuation.get("args", [])],
+        )
+        permit = self.scheduler.request_permit(
+            step_obj,
+            ctx.scenario,
+            user_id=ctx.user_id,
+            task_id=ctx.task_id,
+        )
+        if self.obs is not None:
+            self.obs.governance_verdict.inc(verdict=permit.verdict.value)
+        sr = StepResult(
+            step=step_obj,
+            verdict=permit.verdict.value,
+            reason=permit.reason,
+            matched_rule_id=permit.matched_rule_id,
+        )
+        ctx.step_results.append(sr)
+        if permit.verdict is Verdict.DENY:
+            ctx.final_output = f"recovery rejected by governance: {permit.reason}"
+            self._record(
+                ctx,
+                RunPhase.SETTLED,
+                "run_settled",
+                state=TaskState.REJECTED,
+                reason=permit.reason,
+            )
+            self.audit.append(
+                "task_rejected",
+                task_id=ctx.task_id,
+                tool=step_obj.tool,
+                reason=permit.reason,
+                source="recovery",
+            )
+            return False
+        if permit.verdict is Verdict.ALLOW:
+            permit = self._second_opinion(permit, step_obj, ctx)
+        if permit.verdict is Verdict.NEEDS_REVIEW:
+            self._park_agent_approval(ctx, step_obj, step_index, permit, messages)
+            return False
+        result = self._execute_tool(
+            ctx,
+            step_obj,
+            step_index,
+            messages=messages,
+        )
+        return self._apply_tool_result(
+            ctx,
+            step_obj,
+            step_index,
+            result,
+            messages,
+            next_step=ctx.round + 1,
+            recovered=True,
+        )
+
+    def _recover_agent_job(
+        self,
+        ctx: TaskContext,
+        step_obj: PlanStep,
+        step_index: int,
+        continuation: dict,
+        messages: list[LLMMessage],
+    ) -> ExecResult | None:
+        if not isinstance(self.executor, RecoverableExecutor):
+            raise CheckpointIncompatibleError(
+                "executor cannot reattach a TOOL_RUNNING checkpoint"
+            )
+        operation_id = str(continuation["operation_id"])
+        recorded_job_id = continuation.get("job_id")
+        handle = self.executor.find(operation_id)
+        reattached = handle is not None
+        if handle is not None:
+            if handle.operation_id != operation_id:
+                raise CheckpointIncompatibleError("reattached job has a different operation id")
+            if recorded_job_id is not None and handle.job_id != recorded_job_id:
+                raise CheckpointIncompatibleError("reattached job differs from checkpoint job")
+        else:
+            if recorded_job_id is not None:
+                raise CheckpointIncompatibleError(
+                    "checkpoint names a job that is absent from the operation index"
+                )
+            if not self.executor.supports_jobs(step_obj):
+                raise CheckpointIncompatibleError(
+                    "non-durable tool outcome is unknown; refusing duplicate execution"
+                )
+            permit = self.scheduler.request_permit(
+                step_obj,
+                ctx.scenario,
+                user_id=ctx.user_id,
+                task_id=ctx.task_id,
+            )
+            self.audit.append(
+                "step_repermited",
+                task_id=ctx.task_id,
+                tool=step_obj.tool,
+                verdict=permit.verdict.value,
+                source="recovery",
+            )
+            if permit.verdict is Verdict.ALLOW:
+                permit = self._second_opinion(permit, step_obj, ctx)
+            if permit.verdict is Verdict.DENY:
+                sr = ctx.step_results[step_index]
+                sr.verdict = permit.verdict.value
+                sr.reason = permit.reason
+                sr.matched_rule_id = permit.matched_rule_id
+                ctx.final_output = f"recovery rejected by governance: {permit.reason}"
+                self._record(
+                    ctx,
+                    RunPhase.SETTLED,
+                    "run_settled",
+                    state=TaskState.REJECTED,
+                    reason=permit.reason,
+                )
+                return None
+            if permit.verdict is Verdict.NEEDS_REVIEW:
+                self._park_agent_approval(
+                    ctx,
+                    step_obj,
+                    step_index,
+                    permit,
+                    messages,
+                )
+                return None
+            handle = self.executor.start(step_obj, operation_id=operation_id)
+
+        attached = {**continuation, "job_id": handle.job_id}
+        self._record(
+            ctx,
+            RunPhase.TOOL_RUNNING,
+            "job_reattached" if reattached else "job_attached",
+            state=TaskState.EXECUTING,
+            continuation=attached,
+            operation_id=operation_id,
+            job_id=handle.job_id,
+            step_index=step_index,
+            tool=step_obj.tool,
+        )
+        result = self.executor.wait(handle.job_id)
+        if result.operation_id != operation_id or result.job_id != handle.job_id:
+            raise CheckpointIncompatibleError("durable job result identity does not match continuation")
+        return result
+
+    def _park_agent_approval(
+        self,
+        ctx: TaskContext,
+        step_obj: PlanStep,
+        step_index: int,
+        permit,
+        messages: list[LLMMessage],
+    ) -> None:
+        approval_id = permit.approval_id or f"recovery_{ctx.task_id}_{step_index}"
+        sr = ctx.step_results[step_index]
+        sr.verdict = permit.verdict.value
+        sr.reason = permit.reason
+        sr.matched_rule_id = permit.matched_rule_id
+        ctx.approval_id = approval_id
+        ctx.final_output = (
+            f"suspended for human review (approval_id={approval_id}): {permit.reason}"
+        )
+        continuation = agent_continuation(approval_id, step_index, messages)
+        self._record(
+            ctx,
+            RunPhase.WAITING_APPROVAL,
+            "approval_requested",
+            state=TaskState.NEEDS_REVIEW,
+            continuation=continuation,
+            tool=step_obj.tool,
+            source="recovery",
+        )
+        if self.approvals is not None:
+            self.approvals.add(PendingApproval(
+                approval_id=approval_id,
+                task_id=ctx.task_id,
+                tool=step_obj.tool,
+                reason=permit.reason,
+                scenario=ctx.scenario,
+                ctx=ctx,
+                held_index=step_index,
+                steps=[],
+                messages=list(messages),
+            ))
+
+    def _validate(self, ctx: TaskContext, *, continuation: dict | None = None):
         if self.validator is None:
             return None
         if ctx.validation_checklist is None:
             raise RuntimeError("validator configured without a frozen validation checklist")
-        self._record(ctx, RunPhase.VALIDATING, "validation_started", state=TaskState.VALIDATING)
+        self._record(
+            ctx,
+            RunPhase.VALIDATING,
+            "validation_started",
+            state=TaskState.VALIDATING,
+            continuation=continuation,
+        )
         vctx = ValidationContext(
             prompt=ctx.prompt,
             scenario=ctx.scenario,

@@ -14,6 +14,7 @@ be replayed in order with ``replay_task``.
 """
 from __future__ import annotations
 
+import threading
 import time
 from contextlib import nullcontext
 
@@ -31,7 +32,14 @@ from taiyi.policy import (
     resolve_policy,
 )
 from taiyi.runtime.context import StepResult, TaskContext
-from taiyi.runtime.executor import ExecResult, Executor, MockExecutor, execute_step
+from taiyi.runtime.executor import (
+    DurableExecutor,
+    ExecResult,
+    Executor,
+    MockExecutor,
+    RecoverableExecutor,
+    execute_step,
+)
 from taiyi.runtime.persistence import (
     RunStore,
     continuation_steps,
@@ -86,6 +94,7 @@ class TaskRuntime:
         self.provider = provider_router.default_provider if provider_router else None
         self.completion = CompletionController()
         self.run_store = run_store or RunStore()
+        self._recovery_threads: dict[str, threading.Thread] = {}
 
     def run(
         self,
@@ -99,6 +108,7 @@ class TaskRuntime:
         skill_name: str | None = None,
         skill_instructions: str | None = None,
         capability_error: str | None = None,
+        task_id: str | None = None,
     ) -> TaskContext:
         policy = resolve_policy(operating_mode or self.default_operating_mode, scenario=scenario)
         provider_selection = self.provider_router.select(policy) if self.provider_router else None
@@ -110,7 +120,7 @@ class TaskRuntime:
             selected_skill=skill_name,
         )
         ctx = TaskContext(
-            task_id=f"t_{int(time.time() * 1000)}_{len(self.audit)}",
+            task_id=task_id or f"t_{int(time.time() * 1000)}_{len(self.audit)}",
             runtime_mode="workflow",
             prompt=prompt,
             scenario=scenario,
@@ -173,10 +183,10 @@ class TaskRuntime:
         self._finish(ctx, start)
         return ctx
 
-    def _execute_rounds(self, ctx: TaskContext, trace) -> None:
+    def _execute_rounds(self, ctx: TaskContext, trace, *, start_round: int = 1) -> None:
         assert ctx.policy is not None
         round_limit = self.max_rounds or ctx.policy.max_validation_rounds
-        for rnd in range(1, round_limit + 1):
+        for rnd in range(start_round, round_limit + 1):
             ctx.round = rnd
             ctx.step_results = []
             with self._span(trace, "plan"):
@@ -204,51 +214,60 @@ class TaskRuntime:
                 completed = self._do(ctx)
             if not completed:
                 return  # DENY / NEEDS_REVIEW / failed execution: terminal state set
-
-            ctx.final_output = (
-                ctx.plan.planner_output
-                if ctx.plan is not None and not ctx.plan.steps and ctx.plan.planner_output
-                else self._synthesize(ctx)
-            )
-            with self._span(trace, "validate"):
-                vr = self._validate(ctx)
-            action = (
-                CompletionAction.COMPLETE
-                if vr is None
-                else self.completion.assess(ctx.contract, ctx.evidence, vr)
-            )
-            if action is CompletionAction.COMPLETE:
-                self._accept_completion(ctx, round_number=rnd)
+            if self._finish_round(ctx, trace, rnd):
                 return
-
-            if action is CompletionAction.NEEDS_HUMAN:
-                ctx.validation_summary = vr.repair_feedback
-                ctx.final_output = (
-                    f"QUESTION: Please review this validation result: {vr.repair_feedback}"
-                )
-                self._record(
-                    ctx,
-                    RunPhase.WAITING_INPUT,
-                    "input_requested",
-                    state=TaskState.NEEDS_INPUT,
-                )
-                self.audit.append(
-                    "validation_needs_human", task_id=ctx.task_id,
-                    summary=ctx.validation_summary,
-                )
-                return
-
-            # Validation failed → bounce back into PDCA.
-            ctx.validation_attempts += 1
-            ctx.validation_summary = vr.repair_feedback
-            self.audit.append(
-                "validation_failed", task_id=ctx.task_id, round=rnd, failed=vr.failed_checks
-            )
 
         ctx.error = f"validation failed after {round_limit} round(s): {ctx.validation_summary}"
         ctx.failure_kind = FailureKind.EXTERNAL_FAILURE.value
         self._record(ctx, RunPhase.SETTLED, "run_settled", state=TaskState.FAILED)
         self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+
+    def _finish_round(self, ctx: TaskContext, trace, round_number: int) -> bool:
+        """Validate one fully executed workflow round; return True when it stops."""
+
+        assert ctx.plan is not None
+        ctx.final_output = (
+            ctx.plan.planner_output
+            if not ctx.plan.steps and ctx.plan.planner_output
+            else self._synthesize(ctx)
+        )
+        with self._span(trace, "validate"):
+            vr = self._validate(
+                ctx,
+                continuation={"kind": "workflow_validate", "round": round_number},
+            )
+        action = (
+            CompletionAction.COMPLETE
+            if vr is None
+            else self.completion.assess(ctx.contract, ctx.evidence, vr)
+        )
+        if action is CompletionAction.COMPLETE:
+            self._accept_completion(ctx, round_number=round_number)
+            return True
+        if action is CompletionAction.NEEDS_HUMAN:
+            ctx.validation_summary = vr.repair_feedback
+            ctx.final_output = f"QUESTION: Please review this validation result: {vr.repair_feedback}"
+            self._record(
+                ctx,
+                RunPhase.WAITING_INPUT,
+                "input_requested",
+                state=TaskState.NEEDS_INPUT,
+            )
+            self.audit.append(
+                "validation_needs_human",
+                task_id=ctx.task_id,
+                summary=ctx.validation_summary,
+            )
+            return True
+        ctx.validation_attempts += 1
+        ctx.validation_summary = vr.repair_feedback
+        self.audit.append(
+            "validation_failed",
+            task_id=ctx.task_id,
+            round=round_number,
+            failed=vr.failed_checks,
+        )
+        return False
 
     @staticmethod
     def _span(trace, name: str):
@@ -401,6 +420,11 @@ class TaskRuntime:
                 RunPhase.AWAITING_PERMIT,
                 "permit_requested",
                 state=TaskState.AWAITING_PERMIT,
+                continuation={
+                    "kind": "workflow_progress",
+                    "round": ctx.round,
+                    "next_step_index": i,
+                },
                 step_index=i,
                 tool=step.tool,
             )
@@ -500,45 +524,87 @@ class TaskRuntime:
                 return False
 
             result = self._execute_tool(ctx, step, i)
-            sr.executed = True
-            sr.output = result.output
-            ctx.executed_action_count += 1
-            self._record(
-                ctx,
-                RunPhase.TOOL_RESULT,
-                "tool_finished",
-                state=TaskState.EXECUTING,
-                step_index=i,
-                tool=step.tool,
-                ok=result.ok,
-                operation_id=result.operation_id,
-                job_id=result.job_id,
-                exit_code=result.exit_code,
-                signal=result.signal,
-                failure_kind=result.failure_kind,
-                timeout_kind=result.timeout_kind,
-                stdout_artifact=result.stdout_artifact,
-                stderr_artifact=result.stderr_artifact,
-                output_truncated=result.output_truncated,
-                duration_seconds=result.duration_seconds,
-                error=result.error,
-            )
-            self.audit.append(
-                "step_executed", task_id=ctx.task_id, tool=step.tool, ok=result.ok,
-                operation_id=result.operation_id, job_id=result.job_id,
-                exit_code=result.exit_code, signal=result.signal,
-                failure_kind=result.failure_kind, timeout_kind=result.timeout_kind,
-                duration_seconds=result.duration_seconds,
-            )
-            if not result.ok:
-                self._fail(
-                    ctx,
-                    f"step failed: {step.tool}: {result.error or result.output}",
-                    kind=self._result_failure_kind(result),
-                )
+            if not self._apply_tool_result(ctx, step, i, result, next_step_index=i + 1):
                 return False
 
         return True
+
+    def _apply_tool_result(
+        self,
+        ctx: TaskContext,
+        step,
+        step_index: int,
+        result: ExecResult,
+        *,
+        next_step_index: int,
+        recovered: bool = False,
+        approved_by: str | None = None,
+    ) -> bool:
+        sr = ctx.step_results[step_index]
+        if not sr.executed:
+            sr.executed = True
+            sr.output = result.output
+            ctx.executed_action_count += 1
+        continuation = (
+            {
+                "kind": "workflow_progress",
+                "round": ctx.round,
+                "next_step_index": next_step_index,
+            }
+            if result.ok
+            else {
+                "kind": "workflow_failure",
+                "round": ctx.round,
+                "step_index": step_index,
+                "error": result.error or result.output,
+                "failure_kind": self._result_failure_kind(result).value,
+            }
+        )
+        self._record(
+            ctx,
+            RunPhase.TOOL_RESULT,
+            "tool_recovered" if recovered else "tool_finished",
+            state=TaskState.EXECUTING,
+            continuation=continuation,
+            step_index=step_index,
+            tool=step.tool,
+            ok=result.ok,
+            operation_id=result.operation_id,
+            job_id=result.job_id,
+            exit_code=result.exit_code,
+            signal=result.signal,
+            failure_kind=result.failure_kind,
+            timeout_kind=result.timeout_kind,
+            stdout_artifact=result.stdout_artifact,
+            stderr_artifact=result.stderr_artifact,
+            output_truncated=result.output_truncated,
+            duration_seconds=result.duration_seconds,
+            error=result.error,
+            recovered=recovered,
+        )
+        self.audit.append(
+            "step_executed",
+            task_id=ctx.task_id,
+            tool=step.tool,
+            ok=result.ok,
+            approved_by=approved_by,
+            recovered=recovered,
+            operation_id=result.operation_id,
+            job_id=result.job_id,
+            exit_code=result.exit_code,
+            signal=result.signal,
+            failure_kind=result.failure_kind,
+            timeout_kind=result.timeout_kind,
+            duration_seconds=result.duration_seconds,
+        )
+        if result.ok:
+            return True
+        self._fail(
+            ctx,
+            f"step failed: {step.tool}: {result.error or result.output}",
+            kind=self._result_failure_kind(result),
+        )
+        return False
 
     def _second_opinion(self, permit, step, ctx, held_index, steps):
         """Expert committee as a second gate on a governance ALLOW (one-way tighten).
@@ -571,6 +637,18 @@ class TaskRuntime:
         if pending is None:
             raise KeyError(f"unknown approval: {approval_id}")
         ctx: TaskContext = pending.ctx
+        if not self.run_store.acquire_task_lease(ctx.task_id, blocking=False):
+            raise RuntimeError(f"task {ctx.task_id} is already being advanced by another runtime")
+        checkpoint = self.run_store.load(ctx.task_id)
+        if checkpoint is not None:
+            continuation = checkpoint.get("continuation") or {}
+            if (
+                checkpoint["context"].get("phase") != RunPhase.WAITING_APPROVAL.value
+                or continuation.get("approval_id") != approval_id
+            ):
+                self.run_store.release_task_lease(ctx.task_id)
+                self.approvals.remove(approval_id)
+                raise RuntimeError(f"approval {approval_id} is stale or already resolved")
         self.approvals.remove(approval_id)
 
         if not approve:
@@ -634,71 +712,22 @@ class TaskRuntime:
             approved_by="human",
         )
         held_sr.verdict = "ALLOW(human)"
-        held_sr.executed = True
-        held_sr.output = result.output
-        ctx.executed_action_count += 1
-        self._record(
+        if not self._apply_tool_result(
             ctx,
-            RunPhase.TOOL_RESULT,
-            "tool_finished",
-            state=TaskState.EXECUTING,
-            tool=held_step.tool,
-            ok=result.ok,
-            operation_id=result.operation_id,
-            job_id=result.job_id,
-            exit_code=result.exit_code,
-            signal=result.signal,
-            failure_kind=result.failure_kind,
-            timeout_kind=result.timeout_kind,
-            stdout_artifact=result.stdout_artifact,
-            stderr_artifact=result.stderr_artifact,
-            output_truncated=result.output_truncated,
-            duration_seconds=result.duration_seconds,
-            error=result.error,
-        )
-        self.audit.append("step_executed", task_id=ctx.task_id, tool=held_step.tool, ok=result.ok,
-                          approved_by="human", operation_id=result.operation_id,
-                          job_id=result.job_id, exit_code=result.exit_code,
-                          signal=result.signal, failure_kind=result.failure_kind,
-                          timeout_kind=result.timeout_kind,
-                          duration_seconds=result.duration_seconds)
-        if not result.ok:
-            self._fail(
-                ctx,
-                f"step failed: {held_step.tool}: {result.error or result.output}",
-                kind=self._result_failure_kind(result),
-            )
+            held_step,
+            pending.held_index,
+            result,
+            next_step_index=pending.held_index + 1,
+            approved_by="human",
+        ):
             return ctx
 
         if not self._execute_steps(ctx, pending.steps, pending.held_index + 1):
             return ctx  # re-suspended / rejected / failed downstream
 
-        ctx.final_output = self._synthesize(ctx)
-        vr = self._validate(ctx)
-        action = (
-            CompletionAction.COMPLETE
-            if vr is None
-            else self.completion.assess(ctx.contract, ctx.evidence, vr)
-        )
-        if action is CompletionAction.COMPLETE:
-            self._accept_completion(ctx)
-        elif action is CompletionAction.NEEDS_HUMAN:
-            ctx.validation_summary = vr.repair_feedback
-            ctx.final_output = (
-                f"QUESTION: Please review this validation result: {vr.repair_feedback}"
-            )
-            self._record(
-                ctx,
-                RunPhase.WAITING_INPUT,
-                "input_requested",
-                state=TaskState.NEEDS_INPUT,
-            )
-        else:
-            ctx.validation_attempts += 1
-            ctx.validation_summary = vr.repair_feedback
-            ctx.error = f"validation failed after resume: {vr.repair_feedback}"
-            ctx.failure_kind = FailureKind.EXTERNAL_FAILURE.value
-            self._record(ctx, RunPhase.SETTLED, "run_settled", state=TaskState.FAILED)
+        trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
+        if not self._finish_round(ctx, trace, ctx.round):
+            self._execute_rounds(ctx, trace, start_round=ctx.round + 1)
         return ctx
 
     def _execute_tool(
@@ -712,6 +741,7 @@ class TaskRuntime:
         operation_id = f"{ctx.task_id}:round:{ctx.round}:step:{step_index}"
         continuation = {
             "kind": "tool_operation",
+            "round": ctx.round,
             "operation_id": operation_id,
             "step_index": step_index,
             "tool": step.tool,
@@ -761,10 +791,14 @@ class TaskRuntime:
         return FailureKind.TOOL_EXIT_NONZERO
 
     def recover_pending(self) -> int:
-        """Rehydrate workflow approvals persisted before a process restart."""
+        """Restore suspended approvals and continue recoverable workflow runs.
 
-        if self.approvals is None:
-            return 0
+        A task lease is claimed before an active continuation is scheduled. This
+        keeps two gateway processes from both advancing the same checkpoint while
+        the durable job's operation id prevents the tool side effect itself from
+        being launched twice.
+        """
+
         recovered = 0
         for checkpoint in self.run_store.iter_checkpoints():
             snapshot = checkpoint.get("context") or {}
@@ -778,28 +812,26 @@ class TaskRuntime:
             continuation = checkpoint.get("continuation") or {}
             if snapshot.get("runtime_mode") != "workflow":
                 continue
-            if snapshot.get("phase") != RunPhase.WAITING_APPROVAL.value:
+            kind = continuation.get("kind")
+            if (
+                snapshot.get("phase") == RunPhase.WAITING_APPROVAL.value
+                and kind == "workflow_approval"
+            ):
+                if self._recover_approval(snapshot, continuation):
+                    recovered += 1
                 continue
-            if continuation.get("kind") != "workflow_approval":
+            if kind not in {
+                "tool_operation",
+                "workflow_progress",
+                "workflow_validate",
+                "workflow_failure",
+            }:
                 continue
-            approval_id = str(continuation.get("approval_id", ""))
-            if not approval_id or self.approvals.get(approval_id) is not None:
+            task_id = str(snapshot.get("task_id", ""))
+            if not task_id or not self.run_store.acquire_task_lease(task_id, blocking=False):
                 continue
             try:
-                ctx = restore_context(
-                    snapshot,
-                    validator=self.validator,
-                    value_stream=self.value_stream,
-                )
-                steps = continuation_steps(continuation)
-                held_index = int(continuation["held_index"])
-                held = steps[held_index]
-                if ctx.approval_id != approval_id:
-                    raise CheckpointIncompatibleError("approval id differs from checkpoint context")
-                if ctx.plan is None or ctx.plan.steps != steps:
-                    raise CheckpointIncompatibleError("continuation plan differs from frozen plan")
-                if ctx.step_results[held_index].step != held:
-                    raise CheckpointIncompatibleError("held step differs from checkpoint context")
+                ctx = self._restore_workflow_continuation(snapshot, continuation)
             except (
                 CheckpointIncompatibleError,
                 KeyError,
@@ -807,47 +839,339 @@ class TaskRuntime:
                 TypeError,
                 ValueError,
             ) as exc:
+                self.run_store.release_task_lease(task_id)
                 self.audit.append(
                     "run_recovery_failed",
-                    task_id=snapshot.get("task_id"),
+                    task_id=task_id,
                     error=f"{type(exc).__name__}: {exc}",
                 )
                 continue
             previous_attempt = ctx.attempt_id
             ctx.attempt_id += 1
-            reason = (
-                ctx.step_results[-1].reason
-                if ctx.step_results
-                else "restored pending approval"
-            )
-            self.approvals.add(PendingApproval(
-                approval_id=approval_id,
-                task_id=ctx.task_id,
-                tool=held.tool,
-                reason=reason,
-                scenario=ctx.scenario,
-                ctx=ctx,
-                held_index=held_index,
-                steps=steps,
-            ))
             self._record(
                 ctx,
-                RunPhase.WAITING_APPROVAL,
+                RunPhase.RECOVERING,
                 "run_recovered",
-                state=TaskState.NEEDS_REVIEW,
+                state=TaskState.EXECUTING,
                 continuation=continuation,
                 previous_attempt=previous_attempt,
             )
+            thread = threading.Thread(
+                target=self._resume_workflow_continuation,
+                args=(ctx, continuation),
+                name=f"taiyi-recover-{ctx.task_id}",
+                daemon=True,
+            )
+            self._recovery_threads[ctx.task_id] = thread
+            thread.start()
             recovered += 1
         return recovered
 
+    def _recover_approval(self, snapshot: dict, continuation: dict) -> bool:
+        if self.approvals is None:
+            return False
+        approval_id = str(continuation.get("approval_id", ""))
+        if not approval_id or self.approvals.get(approval_id) is not None:
+            return False
+        try:
+            ctx = restore_context(
+                snapshot,
+                validator=self.validator,
+                value_stream=self.value_stream,
+            )
+            steps = continuation_steps(continuation)
+            held_index = int(continuation["held_index"])
+            if not 0 <= held_index < len(steps):
+                raise CheckpointIncompatibleError("held approval step is out of range")
+            held = steps[held_index]
+            if ctx.approval_id != approval_id:
+                raise CheckpointIncompatibleError("approval id differs from checkpoint context")
+            if ctx.plan is None or ctx.plan.steps != steps:
+                raise CheckpointIncompatibleError("continuation plan differs from frozen plan")
+            if ctx.step_results[held_index].step != held:
+                raise CheckpointIncompatibleError("held step differs from checkpoint context")
+        except (
+            CheckpointIncompatibleError,
+            KeyError,
+            IndexError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            self.audit.append(
+                "run_recovery_failed",
+                task_id=snapshot.get("task_id"),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return False
+        previous_attempt = ctx.attempt_id
+        ctx.attempt_id += 1
+        reason = ctx.step_results[-1].reason if ctx.step_results else "restored pending approval"
+        self.approvals.add(PendingApproval(
+            approval_id=approval_id,
+            task_id=ctx.task_id,
+            tool=held.tool,
+            reason=reason,
+            scenario=ctx.scenario,
+            ctx=ctx,
+            held_index=held_index,
+            steps=steps,
+        ))
+        self._record(
+            ctx,
+            RunPhase.WAITING_APPROVAL,
+            "run_recovered",
+            state=TaskState.NEEDS_REVIEW,
+            continuation=continuation,
+            previous_attempt=previous_attempt,
+        )
+        return True
+
+    def _restore_workflow_continuation(
+        self,
+        snapshot: dict,
+        continuation: dict,
+    ) -> TaskContext:
+        ctx = restore_context(
+            snapshot,
+            validator=self.validator,
+            value_stream=self.value_stream,
+        )
+        if ctx.plan is None:
+            raise CheckpointIncompatibleError("workflow continuation has no frozen plan")
+        kind = continuation.get("kind")
+        round_number = int(continuation.get("round", ctx.round))
+        if round_number != ctx.round:
+            raise CheckpointIncompatibleError("continuation round differs from checkpoint context")
+        assert ctx.policy is not None
+        round_limit = self.max_rounds or ctx.policy.max_validation_rounds
+        if not 1 <= round_number <= round_limit:
+            raise CheckpointIncompatibleError("workflow continuation round is out of range")
+        if kind == "tool_operation":
+            step_index = int(continuation["step_index"])
+            if not 0 <= step_index < len(ctx.plan.steps):
+                raise CheckpointIncompatibleError("running step is out of range")
+            step = ctx.plan.steps[step_index]
+            if step_index >= len(ctx.step_results) or ctx.step_results[step_index].step != step:
+                raise CheckpointIncompatibleError("running step differs from frozen plan")
+            if continuation.get("tool") != step.tool or list(continuation.get("args", [])) != step.args:
+                raise CheckpointIncompatibleError("tool operation differs from frozen plan")
+            expected = f"{ctx.task_id}:round:{ctx.round}:step:{step_index}"
+            if continuation.get("operation_id") != expected:
+                raise CheckpointIncompatibleError("tool operation id is not deterministic")
+        elif kind == "workflow_progress":
+            next_step = int(continuation["next_step_index"])
+            if not 0 <= next_step <= len(ctx.plan.steps):
+                raise CheckpointIncompatibleError("workflow continuation step is out of range")
+            if len(ctx.step_results) != next_step:
+                raise CheckpointIncompatibleError("workflow progress differs from checkpoint results")
+            if any(not result.executed for result in ctx.step_results):
+                raise CheckpointIncompatibleError("workflow progress contains an unexecuted prior step")
+        elif kind == "workflow_validate":
+            if len(ctx.step_results) != len(ctx.plan.steps) or any(
+                not result.executed for result in ctx.step_results
+            ):
+                raise CheckpointIncompatibleError("validation continuation has incomplete steps")
+        elif kind == "workflow_failure":
+            step_index = int(continuation["step_index"])
+            if (
+                not 0 <= step_index < len(ctx.step_results)
+                or not ctx.step_results[step_index].executed
+            ):
+                raise CheckpointIncompatibleError("failure continuation has no executed step")
+            FailureKind(str(continuation["failure_kind"]))
+        else:
+            raise CheckpointIncompatibleError(f"unsupported workflow continuation: {kind!r}")
+        return ctx
+
+    def _resume_workflow_continuation(self, ctx: TaskContext, continuation: dict) -> None:
+        start = time.time()
+        trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
+        try:
+            kind = continuation["kind"]
+            if kind == "workflow_failure":
+                failure_kind = FailureKind(str(continuation["failure_kind"]))
+                self._fail(
+                    ctx,
+                    str(continuation.get("error") or "recovered tool failure"),
+                    kind=failure_kind,
+                )
+                return
+
+            if kind == "tool_operation":
+                step_index = int(continuation["step_index"])
+                assert ctx.plan is not None
+                step = ctx.plan.steps[step_index]
+                result = self._recover_tool_job(ctx, step, step_index, continuation)
+                if result is None:
+                    return
+                if not self._apply_tool_result(
+                    ctx,
+                    step,
+                    step_index,
+                    result,
+                    next_step_index=step_index + 1,
+                    recovered=True,
+                    approved_by=continuation.get("approved_by"),
+                ):
+                    return
+                next_step = step_index + 1
+            elif kind == "workflow_progress":
+                next_step = int(continuation["next_step_index"])
+            else:
+                next_step = None
+
+            assert ctx.plan is not None
+            if next_step is not None and not self._execute_steps(ctx, ctx.plan.steps, next_step):
+                return
+            if not self._finish_round(ctx, trace, ctx.round):
+                self._execute_rounds(ctx, trace, start_round=ctx.round + 1)
+        except Exception as exc:  # noqa: BLE001 — recovery failures must settle visibly
+            self._fail(ctx, exc)
+        finally:
+            self._finish(ctx, start)
+            self.run_store.release_task_lease(ctx.task_id)
+            self._recovery_threads.pop(ctx.task_id, None)
+
+    def _recover_tool_job(
+        self,
+        ctx: TaskContext,
+        step,
+        step_index: int,
+        continuation: dict,
+    ) -> ExecResult | None:
+        if not isinstance(self.executor, RecoverableExecutor):
+            raise CheckpointIncompatibleError(
+                "executor cannot reattach a TOOL_RUNNING checkpoint"
+            )
+        operation_id = str(continuation["operation_id"])
+        recorded_job_id = continuation.get("job_id")
+        handle = self.executor.find(operation_id)
+        reattached = handle is not None
+        if handle is not None:
+            if handle.operation_id != operation_id:
+                raise CheckpointIncompatibleError("reattached job has a different operation id")
+            if recorded_job_id is not None and handle.job_id != recorded_job_id:
+                raise CheckpointIncompatibleError("reattached job differs from checkpoint job")
+        else:
+            if recorded_job_id is not None:
+                raise CheckpointIncompatibleError(
+                    "checkpoint names a job that is absent from the operation index"
+                )
+            if not self.executor.supports_jobs(step):
+                raise CheckpointIncompatibleError(
+                    "non-durable tool outcome is unknown; refusing duplicate execution"
+                )
+            permit = self.scheduler.request_permit(
+                step,
+                ctx.scenario,
+                user_id=ctx.user_id,
+                task_id=ctx.task_id,
+            )
+            self.audit.append(
+                "step_repermited",
+                task_id=ctx.task_id,
+                tool=step.tool,
+                verdict=permit.verdict.value,
+                source="recovery",
+            )
+            if permit.verdict is Verdict.ALLOW:
+                assert ctx.plan is not None
+                permit = self._second_opinion(
+                    permit,
+                    step,
+                    ctx,
+                    step_index,
+                    ctx.plan.steps,
+                )
+            if permit.verdict is Verdict.DENY:
+                sr = ctx.step_results[step_index]
+                sr.verdict = permit.verdict.value
+                sr.reason = permit.reason
+                sr.matched_rule_id = permit.matched_rule_id
+                ctx.final_output = f"recovery rejected by governance: {permit.reason}"
+                self._record(
+                    ctx,
+                    RunPhase.SETTLED,
+                    "run_settled",
+                    state=TaskState.REJECTED,
+                    reason=permit.reason,
+                )
+                self.audit.append(
+                    "task_rejected",
+                    task_id=ctx.task_id,
+                    tool=step.tool,
+                    reason=permit.reason,
+                    source="recovery",
+                )
+                return None
+            if permit.verdict is Verdict.NEEDS_REVIEW:
+                self._park_recovered_approval(ctx, step, step_index, permit)
+                return None
+            handle = self.executor.start(step, operation_id=operation_id)
+
+        attached = {**continuation, "job_id": handle.job_id}
+        self._record(
+            ctx,
+            RunPhase.TOOL_RUNNING,
+            "job_reattached" if reattached else "job_attached",
+            state=TaskState.EXECUTING,
+            continuation=attached,
+            operation_id=operation_id,
+            job_id=handle.job_id,
+            step_index=step_index,
+            tool=step.tool,
+        )
+        result = self.executor.wait(handle.job_id)
+        if result.operation_id != operation_id or result.job_id != handle.job_id:
+            raise CheckpointIncompatibleError("durable job result identity does not match continuation")
+        return result
+
+    def _park_recovered_approval(self, ctx: TaskContext, step, step_index: int, permit) -> None:
+        approval_id = permit.approval_id or f"recovery_{ctx.task_id}_{step_index}"
+        sr = ctx.step_results[step_index]
+        sr.verdict = permit.verdict.value
+        sr.reason = permit.reason
+        sr.matched_rule_id = permit.matched_rule_id
+        ctx.approval_id = approval_id
+        ctx.final_output = (
+            f"suspended for human review (approval_id={approval_id}): {permit.reason}"
+        )
+        assert ctx.plan is not None
+        continuation = workflow_continuation(approval_id, step_index, ctx.plan.steps)
+        self._record(
+            ctx,
+            RunPhase.WAITING_APPROVAL,
+            "approval_requested",
+            state=TaskState.NEEDS_REVIEW,
+            continuation=continuation,
+            tool=step.tool,
+            source="recovery",
+        )
+        if self.approvals is not None:
+            self.approvals.add(PendingApproval(
+                approval_id=approval_id,
+                task_id=ctx.task_id,
+                tool=step.tool,
+                reason=permit.reason,
+                scenario=ctx.scenario,
+                ctx=ctx,
+                held_index=step_index,
+                steps=list(ctx.plan.steps),
+            ))
+
     # --- C -------------------------------------------------------------------
-    def _validate(self, ctx: TaskContext):
+    def _validate(self, ctx: TaskContext, *, continuation: dict | None = None):
         if self.validator is None:
             return None
         if ctx.validation_checklist is None:
             raise RuntimeError("validator configured without a frozen validation checklist")
-        self._record(ctx, RunPhase.VALIDATING, "validation_started", state=TaskState.VALIDATING)
+        self._record(
+            ctx,
+            RunPhase.VALIDATING,
+            "validation_started",
+            state=TaskState.VALIDATING,
+            continuation=continuation,
+        )
         vctx = ValidationContext(
             prompt=ctx.prompt,
             scenario=ctx.scenario,

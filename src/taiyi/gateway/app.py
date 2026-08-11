@@ -8,6 +8,7 @@ why the gateway is testable without binding a socket.
 from __future__ import annotations
 
 import json
+from urllib.parse import parse_qs, urlsplit
 
 from taiyi.gateway.auth import AuthPolicy, RateLimiter
 from taiyi.gateway.core import Gateway
@@ -19,12 +20,17 @@ def task_summary(ctx: TaskContext) -> dict:
     return {
         "task_id": ctx.task_id,
         "state": ctx.state.value,
+        "phase": ctx.phase.value,
+        "settled": ctx.settled,
+        "attempt_id": ctx.attempt_id,
+        "checkpoint_revision": ctx.checkpoint_revision,
         "scenario": ctx.scenario,
         "skill": ctx.selected_skill or (ctx.plan.skill_name if ctx.plan else None),
         "approval_id": ctx.approval_id,
         "executed_action_count": ctx.executed_action_count,
         "final_output": ctx.final_output,
         "error": ctx.error,
+        "failure_kind": ctx.failure_kind,
         "validation_summary": ctx.validation_summary,
         "operating_mode": ctx.operating_mode,
         "execution_environment": ctx.execution_environment,
@@ -55,6 +61,9 @@ class GatewayApp:
         self.config_path: str | None = None
 
     def handle(self, method: str, path: str, headers, body):
+        parsed_url = urlsplit(path)
+        path = parsed_url.path
+        query = parse_qs(parsed_url.query)
         if method == "GET" and path == "/healthz":
             return 200, {"status": "ok"}
         if method == "GET" and path == "/metrics":
@@ -74,8 +83,17 @@ class GatewayApp:
         except json.JSONDecodeError:
             return 400, {"error": "invalid json"}
 
+        if method == "POST" and path == "/v1/tasks/async":
+            return self._tasks_async(payload)
         if method == "POST" and path == "/v1/tasks":
             return self._tasks(payload)
+        if path.startswith("/v1/tasks/"):
+            if method == "GET" and path.endswith("/events"):
+                return self._task_events(path, query)
+            if method == "POST" and path.endswith("/cancel"):
+                return self._cancel_task(path)
+            if method == "GET":
+                return self._task_status(path)
         if method == "POST" and path == "/v1/chat/completions":
             return self._chat(payload)
         if method == "POST" and path == "/v1/review":
@@ -117,6 +135,8 @@ class GatewayApp:
         prompt = payload.get("prompt")
         if not prompt:
             return 400, {"error": "missing prompt"}
+        if payload.get("async") is True:
+            return self._tasks_async(payload)
         try:
             ctx = self.gateway.submit(
                 prompt,
@@ -128,6 +148,86 @@ class GatewayApp:
         except ValueError as e:
             return 400, {"error": str(e)}
         return 200, task_summary(ctx)
+
+    def _tasks_async(self, payload: dict) -> tuple[int, dict]:
+        prompt = payload.get("prompt")
+        if not prompt:
+            return 400, {"error": "missing prompt"}
+        try:
+            task_id = self.gateway.submit_async(
+                prompt,
+                scenario=payload.get("scenario"),
+                user_id=payload.get("user_id", "u1"),
+                session_id=payload.get("session_id", "s1"),
+                operating_mode=payload.get("operating_mode"),
+            )
+        except ValueError as e:
+            return 400, {"error": str(e)}
+        except RuntimeError as e:
+            return 409, {"error": str(e)}
+        current = self.gateway.task_status(task_id) or {
+            "state": "QUEUED",
+            "phase": "READY",
+            "settled": False,
+        }
+        return 202, {
+            "task_id": task_id,
+            "state": current["state"],
+            "phase": current["phase"],
+            "settled": current["settled"],
+            "status_url": f"/v1/tasks/{task_id}",
+            "events_url": f"/v1/tasks/{task_id}/events",
+            "cancel_url": f"/v1/tasks/{task_id}/cancel",
+        }
+
+    def _task_status(self, path: str) -> tuple[int, dict]:
+        parts = path.strip("/").split("/")
+        if len(parts) != 3 or parts[:2] != ["v1", "tasks"]:
+            return 404, {"error": "not found"}
+        try:
+            status = self.gateway.task_status(parts[2])
+        except (ValueError, RuntimeError) as exc:
+            return 409, {"error": str(exc)}
+        if status is None:
+            return 404, {"error": f"unknown task: {parts[2]}"}
+        return 200, status
+
+    def _task_events(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
+        parts = path.strip("/").split("/")
+        if len(parts) != 4 or parts[:2] != ["v1", "tasks"] or parts[3] != "events":
+            return 404, {"error": "not found"}
+        try:
+            events = self.gateway.task_events(parts[2])
+        except (ValueError, RuntimeError) as exc:
+            return 409, {"error": str(exc)}
+        if events is None:
+            return 404, {"error": f"unknown task: {parts[2]}"}
+        try:
+            after = max(0, int(query.get("after", ["0"])[0]))
+            limit = min(1000, max(1, int(query.get("limit", ["200"])[0])))
+        except ValueError:
+            return 400, {"error": "after and limit must be integers"}
+        pending = [event for event in events if int(event.get("revision", 0)) > after]
+        selected = pending[:limit]
+        next_after = int(selected[-1]["revision"]) if selected else after
+        return 200, {
+            "task_id": parts[2],
+            "events": selected,
+            "next_after": next_after,
+            "has_more": len(pending) > len(selected),
+        }
+
+    def _cancel_task(self, path: str) -> tuple[int, dict]:
+        parts = path.strip("/").split("/")
+        if len(parts) != 4 or parts[:2] != ["v1", "tasks"] or parts[3] != "cancel":
+            return 404, {"error": "not found"}
+        try:
+            result = self.gateway.cancel_task(parts[2])
+        except KeyError:
+            return 404, {"error": f"unknown task: {parts[2]}"}
+        except RuntimeError as exc:
+            return 409, {"error": str(exc)}
+        return 202 if result.get("cancelled") else 200, result
 
     def _chat(self, payload: dict) -> tuple[int, dict]:
         prompt = last_user_message(payload.get("messages", []))
@@ -171,6 +271,8 @@ class GatewayApp:
             ctx = self.gateway.runtime.resume(approval_id, approve=(decision == "approve"))
         except KeyError:
             return 404, {"error": f"unknown approval: {approval_id}"}
+        except RuntimeError as exc:
+            return 409, {"error": str(exc)}
         return 200, task_summary(ctx)
 
     def _list_review(self) -> tuple[int, dict]:
