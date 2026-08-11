@@ -65,6 +65,11 @@ class TaskPolicy:
     review_strategy: str
     max_steps: int
     max_validation_rounds: int
+    max_llm_attempts: int
+    llm_primary_attempts: int
+    llm_retry_budget_seconds: float
+    llm_retry_backoff_seconds: float
+    llm_retry_max_backoff_seconds: float
     completion_rule: str
 
     @property
@@ -113,6 +118,11 @@ class TaskPolicy:
             "independent_review_required": self.requires_independent_review,
             "max_steps": self.max_steps,
             "max_validation_rounds": self.max_validation_rounds,
+            "max_llm_attempts": self.max_llm_attempts,
+            "llm_primary_attempts": self.llm_primary_attempts,
+            "llm_retry_budget_seconds": self.llm_retry_budget_seconds,
+            "llm_retry_backoff_seconds": self.llm_retry_backoff_seconds,
+            "llm_retry_max_backoff_seconds": self.llm_retry_max_backoff_seconds,
             "completion_rule": self.completion_rule,
         }
 
@@ -128,6 +138,11 @@ _PROFILES: dict[OperatingMode, TaskPolicy] = {
         review_strategy="independent_when_configured",
         max_steps=16,
         max_validation_rounds=3,
+        max_llm_attempts=4,
+        llm_primary_attempts=2,
+        llm_retry_budget_seconds=180.0,
+        llm_retry_backoff_seconds=1.0,
+        llm_retry_max_backoff_seconds=30.0,
         completion_rule="every required acceptance criterion has passing evidence",
     ),
     OperatingMode.BALANCED: TaskPolicy(
@@ -140,6 +155,11 @@ _PROFILES: dict[OperatingMode, TaskPolicy] = {
         review_strategy="risk_triggered",
         max_steps=8,
         max_validation_rounds=2,
+        max_llm_attempts=3,
+        llm_primary_attempts=1,
+        llm_retry_budget_seconds=60.0,
+        llm_retry_backoff_seconds=0.5,
+        llm_retry_max_backoff_seconds=10.0,
         completion_rule="critical criteria pass and material gaps are resolved",
     ),
     OperatingMode.EFFICIENCY: TaskPolicy(
@@ -152,6 +172,11 @@ _PROFILES: dict[OperatingMode, TaskPolicy] = {
         review_strategy="off",
         max_steps=5,
         max_validation_rounds=1,
+        max_llm_attempts=2,
+        llm_primary_attempts=1,
+        llm_retry_budget_seconds=15.0,
+        llm_retry_backoff_seconds=0.1,
+        llm_retry_max_backoff_seconds=2.0,
         completion_rule="a usable deliverable exists and every critical criterion passes",
     ),
 }

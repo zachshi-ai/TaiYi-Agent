@@ -73,6 +73,10 @@ def test_operating_mode_env_override(tmp_path, monkeypatch):
     monkeypatch.setenv("TAIYI_TOOL_IDLE_TIMEOUT", "45")
     monkeypatch.setenv("TAIYI_JOB_HEARTBEAT_INTERVAL", "0.5")
     monkeypatch.setenv("TAIYI_TOOL_OUTPUT_LIMIT", "8192")
+    monkeypatch.setenv("TAIYI_LLM_CONNECT_TIMEOUT", "5")
+    monkeypatch.setenv("TAIYI_LLM_FIRST_TOKEN_TIMEOUT", "40")
+    monkeypatch.setenv("TAIYI_LLM_STREAM_IDLE_TIMEOUT", "20")
+    monkeypatch.setenv("TAIYI_LLM_HARD_TIMEOUT", "120")
     cfg = load_config(p)
     assert cfg.runtime_mode == "agent"
     assert cfg.operating_mode == "efficiency"
@@ -86,6 +90,10 @@ def test_operating_mode_env_override(tmp_path, monkeypatch):
     assert cfg.tool_idle_timeout == 45
     assert cfg.job_heartbeat_interval == 0.5
     assert cfg.tool_output_limit == 8192
+    assert cfg.llm_connect_timeout == 5
+    assert cfg.llm_first_token_timeout == 40
+    assert cfg.llm_stream_idle_timeout == 20
+    assert cfg.llm_hard_timeout == 120
 
 
 def test_configured_mode_models_build_explicit_routes_with_default_fallback():

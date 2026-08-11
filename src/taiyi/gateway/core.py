@@ -12,6 +12,7 @@ deployment without changing the gateway.
 from __future__ import annotations
 
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -279,6 +280,8 @@ def build_gateway(
     extra_rules_dirs: tuple[str, ...] = (),
     extra_scenarios_dirs: tuple[str, ...] = (),
     extra_skills_dirs: tuple[str, ...] = (),
+    llm_sleep=time.sleep,
+    llm_clock=time.time,
 ) -> Gateway:
     base = Path(base_dir) if base_dir else None
     audit = AuditLog(base / "audit.jsonl") if base else AuditLog()
@@ -343,6 +346,8 @@ def build_gateway(
             committee=committee,
             default_operating_mode=operating_mode,
             run_store=run_store,
+            llm_sleep=llm_sleep,
+            llm_clock=llm_clock,
         )
     else:
         workflow_router = provider_router or (
@@ -363,6 +368,8 @@ def build_gateway(
             default_operating_mode=operating_mode,
             provider_router=workflow_router,
             run_store=run_store,
+            llm_sleep=llm_sleep,
+            llm_clock=llm_clock,
         )
 
     if extra_scenarios_dirs:

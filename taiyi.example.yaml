@@ -80,6 +80,14 @@ api_key: null
 # (useful for secrets managers). Overrides api_key if set.
 api_key_env: null
 
+# One LLM attempt has four independent deadlines. This prevents a fast connect
+# followed by a hung first token, or a stream that stays open forever, from all
+# collapsing into one misleading "request timeout".
+llm_connect_timeout: 10
+llm_first_token_timeout: 60
+llm_stream_idle_timeout: 30
+llm_hard_timeout: 180
+
 # Custom rules / scenarios / skills are MERGED with the built-ins (yours can
 # override a built-in by reusing its id/name). Drop YAML/Markdown into these dirs.
 rules_dirs: []

@@ -20,7 +20,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
 | `src/taiyi/` | **Production code** — 17 modules, built module by module |
-| `tests/` | 294 tests covering governance, operating modes, durable jobs/recovery, and executable Skill gates |
+| `tests/` | 308 tests covering governance, operating modes, durable jobs/recovery, LLM faults, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -120,9 +120,20 @@ reattaches the existing operation, restores the frozen Workflow plan or ReAct
 conversation, and continues from the exact next step. `POST /v1/tasks` also
 supports `async=true`; task status, typed events, job heartbeats, and cancellation
 are available without holding one HTTP request open. TaiYi still never auto-reruns
-an ambiguous non-durable external effect. LLM phase deadlines remain an explicit
-next milestone. See
+an ambiguous non-durable external effect. See
 [`learning/docs/07_Durable_Runtime_Protocol.md`](./learning/docs/07_Durable_Runtime_Protocol.md).
+
+Model requests use a separate resilience protocol. OpenAI-compatible responses
+are streamed under distinct connect, first-token, stream-idle, and hard
+deadlines. Typed 429/5xx/network/timeouts may retry or move through a
+mode-prioritized provider pool; auth failures, invalid requests, and context
+overflow stop immediately. Every failure, backoff, failover, and successful
+recovery is persisted. A process restart honors the remaining backoff and frozen
+message/plan, while the retry boundary ends before any model response can trigger
+a tool, so a model retry cannot replay an external side effect. Quality uses the
+largest retry budget and tries its strongest route twice; balanced switches
+after one failure; efficiency has the shortest two-attempt budget. See
+[`learning/docs/08_LLM_Request_Resilience.md`](./learning/docs/08_LLM_Request_Resilience.md).
 
 With `executor: sandbox`, Taiyi can also enable a read-only Git authority. It
 snapshots HEAD and repository-local identity before execution, then independently

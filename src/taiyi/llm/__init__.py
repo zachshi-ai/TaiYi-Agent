@@ -21,6 +21,8 @@ from taiyi.llm.base import (
 )
 from taiyi.llm.live import OpenAICompatProvider, make_provider, make_provider_router
 from taiyi.llm.offline import KeywordOfflineProvider, ScriptedProvider
+from taiyi.llm.errors import LLMErrorKind, LLMRequestError
+from taiyi.llm.resilience import ResilientProvider
 from taiyi.llm.router import ProviderRouter, ProviderSelection
 
 __all__ = [
@@ -31,6 +33,9 @@ __all__ = [
     "ToolCall",
     "KeywordOfflineProvider",
     "ScriptedProvider",
+    "LLMErrorKind",
+    "LLMRequestError",
+    "ResilientProvider",
     "OpenAICompatProvider",
     "ProviderRouter",
     "ProviderSelection",

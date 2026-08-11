@@ -12,7 +12,7 @@
 |---|---|
 | **产（生产，留根）** — Agent 本体 | |
 | `src/taiyi/` | **生产代码** — 17 个模块 |
-| `tests/` | 294 个测试，覆盖治理不变量、三模式、持久任务/可恢复运行协议与可执行 Skill 门禁 |
+| `tests/` | 308 个测试，覆盖治理不变量、三模式、持久任务/恢复、LLM 故障与可执行 Skill 门禁 |
 | `web/` | 内置 React Web UI（构建产物在 `web/dist`） |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | 打包 + 配置模板 |
@@ -70,9 +70,15 @@ Sandbox 的 shell 工具现在由独立持久 supervisor 执行，不再受一�
 长命令可观察，同时只把有上限的输出尾部送进模型上下文。新 executor 已可重连运行中的
 job；重启后的网关会先取得任务级 lease，再重连原 operation，恢复冻结的 Workflow 计划或
 ReAct 对话，并从精确的下一步继续。`POST /v1/tasks` 支持 `async=true`，客户端可以查询任务
-状态、类型化事件、job 心跳并取消，不必一直占用原 HTTP 请求。LLM 分阶段超时仍是下一阶段；
-太一不会自动重跑结果不确定的非持久外部副作用。详细设计见
+状态、类型化事件、job 心跳并取消，不必一直占用原 HTTP 请求。太一不会自动重跑结果不确定的非持久外部副作用。详细设计见
 [`learning/docs/07_Durable_Runtime_Protocol.md`](./learning/docs/07_Durable_Runtime_Protocol.md)。
+
+LLM 请求使用独立的可靠性协议。OpenAI 兼容响应以流式方式读取，并分别约束连接、首 token、
+流空闲和单次硬截止。429、5xx、网络和阶段超时可以在模式预算内重试或切换 provider；鉴权失败、
+无效请求和上下文溢出立即停止。每次失败、退避、切换和恢复都会持久化，进程重启后仍会遵守剩余
+退避时间和冻结的消息/计划。重试边界在模型结果触发任何工具之前结束，因此不会重放外部副作用。
+质量模式预算最大且先重试最强路由，平衡模式首次失败后切换，效率模式只有最短的两次尝试预算。
+详细设计见 [`learning/docs/08_LLM_Request_Resilience.md`](./learning/docs/08_LLM_Request_Resilience.md)。
 
 使用 `executor: sandbox` 时还可启用只读 Git Authority：执行前冻结 HEAD 和仓库本地身份，执行后独立证明出现了新提交，并核对 author/committer。详见 [`learning/docs/06_External_Authority_Checks.md`](./learning/docs/06_External_Authority_Checks.md)。
 
@@ -134,7 +140,7 @@ api_key: sk-...
 ### 运行测试与示例
 
 ```bash
-python -m pytest                            # 294 测试
+python -m pytest                            # 308 测试
 taiyi verify-skills                        # 执行 3 个内置 Skill 的 9 个质量门案例
 python3 research/examples/agent_demo.py     # 演示 ReAct loop + 治理拦截
 python3 research/demo/src/main.py           # Phase 0 demo

@@ -40,6 +40,7 @@ from taiyi.runtime.executor import (
     RecoverableExecutor,
     execute_step,
 )
+from taiyi.runtime.llm_retry import task_resilient_provider
 from taiyi.runtime.persistence import (
     RunStore,
     continuation_steps,
@@ -77,6 +78,8 @@ class TaskRuntime:
         default_operating_mode: str | OperatingMode = OperatingMode.BALANCED,
         provider_router: ProviderRouter | None = None,
         run_store: RunStore | None = None,
+        llm_sleep=time.sleep,
+        llm_clock=time.time,
     ):
         self.scheduler = scheduler
         self.audit = audit_log
@@ -94,6 +97,8 @@ class TaskRuntime:
         self.provider = provider_router.default_provider if provider_router else None
         self.completion = CompletionController()
         self.run_store = run_store or RunStore()
+        self._llm_sleep = llm_sleep
+        self._llm_clock = llm_clock
         self._recovery_threads: dict[str, threading.Thread] = {}
 
     def run(
@@ -183,14 +188,24 @@ class TaskRuntime:
         self._finish(ctx, start)
         return ctx
 
-    def _execute_rounds(self, ctx: TaskContext, trace, *, start_round: int = 1) -> None:
+    def _execute_rounds(
+        self,
+        ctx: TaskContext,
+        trace,
+        *,
+        start_round: int = 1,
+        retry_state: dict | None = None,
+    ) -> None:
         assert ctx.policy is not None
         round_limit = self.max_rounds or ctx.policy.max_validation_rounds
         for rnd in range(start_round, round_limit + 1):
             ctx.round = rnd
             ctx.step_results = []
             with self._span(trace, "plan"):
-                self._plan(ctx)
+                self._plan(
+                    ctx,
+                    retry_state=(retry_state if rnd == start_round else None),
+                )
             if (
                 ctx.plan is not None
                 and not ctx.plan.steps
@@ -347,9 +362,18 @@ class TaskRuntime:
         )
 
     # --- P -------------------------------------------------------------------
-    def _plan(self, ctx: TaskContext) -> None:
+    def _plan(self, ctx: TaskContext, *, retry_state: dict | None = None) -> None:
         planning_phase = RunPhase.LLM_WAITING if self.provider_router else RunPhase.PLANNING
-        self._record(ctx, planning_phase, "planning_started", state=TaskState.PLANNING)
+        continuation = {"kind": "workflow_plan", "round": ctx.round}
+        if retry_state:
+            continuation["llm_retry"] = dict(retry_state)
+        self._record(
+            ctx,
+            planning_phase,
+            "planning_started",
+            state=TaskState.PLANNING,
+            continuation=(continuation if self.provider_router else None),
+        )
         planning_prompt = ctx.prompt
         assert ctx.policy is not None
         trusted_parts = [ctx.policy.system_guidance]
@@ -368,15 +392,23 @@ class TaskRuntime:
                 f"{ctx.validation_summary}\n"
                 "Produce a corrected plan that addresses this evidence; do not repeat the same plan."
             )
+        selected_provider = None
+        if self.provider_router is not None:
+            selected_provider = task_resilient_provider(
+                ctx,
+                self.provider_router,
+                record=self._record,
+                audit=self.audit,
+                continuation={"kind": "workflow_plan", "round": ctx.round},
+                retry_state=retry_state,
+                sleep=self._llm_sleep,
+                clock=self._llm_clock,
+            )
         ctx.plan = self.scheduler.plan(
             planning_prompt,
             ctx.scenario,
             context="\n\n".join(trusted_parts),
-            provider=(
-                self.provider_router.select(ctx.policy).provider
-                if self.provider_router is not None
-                else None
-            ),
+            provider=selected_provider,
         )
         if len(ctx.plan.steps) > ctx.policy.max_steps:
             self.audit.append(
@@ -821,6 +853,7 @@ class TaskRuntime:
                     recovered += 1
                 continue
             if kind not in {
+                "workflow_plan",
                 "tool_operation",
                 "workflow_progress",
                 "workflow_validate",
@@ -936,8 +969,6 @@ class TaskRuntime:
             validator=self.validator,
             value_stream=self.value_stream,
         )
-        if ctx.plan is None:
-            raise CheckpointIncompatibleError("workflow continuation has no frozen plan")
         kind = continuation.get("kind")
         round_number = int(continuation.get("round", ctx.round))
         if round_number != ctx.round:
@@ -946,6 +977,14 @@ class TaskRuntime:
         round_limit = self.max_rounds or ctx.policy.max_validation_rounds
         if not 1 <= round_number <= round_limit:
             raise CheckpointIncompatibleError("workflow continuation round is out of range")
+        if kind == "workflow_plan":
+            retry = continuation.get("llm_retry") or {}
+            attempts_used = int(retry.get("attempts_used", 0) or 0)
+            if not 0 <= attempts_used <= ctx.policy.max_llm_attempts:
+                raise CheckpointIncompatibleError("model retry attempt is out of range")
+            return ctx
+        if ctx.plan is None:
+            raise CheckpointIncompatibleError("workflow continuation has no frozen plan")
         if kind == "tool_operation":
             step_index = int(continuation["step_index"])
             if not 0 <= step_index < len(ctx.plan.steps):
@@ -994,6 +1033,15 @@ class TaskRuntime:
                     ctx,
                     str(continuation.get("error") or "recovered tool failure"),
                     kind=failure_kind,
+                )
+                return
+
+            if kind == "workflow_plan":
+                self._execute_rounds(
+                    ctx,
+                    trace,
+                    start_round=ctx.round,
+                    retry_state=continuation.get("llm_retry"),
                 )
                 return
 
