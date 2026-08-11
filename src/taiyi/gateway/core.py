@@ -365,11 +365,6 @@ def build_gateway(
             run_store=run_store,
         )
 
-    # A task waiting for human approval is not settled. Rehydrate its frozen
-    # context and continuation before accepting traffic so a process restart does
-    # not silently discard the user's pending work.
-    runtime.recover_pending()
-
     if extra_scenarios_dirs:
         scenarios = ScenarioRegistry.load_dirs([DEFAULT_SCENARIOS_DIR, *extra_scenarios_dirs])
     else:
@@ -383,6 +378,12 @@ def build_gateway(
     # runtime. Only then may the Skill be indexed or matched into task context.
     skills.verify_release_candidates()
     skills.index_into(memory)
+
+    # Finish all single-threaded startup writes before a recovery thread may use
+    # memory, validation, or iteration. Starting recovery above Skill indexing
+    # lets the two paths commit on the same SQLite connection concurrently.
+    # Recovery still starts before this gateway object is returned to traffic.
+    runtime.recover_pending()
 
     return Gateway(
         runtime=runtime,
