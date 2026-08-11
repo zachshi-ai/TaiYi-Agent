@@ -20,7 +20,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
 | `src/taiyi/` | **Production code** — 17 modules, built module by module |
-| `tests/` | 271 tests covering governance, operating modes, durable recovery, and executable Skill gates |
+| `tests/` | 287 tests covering governance, operating modes, durable jobs/recovery, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -107,10 +107,17 @@ approval cannot be mistaken for a fully finished run.
 With `base_dir` configured, every task writes fsync'd typed events and an atomic
 checkpoint. Workflow and ReAct approvals persist the frozen contract, prior
 steps, plan or conversation, and continuation point; a new process restores the
-approval queue and still re-checks governance before execution. TaiYi does not
-yet auto-rerun an operation found in `TOOL_RUNNING` after a crash because its
-external effect may be ambiguous. Durable job ids, idempotency, and post-crash
-authority verification are the next safety boundary. See
+approval queue and still re-checks governance before execution.
+
+Sandbox shell tools now run under a persistent supervisor rather than a
+30-second blocking subprocess. Each operation gets a stable id before launch;
+repeating that id reattaches to the same job instead of replaying its side
+effect. Heartbeats, process-group cancellation, distinct idle/hard timeouts,
+exact exit/signal status, and full stdout/stderr artifacts make long commands
+observable while only a bounded tail enters model context. A new executor can
+reattach to running work, but task-level automatic continuation after a gateway
+restart and LLM phase deadlines remain explicit next milestones. TaiYi never
+auto-reruns an ambiguous external effect. See
 [`learning/docs/07_Durable_Runtime_Protocol.md`](./learning/docs/07_Durable_Runtime_Protocol.md).
 
 With `executor: sandbox`, Taiyi can also enable a read-only Git authority. It

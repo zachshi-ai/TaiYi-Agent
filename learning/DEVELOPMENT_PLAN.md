@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 1 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 2 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 1 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 2 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -432,11 +432,26 @@ approval; a new process rebuilds its typed context, completed steps, ReAct
 conversation, and approval queue; approval continues the same task; completion
 writes `SETTLED`, preventing duplicate re-enqueue on another restart.
 
-**Remaining before M18 is complete.** Durable background jobs and heartbeats;
-phase-specific LLM/tool idle and hard deadlines; operation ids and side-effect
-classes; idempotent or authority-verified retry; output artifacts; structured
-compaction; and fault injection for crashes during `TOOL_RUNNING`. An ambiguous
-side effect is never auto-rerun before those controls exist. See
+**Delivered in Phase 2.** Shell tools now run under a persistent supervisor with
+heartbeats, process-group cancellation, separate idle/hard deadlines, exact
+exit/signal attribution, bounded model output, and complete stdout/stderr
+artifacts. Deterministic operation ids are claimed before spawn; the same id
+reattaches to the existing job and cannot be rebound to different work. Both
+Workflow and ReAct record the job attachment and typed terminal receipt.
+Fault-oriented tests cover long commands, both timeout classes, cancellation,
+large output, process signals, executor reconstruction, and duplicate-effect
+prevention.
+
+**Acceptance (Phase 2 met).** A shell job outlives the executor/gateway object;
+a newly constructed executor can find it by the same operation id and obtain
+the one terminal result without replaying the command.
+
+**Remaining before M18 is complete.** Runtime-level recovery that scans a
+`TOOL_RUNNING` checkpoint and continues the agent loop; an asynchronous client
+submit/poll/stream API; phase-specific LLM connect/first-token/idle/hard
+deadlines; side-effect classes; idempotent or authority-verified retry;
+structured compaction; and gateway-kill fault injection. An ambiguous side
+effect is never auto-rerun before those controls exist. See
 `learning/docs/07_Durable_Runtime_Protocol.md`. **Depends on.** M3–M6, M17.
 
 ### M16 — Iterative agent loop ✅ Done

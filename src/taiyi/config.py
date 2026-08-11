@@ -25,6 +25,10 @@ class TaiyiConfig:
     executor: str = "mock"               # mock | sandbox
     sandbox_dir: str | None = None       # working dir for the sandbox executor
     sandbox_backend: str = "local"       # local | sandbox_exec (macOS deny-all isolation)
+    tool_hard_timeout: float = 1800.0    # absolute wall-clock limit per shell job
+    tool_idle_timeout: float | None = None # optional no-output deadline per shell job
+    job_heartbeat_interval: float = 1.0  # durable supervisor heartbeat cadence
+    tool_output_limit: int = 16_384      # model-visible tail; full output stays an artifact
     external_git_validation: bool = True # sandbox Git tasks get independent read-only verification
     external_git_remote_validation: bool = False # opt-in read-only remote-ref verification
     external_github_validation: bool = False # opt-in GitHub ref/account verification
@@ -58,6 +62,7 @@ WRITABLE_FIELDS = {
     "provider", "model", "quality_model", "balanced_model", "efficiency_model",
     "runtime_mode", "operating_mode", "mode", "base_url",
     "api_key", "api_key_env", "max_rounds", "executor", "host", "port", "log_level",
+    "tool_hard_timeout", "tool_idle_timeout", "job_heartbeat_interval", "tool_output_limit",
 }
 
 
@@ -126,6 +131,14 @@ def _apply_env(cfg: TaiyiConfig) -> TaiyiConfig:
         over["sandbox_dir"] = env["TAIYI_SANDBOX_DIR"]
     if env.get("TAIYI_SANDBOX_BACKEND"):
         over["sandbox_backend"] = env["TAIYI_SANDBOX_BACKEND"]
+    if env.get("TAIYI_TOOL_HARD_TIMEOUT"):
+        over["tool_hard_timeout"] = float(env["TAIYI_TOOL_HARD_TIMEOUT"])
+    if env.get("TAIYI_TOOL_IDLE_TIMEOUT"):
+        over["tool_idle_timeout"] = float(env["TAIYI_TOOL_IDLE_TIMEOUT"])
+    if env.get("TAIYI_JOB_HEARTBEAT_INTERVAL"):
+        over["job_heartbeat_interval"] = float(env["TAIYI_JOB_HEARTBEAT_INTERVAL"])
+    if env.get("TAIYI_TOOL_OUTPUT_LIMIT"):
+        over["tool_output_limit"] = int(env["TAIYI_TOOL_OUTPUT_LIMIT"])
     if env.get("TAIYI_EXTERNAL_GIT_VALIDATION"):
         over["external_git_validation"] = env["TAIYI_EXTERNAL_GIT_VALIDATION"].strip().lower() in {
             "1", "true", "yes", "on",

@@ -31,7 +31,7 @@ from taiyi.policy import (
     resolve_policy,
 )
 from taiyi.runtime.context import StepResult, TaskContext
-from taiyi.runtime.executor import Executor, MockExecutor
+from taiyi.runtime.executor import ExecResult, Executor, MockExecutor, execute_step
 from taiyi.runtime.persistence import (
     RunStore,
     continuation_steps,
@@ -499,21 +499,7 @@ class TaskRuntime:
                     self.approvals.add(pending)
                 return False
 
-            self._record(
-                ctx,
-                RunPhase.TOOL_RUNNING,
-                "tool_started",
-                state=TaskState.EXECUTING,
-                continuation={
-                    "kind": "tool_operation",
-                    "step_index": i,
-                    "tool": step.tool,
-                    "args": list(step.args),
-                },
-                step_index=i,
-                tool=step.tool,
-            )
-            result = self.executor.execute(step)
+            result = self._execute_tool(ctx, step, i)
             sr.executed = True
             sr.output = result.output
             ctx.executed_action_count += 1
@@ -525,13 +511,30 @@ class TaskRuntime:
                 step_index=i,
                 tool=step.tool,
                 ok=result.ok,
+                operation_id=result.operation_id,
+                job_id=result.job_id,
+                exit_code=result.exit_code,
+                signal=result.signal,
+                failure_kind=result.failure_kind,
+                timeout_kind=result.timeout_kind,
+                stdout_artifact=result.stdout_artifact,
+                stderr_artifact=result.stderr_artifact,
+                output_truncated=result.output_truncated,
+                duration_seconds=result.duration_seconds,
+                error=result.error,
             )
-            self.audit.append("step_executed", task_id=ctx.task_id, tool=step.tool, ok=result.ok)
+            self.audit.append(
+                "step_executed", task_id=ctx.task_id, tool=step.tool, ok=result.ok,
+                operation_id=result.operation_id, job_id=result.job_id,
+                exit_code=result.exit_code, signal=result.signal,
+                failure_kind=result.failure_kind, timeout_kind=result.timeout_kind,
+                duration_seconds=result.duration_seconds,
+            )
             if not result.ok:
                 self._fail(
                     ctx,
-                    f"step failed: {step.tool}: {result.output}",
-                    kind=FailureKind.TOOL_EXIT_NONZERO,
+                    f"step failed: {step.tool}: {result.error or result.output}",
+                    kind=self._result_failure_kind(result),
                 )
                 return False
 
@@ -624,21 +627,12 @@ class TaskRuntime:
                               reason=repermit.reason)
             return ctx
 
-        self._record(
+        result = self._execute_tool(
             ctx,
-            RunPhase.TOOL_RUNNING,
-            "tool_started",
-            state=TaskState.EXECUTING,
-            continuation={
-                "kind": "tool_operation",
-                "step_index": pending.held_index,
-                "tool": held_step.tool,
-                "args": list(held_step.args),
-                "approved_by": "human",
-            },
-            tool=held_step.tool,
+            held_step,
+            pending.held_index,
+            approved_by="human",
         )
-        result = self.executor.execute(held_step)
         held_sr.verdict = "ALLOW(human)"
         held_sr.executed = True
         held_sr.output = result.output
@@ -650,14 +644,29 @@ class TaskRuntime:
             state=TaskState.EXECUTING,
             tool=held_step.tool,
             ok=result.ok,
+            operation_id=result.operation_id,
+            job_id=result.job_id,
+            exit_code=result.exit_code,
+            signal=result.signal,
+            failure_kind=result.failure_kind,
+            timeout_kind=result.timeout_kind,
+            stdout_artifact=result.stdout_artifact,
+            stderr_artifact=result.stderr_artifact,
+            output_truncated=result.output_truncated,
+            duration_seconds=result.duration_seconds,
+            error=result.error,
         )
         self.audit.append("step_executed", task_id=ctx.task_id, tool=held_step.tool, ok=result.ok,
-                          approved_by="human")
+                          approved_by="human", operation_id=result.operation_id,
+                          job_id=result.job_id, exit_code=result.exit_code,
+                          signal=result.signal, failure_kind=result.failure_kind,
+                          timeout_kind=result.timeout_kind,
+                          duration_seconds=result.duration_seconds)
         if not result.ok:
             self._fail(
                 ctx,
-                f"step failed: {held_step.tool}: {result.output}",
-                kind=FailureKind.TOOL_EXIT_NONZERO,
+                f"step failed: {held_step.tool}: {result.error or result.output}",
+                kind=self._result_failure_kind(result),
             )
             return ctx
 
@@ -691,6 +700,65 @@ class TaskRuntime:
             ctx.failure_kind = FailureKind.EXTERNAL_FAILURE.value
             self._record(ctx, RunPhase.SETTLED, "run_settled", state=TaskState.FAILED)
         return ctx
+
+    def _execute_tool(
+        self,
+        ctx: TaskContext,
+        step,
+        step_index: int,
+        *,
+        approved_by: str | None = None,
+    ) -> ExecResult:
+        operation_id = f"{ctx.task_id}:round:{ctx.round}:step:{step_index}"
+        continuation = {
+            "kind": "tool_operation",
+            "operation_id": operation_id,
+            "step_index": step_index,
+            "tool": step.tool,
+            "args": list(step.args),
+        }
+        if approved_by:
+            continuation["approved_by"] = approved_by
+        self._record(
+            ctx,
+            RunPhase.TOOL_RUNNING,
+            "tool_started",
+            state=TaskState.EXECUTING,
+            continuation=continuation,
+            operation_id=operation_id,
+            step_index=step_index,
+            tool=step.tool,
+        )
+
+        def attached(handle) -> None:
+            attached_continuation = {**continuation, "job_id": handle.job_id}
+            self._record(
+                ctx,
+                RunPhase.TOOL_RUNNING,
+                "job_attached",
+                state=TaskState.EXECUTING,
+                continuation=attached_continuation,
+                operation_id=operation_id,
+                job_id=handle.job_id,
+                step_index=step_index,
+                tool=step.tool,
+            )
+
+        return execute_step(
+            self.executor,
+            step,
+            operation_id=operation_id,
+            on_started=attached,
+        )
+
+    @staticmethod
+    def _result_failure_kind(result: ExecResult) -> FailureKind:
+        if result.failure_kind:
+            try:
+                return FailureKind(result.failure_kind)
+            except ValueError:
+                pass
+        return FailureKind.TOOL_EXIT_NONZERO
 
     def recover_pending(self) -> int:
         """Rehydrate workflow approvals persisted before a process restart."""

@@ -8,8 +8,9 @@ state machine can be exercised end-to-end at zero cost and zero risk.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Callable, Protocol, runtime_checkable
 
+from taiyi.runtime.jobs import JobHandle
 from taiyi.scheduler import PlanStep
 
 
@@ -17,10 +18,47 @@ from taiyi.scheduler import PlanStep
 class ExecResult:
     output: str
     ok: bool = True
+    operation_id: str | None = None
+    job_id: str | None = None
+    exit_code: int | None = None
+    signal: int | None = None
+    failure_kind: str | None = None
+    timeout_kind: str | None = None
+    stdout_artifact: str | None = None
+    stderr_artifact: str | None = None
+    output_truncated: bool = False
+    duration_seconds: float | None = None
+    error: str | None = None
 
 
 class Executor(Protocol):
     def execute(self, step: PlanStep) -> ExecResult: ...
+
+
+@runtime_checkable
+class DurableExecutor(Protocol):
+    def supports_jobs(self, step: PlanStep) -> bool: ...
+
+    def start(self, step: PlanStep, *, operation_id: str) -> JobHandle: ...
+
+    def wait(self, job_id: str) -> ExecResult: ...
+
+
+def execute_step(
+    executor: Executor,
+    step: PlanStep,
+    *,
+    operation_id: str,
+    on_started: Callable[[JobHandle], None] | None = None,
+) -> ExecResult:
+    """Execute through the durable job seam when the executor supports it."""
+
+    if isinstance(executor, DurableExecutor) and executor.supports_jobs(step):
+        handle = executor.start(step, operation_id=operation_id)
+        if on_started is not None:
+            on_started(handle)
+        return executor.wait(handle.job_id)
+    return executor.execute(step)
 
 
 class MockExecutor:
