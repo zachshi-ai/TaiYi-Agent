@@ -62,6 +62,40 @@ class ProviderRouter:
             fallback=fallback,
         )
 
+    def candidates(self, policy) -> list[ProviderSelection]:
+        """Return a deterministic, mode-prioritized failover pool.
+
+        The requested route is always first.  A missing route resolves to the
+        default provider exactly as :meth:`select` does.  Duplicate provider/model
+        pairs are removed so a configured alias is not presented as failover.
+        """
+
+        preference = {
+            "strongest_capable": ("strongest_capable", "adaptive", "default", "fastest_capable"),
+            "adaptive": ("adaptive", "default", "strongest_capable", "fastest_capable"),
+            "fastest_capable": ("fastest_capable", "default", "adaptive", "strongest_capable"),
+        }.get(policy.model_strategy, (policy.model_strategy, "default"))
+        candidates: list[ProviderSelection] = []
+        seen: set[tuple[int, str | None]] = set()
+        for strategy in preference:
+            configured = self.default_provider if strategy == "default" else self._routes.get(strategy)
+            if configured is None:
+                continue
+            key = (id(configured), getattr(configured, "model", None))
+            if key in seen:
+                continue
+            seen.add(key)
+            candidates.append(ProviderSelection(
+                provider=configured,
+                requested_strategy=policy.model_strategy,
+                route=(policy.requested_mode.value if strategy == policy.model_strategy else strategy),
+                provider_name=getattr(configured, "name", type(configured).__name__),
+                model=getattr(configured, "model", None),
+                fallback=strategy != policy.model_strategy,
+            ))
+        # The default provider is mandatory, so this is defensive only.
+        return candidates or [self.select(policy)]
+
     def configured_routes(self) -> dict[str, dict]:
         out: dict[str, dict] = {}
         for strategy, provider in self._routes.items():

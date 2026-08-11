@@ -23,11 +23,16 @@ Design notes:
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import re
+import threading
+import time
+from email.utils import parsedate_to_datetime
 from typing import Any
 
 from taiyi.llm.base import DEFAULT_LIVE_MODEL, LLMMessage, LLMProvider, LLMResponse, ToolCall
+from taiyi.llm.errors import LLMErrorKind, LLMRequestError
 
 # Matches the tool-call convention the system prompt teaches the model to emit:
 #   tool: shell:git status
@@ -71,49 +76,294 @@ class OpenAICompatProvider(LLMProvider):
         api_key: str | None = None,
         *,
         name: str = "openai_compat",
-        timeout: float = 60.0,
+        timeout: float | None = None,
+        connect_timeout: float | None = None,
+        first_token_timeout: float | None = None,
+        stream_idle_timeout: float | None = None,
+        hard_timeout: float | None = None,
         transport: Any = None,  # injected for tests (httpx MockTransport)
     ):
         self.name = name
         self._base_url = base_url.rstrip("/")
         self._model = model or DEFAULT_LIVE_MODEL
         self._api_key = api_key or None
-        self._timeout = timeout
+        # ``timeout`` remains a compatibility shorthand for older callers. New
+        # deployments configure each phase independently.
+        def deadline(value: float | None, default: float) -> float:
+            resolved = float(value if value is not None else timeout if timeout is not None else default)
+            if resolved <= 0:
+                raise ValueError("LLM phase deadlines must be positive")
+            return resolved
+
+        self._connect_timeout = deadline(connect_timeout, 10.0)
+        self._first_token_timeout = deadline(first_token_timeout, 60.0)
+        self._stream_idle_timeout = deadline(stream_idle_timeout, 30.0)
+        self._hard_timeout = deadline(hard_timeout, 180.0)
         self._transport = transport  # None in production → real network
 
     def complete(
         self, messages: list[LLMMessage], *, tools: list[str] | None = None
     ) -> LLMResponse:
+        coroutine = self._complete_async(messages, tools=tools)
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coroutine)
+
+        # The public provider seam is synchronous, but library callers may invoke
+        # it from an event-loop thread. Run the request in an isolated loop rather
+        # than crashing with "asyncio.run() cannot be called".
+        result: list[LLMResponse] = []
+        failure: list[BaseException] = []
+
+        def run() -> None:
+            try:
+                result.append(asyncio.run(coroutine))
+            except BaseException as exc:  # carried back to the calling thread
+                failure.append(exc)
+
+        worker = threading.Thread(target=run, name="taiyi-llm-request", daemon=True)
+        worker.start()
+        worker.join(self._hard_timeout + 1.0)
+        if worker.is_alive():  # defensive: the coroutine itself also enforces this
+            raise self._timeout_error(LLMErrorKind.LLM_HARD_TIMEOUT, "hard")
+        if failure:
+            raise failure[0]
+        return result[0]
+
+    async def _complete_async(
+        self,
+        messages: list[LLMMessage],
+        *,
+        tools: list[str] | None,
+    ) -> LLMResponse:
         import httpx  # local import: offline deployments never need httpx
 
         url = f"{self._base_url}/chat/completions"
-        headers = {"Content-Type": "application/json"}
+        headers = {"Content-Type": "application/json", "Accept": "text/event-stream"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
         body: dict = {
             "model": self._model,
             "messages": _messages_to_openai(messages),
             "temperature": 0,
+            "stream": True,
         }
-        # When the caller lists tool names, describe them in the prompt so models
-        # without native function-calling can still emit a tool line. (Native
-        # tool-calling is attempted only if the provider supports it; we don't
-        # send a `tools` schema to keep this portable across Ollama models.)
         if tools:
             body["messages"] = _with_tool_hint(body["messages"], tools)
 
+        started = time.monotonic()
+        hard_deadline = started + self._hard_timeout
+        timeout = httpx.Timeout(
+            connect=self._connect_timeout,
+            read=None,  # phase deadlines below own response reads
+            write=self._connect_timeout,
+            pool=self._connect_timeout,
+        )
         try:
-            with httpx.Client(transport=self._transport, timeout=self._timeout) as client:
-                resp = client.post(url, json=body, headers=headers)
-                resp.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            raise RuntimeError(f"LLM endpoint {url} returned {e.response.status_code}: "
-                               f"{e.response.text[:300]}") from e
-        except httpx.HTTPError as e:
-            raise RuntimeError(f"LLM request to {url} failed: {e}") from e
+            async with httpx.AsyncClient(transport=self._transport, timeout=timeout) as client:
+                stream = client.stream("POST", url, json=body, headers=headers)
+                response = None
+                try:
+                    response = await self._wait(
+                        stream.__aenter__(),
+                        phase_timeout=self._first_token_timeout,
+                        hard_deadline=hard_deadline,
+                        phase_kind=LLMErrorKind.LLM_FIRST_TOKEN_TIMEOUT,
+                        phase="first_token",
+                    )
+                    if response.status_code >= 400:
+                        content = await self._wait(
+                            response.aread(),
+                            phase_timeout=self._first_token_timeout,
+                            hard_deadline=hard_deadline,
+                            phase_kind=LLMErrorKind.LLM_FIRST_TOKEN_TIMEOUT,
+                            phase="error_body",
+                        )
+                        raise self._http_error(response.status_code, content, response.headers)
 
-        data = resp.json()
-        return self._to_response(data, self._model)
+                    chunks: list[bytes] = []
+                    iterator = response.aiter_bytes()
+                    saw_body = False
+                    first_deadline = started + self._first_token_timeout
+                    while True:
+                        phase = "stream_idle" if saw_body else "first_token"
+                        phase_kind = (
+                            LLMErrorKind.LLM_STREAM_IDLE_TIMEOUT
+                            if saw_body
+                            else LLMErrorKind.LLM_FIRST_TOKEN_TIMEOUT
+                        )
+                        phase_timeout = (
+                            self._stream_idle_timeout
+                            if saw_body
+                            else max(0.0, first_deadline - time.monotonic())
+                        )
+                        try:
+                            chunk = await self._wait(
+                                iterator.__anext__(),
+                                phase_timeout=phase_timeout,
+                                hard_deadline=hard_deadline,
+                                phase_kind=phase_kind,
+                                phase=phase,
+                            )
+                        except StopAsyncIteration:
+                            break
+                        if chunk:
+                            chunks.append(chunk)
+                            saw_body = True
+                    if not saw_body:
+                        raise LLMRequestError(
+                            LLMErrorKind.LLM_PROTOCOL_ERROR,
+                            "model endpoint returned an empty response body",
+                            retryable=False,
+                            phase="decode",
+                            provider=self.name,
+                        )
+                    return self._decode_body(b"".join(chunks), response.headers)
+                finally:
+                    if response is not None:
+                        await stream.__aexit__(None, None, None)
+        except LLMRequestError:
+            raise
+        except httpx.ConnectTimeout as exc:
+            raise self._timeout_error(LLMErrorKind.LLM_CONNECT_TIMEOUT, "connect") from exc
+        except httpx.TimeoutException as exc:
+            raise self._timeout_error(LLMErrorKind.LLM_TRANSPORT_ERROR, "transport") from exc
+        except httpx.TransportError as exc:
+            raise LLMRequestError(
+                LLMErrorKind.LLM_TRANSPORT_ERROR,
+                f"model transport failed: {type(exc).__name__}",
+                retryable=True,
+                phase="transport",
+                provider=self.name,
+            ) from exc
+
+    async def _wait(
+        self,
+        awaitable,
+        *,
+        phase_timeout: float,
+        hard_deadline: float,
+        phase_kind: LLMErrorKind,
+        phase: str,
+    ):
+        hard_remaining = hard_deadline - time.monotonic()
+        if hard_remaining <= 0:
+            raise self._timeout_error(LLMErrorKind.LLM_HARD_TIMEOUT, "hard")
+        allowed = min(max(0.0, phase_timeout), hard_remaining)
+        try:
+            return await asyncio.wait_for(awaitable, timeout=allowed)
+        except asyncio.TimeoutError as exc:
+            kind = (
+                LLMErrorKind.LLM_HARD_TIMEOUT
+                if hard_remaining <= max(0.0, phase_timeout)
+                else phase_kind
+            )
+            raise self._timeout_error(kind, "hard" if kind is LLMErrorKind.LLM_HARD_TIMEOUT else phase) from exc
+
+    def _timeout_error(self, kind: LLMErrorKind, phase: str) -> LLMRequestError:
+        return LLMRequestError(
+            kind,
+            f"model request exceeded its {phase} deadline",
+            retryable=True,
+            phase=phase,
+            provider=self.name,
+        )
+
+    def _http_error(self, status: int, content: bytes, headers) -> LLMRequestError:
+        detail = content.decode("utf-8", errors="replace")[:300]
+        text = detail.casefold()
+        if status in {401, 403}:
+            kind, retryable = LLMErrorKind.LLM_AUTH_ERROR, False
+        elif status == 429:
+            kind, retryable = LLMErrorKind.RATE_LIMIT, True
+        elif status >= 500 or status in {408, 425}:
+            kind, retryable = LLMErrorKind.LLM_SERVER_ERROR, True
+        elif "context" in text and any(word in text for word in ("length", "window", "overflow")):
+            kind, retryable = LLMErrorKind.CONTEXT_OVERFLOW, False
+        else:
+            kind, retryable = LLMErrorKind.LLM_PROTOCOL_ERROR, False
+        return LLMRequestError(
+            kind,
+            f"model endpoint returned HTTP {status}: {detail}",
+            retryable=retryable,
+            phase="response_status",
+            provider=self.name,
+            status_code=status,
+            retry_after=_parse_retry_after(headers.get("retry-after")),
+        )
+
+    def _decode_body(self, raw: bytes, headers) -> LLMResponse:
+        text = raw.decode("utf-8", errors="replace")
+        content_type = headers.get("content-type", "").casefold()
+        try:
+            if "text/event-stream" in content_type or any(
+                line.lstrip().startswith("data:") for line in text.splitlines()
+            ):
+                return self._decode_sse(text)
+            return self._to_response(json.loads(text), self._model)
+        except LLMRequestError:
+            raise
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise LLMRequestError(
+                LLMErrorKind.LLM_PROTOCOL_ERROR,
+                f"model response could not be decoded: {type(exc).__name__}",
+                retryable=False,
+                phase="decode",
+                provider=self.name,
+            ) from exc
+
+    def _decode_sse(self, body: str) -> LLMResponse:
+        content: list[str] = []
+        tool_parts: dict[int, dict[str, str]] = {}
+        model = self._model
+        saw_event = False
+        for line in body.splitlines():
+            if not line.lstrip().startswith("data:"):
+                continue
+            payload = line.lstrip()[5:].strip()
+            if not payload or payload == "[DONE]":
+                continue
+            data = json.loads(payload)
+            if data.get("error"):
+                raise LLMRequestError(
+                    LLMErrorKind.LLM_PROTOCOL_ERROR,
+                    "model stream returned an error event",
+                    retryable=False,
+                    phase="stream_decode",
+                    provider=self.name,
+                )
+            saw_event = True
+            model = data.get("model") or model
+            choice = (data.get("choices") or [{}])[0]
+            if choice.get("message") is not None:
+                return self._to_response(data, model)
+            delta = choice.get("delta") or {}
+            if delta.get("content"):
+                content.append(str(delta["content"]))
+            for item in delta.get("tool_calls") or []:
+                index = int(item.get("index", 0))
+                current = tool_parts.setdefault(index, {"name": "", "arguments": ""})
+                fn = item.get("function") or {}
+                current["name"] += str(fn.get("name") or "")
+                current["arguments"] += str(fn.get("arguments") or "")
+        if not saw_event:
+            raise LLMRequestError(
+                LLMErrorKind.LLM_PROTOCOL_ERROR,
+                "model stream contained no data events",
+                retryable=False,
+                phase="stream_decode",
+                provider=self.name,
+            )
+        text = "".join(content)
+        calls = [
+            ToolCall(tool=parts["name"], args=_coerce_args(parts["arguments"]))
+            for _, parts in sorted(tool_parts.items())
+            if parts["name"]
+        ]
+        if not calls and text:
+            calls = _parse_tool_calls_from_text(text)
+        return LLMResponse(text=text, tool_calls=calls, model=model)
 
     @property
     def model(self) -> str:
@@ -135,7 +385,10 @@ class OpenAICompatProvider(LLMProvider):
             model=model,
             api_key=self._api_key,
             name=f"{self.name}:{route}",
-            timeout=self._timeout,
+            connect_timeout=self._connect_timeout,
+            first_token_timeout=self._first_token_timeout,
+            stream_idle_timeout=self._stream_idle_timeout,
+            hard_timeout=self._hard_timeout,
             transport=self._transport,
         )
 
@@ -198,6 +451,20 @@ def _with_tool_hint(messages: list[dict], tools: list[str]) -> list[dict]:
     return messages + [{"role": "system", "content": hint}]
 
 
+def _parse_retry_after(value: str | None) -> float | None:
+    """Parse Retry-After seconds or an HTTP date into a non-negative delay."""
+
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            return max(0.0, parsedate_to_datetime(value).timestamp() - time.time())
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+
 def make_provider(cfg) -> LLMProvider | None:
     """Construct the LLM provider selected by ``cfg``.
 
@@ -246,6 +513,10 @@ def make_provider(cfg) -> LLMProvider | None:
         return OpenAICompatProvider(
             base_url=base_url, model=model, api_key=key,
             name=f"live:{provider}",
+            connect_timeout=float(getattr(cfg, "llm_connect_timeout", 10.0)),
+            first_token_timeout=float(getattr(cfg, "llm_first_token_timeout", 60.0)),
+            stream_idle_timeout=float(getattr(cfg, "llm_stream_idle_timeout", 30.0)),
+            hard_timeout=float(getattr(cfg, "llm_hard_timeout", 180.0)),
         )
 
     # Unknown provider — degrade with a warning rather than crash.

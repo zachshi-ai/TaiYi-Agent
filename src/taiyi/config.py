@@ -54,6 +54,10 @@ class TaiyiConfig:
     base_url: str | None = None          # OpenAI-compatible endpoint, e.g. http://localhost:11434/v1
     api_key: str | None = None           # the key value itself (empty for local Ollama)
     api_key_env: str | None = None       # alt: name of env var holding the key (overrides api_key)
+    llm_connect_timeout: float = 10.0    # DNS/TCP/TLS establishment deadline
+    llm_first_token_timeout: float = 60.0 # headers + first response body deadline
+    llm_stream_idle_timeout: float = 30.0 # maximum gap between response chunks
+    llm_hard_timeout: float = 180.0      # absolute wall-clock deadline per attempt
 
 
 # Fields the web UI is allowed to write back via PUT /v1/config. Anything else
@@ -63,6 +67,8 @@ WRITABLE_FIELDS = {
     "runtime_mode", "operating_mode", "mode", "base_url",
     "api_key", "api_key_env", "max_rounds", "executor", "host", "port", "log_level",
     "tool_hard_timeout", "tool_idle_timeout", "job_heartbeat_interval", "tool_output_limit",
+    "llm_connect_timeout", "llm_first_token_timeout", "llm_stream_idle_timeout",
+    "llm_hard_timeout",
 }
 
 
@@ -179,6 +185,14 @@ def _apply_env(cfg: TaiyiConfig) -> TaiyiConfig:
         over["base_url"] = env["TAIYI_BASE_URL"]
     if env.get("TAIYI_API_KEY"):
         over["api_key"] = env["TAIYI_API_KEY"]
+    if env.get("TAIYI_LLM_CONNECT_TIMEOUT"):
+        over["llm_connect_timeout"] = float(env["TAIYI_LLM_CONNECT_TIMEOUT"])
+    if env.get("TAIYI_LLM_FIRST_TOKEN_TIMEOUT"):
+        over["llm_first_token_timeout"] = float(env["TAIYI_LLM_FIRST_TOKEN_TIMEOUT"])
+    if env.get("TAIYI_LLM_STREAM_IDLE_TIMEOUT"):
+        over["llm_stream_idle_timeout"] = float(env["TAIYI_LLM_STREAM_IDLE_TIMEOUT"])
+    if env.get("TAIYI_LLM_HARD_TIMEOUT"):
+        over["llm_hard_timeout"] = float(env["TAIYI_LLM_HARD_TIMEOUT"])
     if env.get("TAIYI_STATIC_DIR"):
         over["static_dir"] = env["TAIYI_STATIC_DIR"]
     return replace(cfg, **over)

@@ -425,6 +425,10 @@ class GatewayApp:
                 a.get("name") == "github-cli" for a in validation_authorities
             ),
             "base_url": getattr(prov, "base_url", None) if prov else None,
+            "llm_connect_timeout": getattr(prov, "_connect_timeout", 10.0),
+            "llm_first_token_timeout": getattr(prov, "_first_token_timeout", 60.0),
+            "llm_stream_idle_timeout": getattr(prov, "_stream_idle_timeout", 30.0),
+            "llm_hard_timeout": getattr(prov, "_hard_timeout", 180.0),
             "api_key_set": has_key,
             "base_dir": self.gateway.base_dir,
             "writable_fields": sorted(WRITABLE_FIELDS),

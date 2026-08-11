@@ -15,6 +15,10 @@ export default function Config() {
   const [apiKey, setApiKey] = useState("");
   const [runtimeMode, setRuntimeMode] = useState("agent");
   const [operatingMode, setOperatingMode] = useState("balanced");
+  const [connectTimeout, setConnectTimeout] = useState(10);
+  const [firstTokenTimeout, setFirstTokenTimeout] = useState(60);
+  const [streamIdleTimeout, setStreamIdleTimeout] = useState(30);
+  const [hardTimeout, setHardTimeout] = useState(180);
   const [token, setTokenInput] = useState(getToken());
   const [saved, setSaved] = useState("");
   const [error, setError] = useState("");
@@ -33,6 +37,10 @@ export default function Config() {
       setBaseUrl(c.base_url || "");
       setRuntimeMode(c.runtime_mode || c.mode || "agent");
       setOperatingMode(c.operating_mode || "balanced");
+      setConnectTimeout(c.llm_connect_timeout ?? 10);
+      setFirstTokenTimeout(c.llm_first_token_timeout ?? 60);
+      setStreamIdleTimeout(c.llm_stream_idle_timeout ?? 30);
+      setHardTimeout(c.llm_hard_timeout ?? 180);
       setApiKey(""); // never echo the stored value; user re-types to change
       setError("");
     } catch (e: any) {
@@ -54,6 +62,10 @@ export default function Config() {
       quality_model: qualityModel,
       balanced_model: balancedModel,
       efficiency_model: efficiencyModel,
+      llm_connect_timeout: connectTimeout,
+      llm_first_token_timeout: firstTokenTimeout,
+      llm_stream_idle_timeout: streamIdleTimeout,
+      llm_hard_timeout: hardTimeout,
     };
     if (model) updates.model = model;
     if (baseUrl) updates.base_url = baseUrl;
@@ -234,6 +246,25 @@ export default function Config() {
                 />
               </div>
             )}
+            <div style={{ marginBottom: 10 }}>
+              <p className="muted" style={{ fontSize: 12, margin: "0 0 6px" }}>
+                单次 LLM 请求分阶段截止（秒）；模式另行控制总重试次数与退避预算
+              </p>
+              <div className="row">
+                <label>连接</label>
+                <input type="number" min="0.1" step="0.1" value={connectTimeout}
+                  onChange={(e) => setConnectTimeout(Number(e.target.value))} />
+                <label>首 token</label>
+                <input type="number" min="0.1" step="0.1" value={firstTokenTimeout}
+                  onChange={(e) => setFirstTokenTimeout(Number(e.target.value))} />
+                <label>流空闲</label>
+                <input type="number" min="0.1" step="0.1" value={streamIdleTimeout}
+                  onChange={(e) => setStreamIdleTimeout(Number(e.target.value))} />
+                <label>硬截止</label>
+                <input type="number" min="0.1" step="0.1" value={hardTimeout}
+                  onChange={(e) => setHardTimeout(Number(e.target.value))} />
+              </div>
+            </div>
             {provider === "ollama" && (
               <p className="muted" style={{ fontSize: 12, margin: "0 0 10px" }}>
                 Ollama 是本地服务，无需 API key。先确保已 <code>ollama serve</code> 并 <code>ollama pull &lt;模型&gt;</code>。

@@ -34,6 +34,14 @@ class RunPhase(str, Enum):
 
 class FailureKind(str, Enum):
     LLM_TIMEOUT = "LLM_TIMEOUT"
+    LLM_CONNECT_TIMEOUT = "LLM_CONNECT_TIMEOUT"
+    LLM_FIRST_TOKEN_TIMEOUT = "LLM_FIRST_TOKEN_TIMEOUT"
+    LLM_STREAM_IDLE_TIMEOUT = "LLM_STREAM_IDLE_TIMEOUT"
+    LLM_HARD_TIMEOUT = "LLM_HARD_TIMEOUT"
+    LLM_TRANSPORT_ERROR = "LLM_TRANSPORT_ERROR"
+    LLM_SERVER_ERROR = "LLM_SERVER_ERROR"
+    LLM_AUTH_ERROR = "LLM_AUTH_ERROR"
+    LLM_PROTOCOL_ERROR = "LLM_PROTOCOL_ERROR"
     TOOL_TIMEOUT = "TOOL_TIMEOUT"
     TOOL_IDLE_TIMEOUT = "TOOL_IDLE_TIMEOUT"
     TOOL_HARD_TIMEOUT = "TOOL_HARD_TIMEOUT"
@@ -65,6 +73,13 @@ def classify_exception(exc: BaseException, phase: RunPhase) -> FailureKind:
 
     if isinstance(exc, PermissionError):
         return FailureKind.PERMISSION_DENIED
+
+    explicit = getattr(exc, "failure_kind", None)
+    if explicit:
+        try:
+            return FailureKind(str(explicit))
+        except ValueError:
+            pass
 
     timeout_like = isinstance(exc, (TimeoutError, subprocess.TimeoutExpired)) or (
         "timeout" in type(exc).__name__.casefold()

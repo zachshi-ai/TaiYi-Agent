@@ -111,6 +111,10 @@ def test_get_config_does_not_leak_key(tmp_path):
     assert data["external_github_validation"] is False
     assert "quality_model" in data
     assert "efficiency_model" in data
+    assert data["llm_connect_timeout"] == 10.0
+    assert data["llm_first_token_timeout"] == 60.0
+    assert data["llm_stream_idle_timeout"] == 30.0
+    assert data["llm_hard_timeout"] == 180.0
     assert "writable_fields" in data
     assert data["restart_required_after_write"] is True
     # The key is surfaced only as a presence boolean, never its value.

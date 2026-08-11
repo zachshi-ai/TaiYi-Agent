@@ -132,12 +132,24 @@ occurs exactly once. They also prove that a concurrent gateway cannot recover a
 leased task, a frozen LLM turn survives restart, and cancellation is reflected as
 `TOOL_CANCELLED` rather than generic failure.
 
-### Deliberate Phase 3 boundary
+## Phase 4: LLM request resilience
+
+Model requests now continue the same durable protocol. OpenAI-compatible
+responses are streamed with distinct connect, first-token, stream-idle, and hard
+deadlines. Typed failures drive bounded retry and provider failover, while
+`RETRY_BACKOFF`, attempt count, absolute retry deadline, and `retry_not_before`
+remain in the checkpoint. Workflow planning and ReAct turns use the same runner;
+a process that exits during backoff resumes without resetting the attempt or
+skipping the remaining delay.
+
+The retry scope ends when a model response returns. Governance and tool execution
+remain outside it, so model retry cannot replay a tool side effect. Full protocol
+and fault matrix: [`08_LLM_Request_Resilience.md`](./08_LLM_Request_Resilience.md).
+
+### Deliberate Phase 4 boundary
 
 Progress is currently reconnectable polling over persisted events, not SSE or
-WebSocket streaming. Model timeouts are attributed to `LLM_WAITING`, but connect,
-first-token, stream-idle, and hard deadlines plus budgeted retry/backoff remain a
-separate slice. Retrying an external effect still requires an explicit effect
+WebSocket streaming. Retrying an external effect still requires an explicit effect
 class, idempotency contract, and authority-specific post-crash verification.
 
 ## Invariants
@@ -152,12 +164,12 @@ class, idempotency contract, and authority-specific post-crash verification.
 
 ## Next milestones
 
-1. Separate LLM connect, first-token, stream-idle, and hard timeouts, with
-   retry/backoff that respects provider and task budgets.
-2. Add side-effect classes, idempotency policies, and post-crash
+1. Add side-effect classes, idempotency policies, and post-crash
    external verification before any retry.
-3. Add SSE progress streaming on top of the persisted event cursor.
-4. Add proactive structured compaction and large-repository indexing keyed by
+2. Add SSE progress streaming on top of the persisted event cursor.
+3. Add proactive structured compaction and large-repository indexing keyed by
    Git SHA.
-5. Exercise network loss, 429/5xx, context overflow, duplicate
-   effects, and huge-output faults in the harness benchmark.
+4. Turn context overflow into a compaction-and-retry protocol rather than a
+   provider failover.
+5. Exercise real-provider network loss, duplicate effects, and huge-output
+   faults in the harness benchmark.

@@ -30,6 +30,7 @@ from taiyi.policy import (
     resolve_policy,
 )
 from taiyi.runtime.context import StepResult, TaskContext
+from taiyi.runtime.llm_retry import task_resilient_provider
 from taiyi.runtime.executor import (
     ExecResult,
     Executor,
@@ -104,6 +105,8 @@ class AgentRuntime:
         default_operating_mode: str | OperatingMode = OperatingMode.BALANCED,
         provider_router: ProviderRouter | None = None,
         run_store: RunStore | None = None,
+        llm_sleep=time.sleep,
+        llm_clock=time.time,
     ):
         self.scheduler = scheduler
         self.audit = audit_log
@@ -122,6 +125,8 @@ class AgentRuntime:
         self.default_operating_mode = OperatingMode.parse(default_operating_mode)
         self.completion = CompletionController()
         self.run_store = run_store or RunStore()
+        self._llm_sleep = llm_sleep
+        self._llm_clock = llm_clock
         self._recovery_threads: dict[str, threading.Thread] = {}
         # Build the system prompt the model actually sees. The default prompt
         # alone is too vague for a real model — it must know the tool-call syntax
@@ -239,7 +244,7 @@ class AgentRuntime:
             ctx.goal = self.value_stream.anchor(prompt, scenario)
         try:
             with self._span(trace, "agent_task"):
-                self._loop(ctx, messages, trace, provider_selection.provider)
+                self._loop(ctx, messages, trace)
         except Exception as e:  # noqa: BLE001
             self._fail(ctx, e)
 
@@ -251,28 +256,43 @@ class AgentRuntime:
         ctx: TaskContext,
         messages: list[LLMMessage],
         trace,
-        provider: LLMProvider,
         *,
         start_step: int = 1,
+        retry_state: dict | None = None,
     ) -> None:
         assert ctx.policy is not None
         step_limit = self.max_steps or ctx.policy.max_steps
         for step in range(start_step, step_limit + 1):
             ctx.round = step
+            continuation = {
+                "kind": "agent_continue",
+                "next_step": step,
+                "messages": serialize_messages(messages),
+            }
+            turn_retry_state = retry_state if step == start_step else None
+            if turn_retry_state:
+                continuation["llm_retry"] = dict(turn_retry_state)
             self._record(
                 ctx,
                 RunPhase.LLM_WAITING,
                 "llm_request_started",
                 state=TaskState.PLANNING,
-                continuation={
-                    "kind": "agent_continue",
-                    "next_step": step,
-                    "messages": serialize_messages(messages),
-                },
+                continuation=continuation,
                 step=step,
             )
+            resilient = task_resilient_provider(
+                ctx,
+                self.provider_router,
+                record=self._record,
+                audit=self.audit,
+                continuation={k: v for k, v in continuation.items() if k != "llm_retry"},
+                retry_state=turn_retry_state,
+                sleep=self._llm_sleep,
+                clock=self._llm_clock,
+            )
             with self._span(trace, "think"):
-                resp = provider.complete(messages, tools=self.tool_names)
+                resp = resilient.complete(messages, tools=self.tool_names)
+            retry_state = None
             if ctx.provider_route is not None and resp.model:
                 ctx.provider_route["last_response_model"] = resp.model
 
@@ -736,7 +756,6 @@ class AgentRuntime:
                     ctx,
                     messages,
                     trace,
-                    provider_selection.provider,
                     start_step=ctx.round + 1,
                 )
         except Exception as e:  # noqa: BLE001
@@ -1117,8 +1136,8 @@ class AgentRuntime:
                     ctx,
                     messages,
                     trace,
-                    provider_selection.provider,
                     start_step=next_step,
+                    retry_state=continuation.get("llm_retry"),
                 )
         except Exception as exc:  # noqa: BLE001 — recovery failures must settle visibly
             self._fail(ctx, exc)
