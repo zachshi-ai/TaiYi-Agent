@@ -12,8 +12,14 @@ import os
 import re
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Iterable
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows falls back to process-local claims
+    fcntl = None
 
 from taiyi.llm.base import LLMMessage
 from taiyi.policy import EvidenceLedger, EvidenceRecord
@@ -27,6 +33,8 @@ from taiyi.policy import resolve_policy
 CHECKPOINT_SCHEMA = "taiyi.run-checkpoint/v1"
 EVENT_SCHEMA = "taiyi.run-event/v1"
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
+_PROCESS_LEASE_LOCK = threading.RLock()
+_PROCESS_LEASES: set[str] = set()
 
 
 def _step_to_dict(step: PlanStep) -> dict[str, Any]:
@@ -196,6 +204,7 @@ class RunStore:
     def __init__(self, base_dir: str | Path | None = None):
         self.base_dir = Path(base_dir) if base_dir is not None else None
         self._lock = threading.RLock()
+        self._task_leases: dict[str, object] = {}
 
     @property
     def persistent(self) -> bool:
@@ -211,6 +220,9 @@ class RunStore:
         **payload: Any,
     ) -> None:
         with self._lock:
+            if event == "run_created":
+                if not self.acquire_task_lease(ctx.task_id, blocking=False):
+                    raise RuntimeError(f"task {ctx.task_id} is already owned by another runtime")
             ctx.phase = phase
             ctx.updated_at = time.time()
             ctx.checkpoint_revision += 1
@@ -240,6 +252,63 @@ class RunStore:
                 "digest": checkpoint_digest(context, continuation),
             }
             self._atomic_json(run_dir / "checkpoint.json", checkpoint)
+            if phase in {
+                RunPhase.SETTLED,
+                RunPhase.WAITING_APPROVAL,
+                RunPhase.WAITING_INPUT,
+            }:
+                self.release_task_lease(ctx.task_id)
+
+    def acquire_task_lease(self, task_id: str, *, blocking: bool = True) -> bool:
+        """Claim the sole right to advance a persisted task.
+
+        The open file descriptor owns the POSIX lock, so a process crash releases
+        it automatically. The process-local map also prevents duplicate recovery
+        threads when file locking is unavailable.
+        """
+
+        if not self.persistent:
+            return True
+        with self._lock:
+            if task_id in self._task_leases:
+                return False
+            run_dir = self._run_dir(task_id)
+            run_dir.mkdir(parents=True, exist_ok=True)
+            handle = (run_dir / ".task.lock").open("a+b")
+            if fcntl is not None:
+                flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+                try:
+                    fcntl.flock(handle.fileno(), flags)
+                except BlockingIOError:
+                    handle.close()
+                    return False
+            else:  # pragma: no cover - exercised only on platforms without flock
+                key = str((run_dir / ".task.lock").resolve())
+                with _PROCESS_LEASE_LOCK:
+                    if key in _PROCESS_LEASES:
+                        handle.close()
+                        return False
+                    _PROCESS_LEASES.add(key)
+            self._task_leases[task_id] = handle
+            return True
+
+    def release_task_lease(self, task_id: str) -> None:
+        if not self.persistent:
+            return
+        with self._lock:
+            handle = self._task_leases.pop(task_id, None)
+            if handle is None:
+                return
+            if fcntl is not None:
+                try:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            else:  # pragma: no cover - exercised only on platforms without flock
+                key = str((self._run_dir(task_id) / ".task.lock").resolve())
+                with _PROCESS_LEASE_LOCK:
+                    _PROCESS_LEASES.discard(key)
+            handle.close()
 
     def load(self, task_id: str) -> dict[str, Any] | None:
         if not self.persistent:
@@ -268,6 +337,38 @@ class RunStore:
             checkpoints.append(data)
         return tuple(checkpoints)
 
+    def read_events(self, task_id: str) -> tuple[dict[str, Any], ...]:
+        """Return the task's persisted progress stream in append order."""
+
+        if not self.persistent:
+            return ()
+        path = self._run_dir(task_id) / "events.jsonl"
+        with self._lock:
+            try:
+                raw = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                return ()
+        lines = raw.splitlines()
+        # A reader in another process may observe the last append between bytes.
+        # Ignore only that unterminated tail; a malformed completed line is still
+        # a hard integrity error.
+        if raw and not raw.endswith("\n"):
+            lines = lines[:-1]
+        events: list[dict[str, Any]] = []
+        for line_number, line in enumerate(lines, 1):
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise CheckpointIncompatibleError(
+                    f"invalid run event at {path}:{line_number}"
+                ) from exc
+            if event.get("schema_version") != EVENT_SCHEMA or event.get("task_id") != task_id:
+                raise CheckpointIncompatibleError(
+                    f"run event identity mismatch at {path}:{line_number}"
+                )
+            events.append(event)
+        return tuple(events)
+
     @staticmethod
     def _validate_checkpoint(data: dict[str, Any], path: Path) -> None:
         if data.get("schema_version") != CHECKPOINT_SCHEMA:
@@ -295,13 +396,19 @@ class RunStore:
 
     @staticmethod
     def _atomic_json(path: Path, data: dict[str, Any]) -> None:
-        temp = path.with_suffix(".json.tmp")
-        with temp.open("w", encoding="utf-8") as handle:
-            json.dump(data, handle, ensure_ascii=False, separators=(",", ":"))
-            handle.write("\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temp, path)
+        temp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+        try:
+            with temp.open("x", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, separators=(",", ":"))
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temp, path)
+        finally:
+            try:
+                temp.unlink()
+            except FileNotFoundError:
+                pass
         try:
             directory_fd = os.open(path.parent, os.O_RDONLY)
         except OSError:

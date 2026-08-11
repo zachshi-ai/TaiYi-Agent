@@ -86,6 +86,20 @@ def test_agent_approval_restores_react_conversation_after_restart(tmp_path):
     assert [result.step.tool for result in resumed.executed_steps] == ["shell:git push"]
 
 
+def test_stale_approval_from_another_gateway_cannot_replay_resolved_step(tmp_path):
+    first = build_gateway(base_dir=tmp_path, mode="workflow")
+    held = first.submit("帮我生成上周周报", scenario="ops.report")
+    approval_id = held.approval_id
+    second = build_gateway(base_dir=tmp_path, mode="workflow")
+    stale = build_gateway(base_dir=tmp_path, mode="workflow")
+
+    resolved = second.resume(approval_id, approve=True)
+
+    assert resolved.phase is RunPhase.SETTLED
+    with pytest.raises(RuntimeError, match="stale or already resolved"):
+        stale.resume(approval_id, approve=True)
+
+
 def test_contract_drift_fails_closed_without_preventing_startup(tmp_path):
     first = build_gateway(base_dir=tmp_path, mode="workflow")
     held = first.submit("帮我生成上周周报", scenario="ops.report")

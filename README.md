@@ -20,7 +20,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
 | `src/taiyi/` | **Production code** — 17 modules, built module by module |
-| `tests/` | 287 tests covering governance, operating modes, durable jobs/recovery, and executable Skill gates |
+| `tests/` | 294 tests covering governance, operating modes, durable jobs/recovery, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -115,9 +115,13 @@ repeating that id reattaches to the same job instead of replaying its side
 effect. Heartbeats, process-group cancellation, distinct idle/hard timeouts,
 exact exit/signal status, and full stdout/stderr artifacts make long commands
 observable while only a bounded tail enters model context. A new executor can
-reattach to running work, but task-level automatic continuation after a gateway
-restart and LLM phase deadlines remain explicit next milestones. TaiYi never
-auto-reruns an ambiguous external effect. See
+reattach to running work, and a restarted gateway now claims a per-task lease,
+reattaches the existing operation, restores the frozen Workflow plan or ReAct
+conversation, and continues from the exact next step. `POST /v1/tasks` also
+supports `async=true`; task status, typed events, job heartbeats, and cancellation
+are available without holding one HTTP request open. TaiYi still never auto-reruns
+an ambiguous non-durable external effect. LLM phase deadlines remain an explicit
+next milestone. See
 [`learning/docs/07_Durable_Runtime_Protocol.md`](./learning/docs/07_Durable_Runtime_Protocol.md).
 
 With `executor: sandbox`, Taiyi can also enable a read-only Git authority. It

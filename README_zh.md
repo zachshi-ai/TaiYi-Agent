@@ -12,7 +12,7 @@
 |---|---|
 | **产（生产，留根）** — Agent 本体 | |
 | `src/taiyi/` | **生产代码** — 17 个模块 |
-| `tests/` | 287 个测试，覆盖治理不变量、三模式、持久任务/可恢复运行协议与可执行 Skill 门禁 |
+| `tests/` | 294 个测试，覆盖治理不变量、三模式、持久任务/可恢复运行协议与可执行 Skill 门禁 |
 | `web/` | 内置 React Web UI（构建产物在 `web/dist`） |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | 打包 + 配置模板 |
@@ -68,8 +68,10 @@ Sandbox 的 shell 工具现在由独立持久 supervisor 执行，不再受一�
 每次操作会在启动前获得稳定 operation id；重复 id 只会重连同一个 job，不会重放副作用。
 心跳、进程组取消、空闲/硬超时、精确退出码或信号、完整 stdout/stderr artifact 共同让
 长命令可观察，同时只把有上限的输出尾部送进模型上下文。新 executor 已可重连运行中的
-job；但网关重启后自动续接整个 Agent 循环、异步客户端轮询/流式接口和 LLM 分阶段超时
-仍是下一阶段。太一不会自动重跑结果不确定的外部副作用。详细设计见
+job；重启后的网关会先取得任务级 lease，再重连原 operation，恢复冻结的 Workflow 计划或
+ReAct 对话，并从精确的下一步继续。`POST /v1/tasks` 支持 `async=true`，客户端可以查询任务
+状态、类型化事件、job 心跳并取消，不必一直占用原 HTTP 请求。LLM 分阶段超时仍是下一阶段；
+太一不会自动重跑结果不确定的非持久外部副作用。详细设计见
 [`learning/docs/07_Durable_Runtime_Protocol.md`](./learning/docs/07_Durable_Runtime_Protocol.md)。
 
 使用 `executor: sandbox` 时还可启用只读 Git Authority：执行前冻结 HEAD 和仓库本地身份，执行后独立证明出现了新提交，并核对 author/committer。详见 [`learning/docs/06_External_Authority_Checks.md`](./learning/docs/06_External_Authority_Checks.md)。
@@ -132,7 +134,7 @@ api_key: sk-...
 ### 运行测试与示例
 
 ```bash
-python -m pytest                            # 271 测试
+python -m pytest                            # 294 测试
 taiyi verify-skills                        # 执行 3 个内置 Skill 的 9 个质量门案例
 python3 research/examples/agent_demo.py     # 演示 ReAct loop + 治理拦截
 python3 research/demo/src/main.py           # Phase 0 demo

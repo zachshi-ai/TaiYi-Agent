@@ -7,7 +7,13 @@ records the whole trajectory to the shared audit chain so any task is replayable
 
 from taiyi.runtime.state import TaskState
 from taiyi.runtime.context import TaskContext, StepResult
-from taiyi.runtime.executor import DurableExecutor, Executor, MockExecutor, ExecResult
+from taiyi.runtime.executor import (
+    DurableExecutor,
+    ExecResult,
+    Executor,
+    MockExecutor,
+    RecoverableExecutor,
+)
 from taiyi.runtime.jobs import JobHandle, JobRecord, JobStatus, JobStore
 from taiyi.runtime.engine import TaskRuntime, replay_task
 from taiyi.runtime.persistence import RunStore
@@ -19,6 +25,7 @@ __all__ = [
     "StepResult",
     "Executor",
     "DurableExecutor",
+    "RecoverableExecutor",
     "MockExecutor",
     "ExecResult",
     "TaskRuntime",
