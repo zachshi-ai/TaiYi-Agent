@@ -78,6 +78,15 @@ def _wait_for_settled(base, task_id, timeout=8.0):
     raise AssertionError(f"task {task_id} did not settle after recovery")
 
 
+def _wait_for_recovery_cleanup(runtime, task_id, timeout=2.0):
+    """A SETTLED checkpoint can precede the recovery thread's final cleanup."""
+
+    thread = runtime._recovery_threads.get(task_id)
+    if thread is not None:
+        thread.join(timeout=timeout)
+    assert task_id not in runtime._recovery_threads
+
+
 @pytest.mark.parametrize("runtime_mode", ["workflow", "agent"])
 def test_gateway_restart_reattaches_job_and_executes_side_effect_once(tmp_path, runtime_mode):
     base = tmp_path / runtime_mode
@@ -184,4 +193,4 @@ def test_agent_restart_retries_inflight_llm_turn_from_frozen_messages(tmp_path):
     assert provider.messages is not None
     assert provider.messages[-1].role == "user"
     assert provider.messages[-1].content == "preserve this exact user request"
-    assert task_id not in restarted.runtime._recovery_threads
+    _wait_for_recovery_cleanup(restarted.runtime, task_id)

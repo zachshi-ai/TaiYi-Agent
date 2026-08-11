@@ -290,4 +290,7 @@ def test_process_restart_resumes_from_durable_retry_backoff(tmp_path, runtime_mo
         .splitlines()
     ]
     assert sum(event["event"] == "run_recovered" for event in events) == 1
+    thread = restarted.runtime._recovery_threads.get(task_id)
+    if thread is not None:
+        thread.join(timeout=2.0)
     assert task_id not in restarted.runtime._recovery_threads
