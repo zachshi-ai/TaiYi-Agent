@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass, field
 
 from taiyi.policy import EvidenceLedger, TaskContract, TaskPolicy
+from taiyi.runtime.protocol import RunPhase
 from taiyi.runtime.state import TaskState
 from taiyi.scheduler import ExecutionPlan, PlanStep
 from taiyi.value_stream.goals import TaskGoal, ValueContribution
@@ -43,10 +44,15 @@ class TaskContext:
     task_id: str
     prompt: str
     scenario: str
+    runtime_mode: str = "workflow"
     session_id: str = "s1"
     user_id: str = "u1"
     channel: str = "cli"
     state: TaskState = TaskState.PENDING
+    phase: RunPhase = RunPhase.READY
+    attempt_id: int = 1
+    checkpoint_revision: int = 0
+    failure_kind: str | None = None
     plan: ExecutionPlan | None = None
     step_results: list[StepResult] = field(default_factory=list)
     final_output: str | None = None
@@ -79,12 +85,24 @@ class TaskContext:
     def executed_steps(self) -> list[StepResult]:
         return [s for s in self.step_results if s.executed]
 
+    @property
+    def settled(self) -> bool:
+        """True only when no continuation, approval, retry, or tool remains."""
+
+        return self.phase.is_settled
+
     def to_dict(self) -> dict:
         return {
             "task_id": self.task_id,
+            "runtime_mode": self.runtime_mode,
             "prompt": self.prompt,
             "scenario": self.scenario,
             "state": self.state.value,
+            "phase": self.phase.value,
+            "settled": self.settled,
+            "attempt_id": self.attempt_id,
+            "checkpoint_revision": self.checkpoint_revision,
+            "failure_kind": self.failure_kind,
             "skill": self.selected_skill or (self.plan.skill_name if self.plan else None),
             "steps": [s.to_dict() for s in self.step_results],
             "final_output": self.final_output,

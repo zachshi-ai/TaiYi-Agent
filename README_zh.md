@@ -12,7 +12,7 @@
 |---|---|
 | **产（生产，留根）** — Agent 本体 | |
 | `src/taiyi/` | **生产代码** — 17 个模块 |
-| `tests/` | 263 个测试，覆盖治理不变量、三模式与可执行 Skill 门禁 |
+| `tests/` | 271 个测试，覆盖治理不变量、三模式、可恢复运行协议与可执行 Skill 门禁 |
 | `web/` | 内置 React Web UI（构建产物在 `web/dist`） |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | 打包 + 配置模板 |
@@ -52,6 +52,20 @@ Agent Runtime 和模型驱动的 Workflow Runtime 会把三种模式分别路由
 [`learning/docs/04_Provider_Routing.md`](./learning/docs/04_Provider_Routing.md)。
 
 质量模式还要求至少一个与任务目标绑定的客观检查器；只有“输出非空”等基础检查时会在执行前拒绝认证。效率模式可以交付低风险未知任务，但会明确标记 `baseline_only`，不冒充目标正确性已得到证明。
+
+### 可恢复运行协议
+
+三种模式共用同一个持久化运行协议。`TaskState` 表示用户看到的结果，独立的
+`RunPhase` 表示 Harness 此刻正在等待模型、等待 permit、运行工具、验证、等待审批、
+恢复还是已经 `SETTLED`。因此工具阶段发生的超时不会被误报成 LLM 超时，
+`NEEDS_REVIEW` 也不会被误当作任务已经完全结束。
+
+配置 `base_dir` 后，每个任务都会写入 fsync 的类型化事件流和原子 checkpoint。
+Workflow 与 ReAct Agent 在等待人工审批时都会保存计划/对话、已执行步骤、冻结合同和
+继续点；进程重启后会恢复审批队列，批准后仍须重新经过 governance permit。
+当前切片不会自动重跑崩溃时处于 `TOOL_RUNNING` 的动作，因为外部副作用可能已经发生；
+这要等 durable job id、幂等策略和执行后 authority 验证完成后才能安全开放。详细设计见
+[`learning/docs/07_Durable_Runtime_Protocol.md`](./learning/docs/07_Durable_Runtime_Protocol.md)。
 
 使用 `executor: sandbox` 时还可启用只读 Git Authority：执行前冻结 HEAD 和仓库本地身份，执行后独立证明出现了新提交，并核对 author/committer。详见 [`learning/docs/06_External_Authority_Checks.md`](./learning/docs/06_External_Authority_Checks.md)。
 
@@ -113,7 +127,7 @@ api_key: sk-...
 ### 运行测试与示例
 
 ```bash
-python -m pytest                            # 263 测试
+python -m pytest                            # 271 测试
 taiyi verify-skills                        # 执行 3 个内置 Skill 的 9 个质量门案例
 python3 research/examples/agent_demo.py     # 演示 ReAct loop + 治理拦截
 python3 research/demo/src/main.py           # Phase 0 demo

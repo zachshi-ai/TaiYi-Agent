@@ -32,6 +32,18 @@ from taiyi.policy import (
 )
 from taiyi.runtime.context import StepResult, TaskContext
 from taiyi.runtime.executor import Executor, MockExecutor
+from taiyi.runtime.persistence import (
+    RunStore,
+    continuation_steps,
+    restore_context,
+    workflow_continuation,
+)
+from taiyi.runtime.protocol import (
+    CheckpointIncompatibleError,
+    FailureKind,
+    RunPhase,
+    classify_exception,
+)
 from taiyi.runtime.quality import prepare_quality_contract
 from taiyi.runtime.state import TaskState
 from taiyi.scheduler import SchedulerEngine
@@ -56,6 +68,7 @@ class TaskRuntime:
         max_rounds: int | None = None,
         default_operating_mode: str | OperatingMode = OperatingMode.BALANCED,
         provider_router: ProviderRouter | None = None,
+        run_store: RunStore | None = None,
     ):
         self.scheduler = scheduler
         self.audit = audit_log
@@ -72,6 +85,7 @@ class TaskRuntime:
         self.provider_router = provider_router
         self.provider = provider_router.default_provider if provider_router else None
         self.completion = CompletionController()
+        self.run_store = run_store or RunStore()
 
     def run(
         self,
@@ -97,6 +111,7 @@ class TaskRuntime:
         )
         ctx = TaskContext(
             task_id=f"t_{int(time.time() * 1000)}_{len(self.audit)}",
+            runtime_mode="workflow",
             prompt=prompt,
             scenario=scenario,
             user_id=user_id,
@@ -119,6 +134,7 @@ class TaskRuntime:
             provider_route=ctx.provider_route,
             contract=contract.to_dict(),
         )
+        self._record(ctx, RunPhase.READY, "run_created")
         if self.memory is not None:
             self.memory.add_message(session_id, "user", prompt)
         if self.value_stream is not None:
@@ -128,7 +144,12 @@ class TaskRuntime:
         if capability_error:
             ctx.error = capability_error
             ctx.final_output = capability_error
-            ctx.touch(TaskState.CAPABILITY_UNAVAILABLE)
+            self._record(
+                ctx,
+                RunPhase.SETTLED,
+                "run_settled",
+                state=TaskState.CAPABILITY_UNAVAILABLE,
+            )
             self.audit.append(
                 "capability_unavailable",
                 task_id=ctx.task_id,
@@ -144,12 +165,10 @@ class TaskRuntime:
 
         try:
             with self._span(trace, "task"):
-                ctx.touch(TaskState.PARSING)
+                self._record(ctx, RunPhase.PARSING, "phase_changed", state=TaskState.PARSING)
                 self._execute_rounds(ctx, trace)
         except Exception as e:  # noqa: BLE001 — convert any failure into a terminal state
-            ctx.error = f"{type(e).__name__}: {e}"
-            ctx.touch(TaskState.FAILED)
-            self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+            self._fail(ctx, e)
 
         self._finish(ctx, start)
         return ctx
@@ -168,7 +187,12 @@ class TaskRuntime:
                 and (ctx.plan.planner_output or "").upper().startswith("QUESTION:")
             ):
                 ctx.final_output = ctx.plan.planner_output
-                ctx.touch(TaskState.NEEDS_INPUT)
+                self._record(
+                    ctx,
+                    RunPhase.WAITING_INPUT,
+                    "input_requested",
+                    state=TaskState.NEEDS_INPUT,
+                )
                 self.audit.append(
                     "task_needs_input",
                     task_id=ctx.task_id,
@@ -202,7 +226,12 @@ class TaskRuntime:
                 ctx.final_output = (
                     f"QUESTION: Please review this validation result: {vr.repair_feedback}"
                 )
-                ctx.touch(TaskState.NEEDS_INPUT)
+                self._record(
+                    ctx,
+                    RunPhase.WAITING_INPUT,
+                    "input_requested",
+                    state=TaskState.NEEDS_INPUT,
+                )
                 self.audit.append(
                     "validation_needs_human", task_id=ctx.task_id,
                     summary=ctx.validation_summary,
@@ -217,12 +246,60 @@ class TaskRuntime:
             )
 
         ctx.error = f"validation failed after {round_limit} round(s): {ctx.validation_summary}"
-        ctx.touch(TaskState.FAILED)
+        ctx.failure_kind = FailureKind.EXTERNAL_FAILURE.value
+        self._record(ctx, RunPhase.SETTLED, "run_settled", state=TaskState.FAILED)
         self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
 
     @staticmethod
     def _span(trace, name: str):
         return trace.span(name) if trace is not None else nullcontext()
+
+    def _record(
+        self,
+        ctx: TaskContext,
+        phase: RunPhase,
+        event: str,
+        *,
+        state: TaskState | None = None,
+        continuation: dict | None = None,
+        **payload,
+    ) -> None:
+        if state is not None:
+            ctx.touch(state)
+        self.run_store.record(ctx, phase, event, continuation=continuation, **payload)
+
+    def _fail(
+        self,
+        ctx: TaskContext,
+        error: BaseException | str,
+        *,
+        kind: FailureKind | None = None,
+    ) -> None:
+        phase = ctx.phase
+        ctx.error = (
+            f"{type(error).__name__}: {error}" if isinstance(error, BaseException) else str(error)
+        )
+        resolved = kind or (
+            FailureKind(ctx.failure_kind)
+            if ctx.failure_kind
+            else classify_exception(error, phase)
+        )
+        ctx.failure_kind = resolved.value
+        self._record(
+            ctx,
+            RunPhase.SETTLED,
+            "run_failed",
+            state=TaskState.FAILED,
+            failed_phase=phase.value,
+            failure_kind=resolved.value,
+        )
+        self.audit.append(
+            "task_failed",
+            task_id=ctx.task_id,
+            error=ctx.error,
+            failed_phase=phase.value,
+            failure_kind=resolved.value,
+        )
 
     def _finish(self, ctx: TaskContext, start: float) -> None:
         if (
@@ -252,7 +329,8 @@ class TaskRuntime:
 
     # --- P -------------------------------------------------------------------
     def _plan(self, ctx: TaskContext) -> None:
-        ctx.touch(TaskState.PLANNING)
+        planning_phase = RunPhase.LLM_WAITING if self.provider_router else RunPhase.PLANNING
+        self._record(ctx, planning_phase, "planning_started", state=TaskState.PLANNING)
         planning_prompt = ctx.prompt
         assert ctx.policy is not None
         trusted_parts = [ctx.policy.system_guidance]
@@ -289,6 +367,7 @@ class TaskRuntime:
                 planned_steps=len(ctx.plan.steps),
                 max_steps=ctx.policy.max_steps,
             )
+            ctx.failure_kind = FailureKind.BUDGET_EXHAUSTED.value
             raise RuntimeError(
                 f"planner proposed {len(ctx.plan.steps)} steps; "
                 f"{ctx.operating_mode} mode permits at most {ctx.policy.max_steps}"
@@ -317,7 +396,14 @@ class TaskRuntime:
         """
         for i in range(start, len(steps)):
             step = steps[i]
-            ctx.touch(TaskState.AWAITING_PERMIT)
+            self._record(
+                ctx,
+                RunPhase.AWAITING_PERMIT,
+                "permit_requested",
+                state=TaskState.AWAITING_PERMIT,
+                step_index=i,
+                tool=step.tool,
+            )
             permit = self.scheduler.request_permit(
                 step, ctx.scenario, user_id=ctx.user_id, task_id=ctx.task_id
             )
@@ -332,15 +418,20 @@ class TaskRuntime:
                 self.obs.governance_verdict.inc(verdict=permit.verdict.value)
 
             if permit.verdict is Verdict.DENY:
-                ctx.touch(TaskState.REJECTED)
                 ctx.final_output = f"rejected by governance: {permit.reason}"
+                self._record(
+                    ctx,
+                    RunPhase.SETTLED,
+                    "run_settled",
+                    state=TaskState.REJECTED,
+                    reason=permit.reason,
+                )
                 self.audit.append(
                     "task_rejected", task_id=ctx.task_id, tool=step.tool, reason=permit.reason
                 )
                 return False
 
             if permit.verdict is Verdict.NEEDS_REVIEW:
-                ctx.touch(TaskState.NEEDS_REVIEW)
                 ctx.approval_id = permit.approval_id
                 ctx.final_output = (
                     f"suspended for human review (approval_id={permit.approval_id}): {permit.reason}"
@@ -349,12 +440,26 @@ class TaskRuntime:
                     "task_needs_review", task_id=ctx.task_id, tool=step.tool,
                     approval_id=permit.approval_id,
                 )
+                continuation = (
+                    workflow_continuation(permit.approval_id, i, steps)
+                    if permit.approval_id
+                    else None
+                )
+                self._record(
+                    ctx,
+                    RunPhase.WAITING_APPROVAL,
+                    "approval_requested",
+                    state=TaskState.NEEDS_REVIEW,
+                    continuation=continuation,
+                    tool=step.tool,
+                )
                 if self.approvals is not None and permit.approval_id:
-                    self.approvals.add(PendingApproval(
+                    pending = PendingApproval(
                         approval_id=permit.approval_id, task_id=ctx.task_id, tool=step.tool,
                         reason=permit.reason, scenario=ctx.scenario, ctx=ctx,
                         held_index=i, steps=list(steps),
-                    ))
+                    )
+                    self.approvals.add(pending)
                 return False
 
             # Governance allowed the step. Run the expert committee as a second,
@@ -364,7 +469,6 @@ class TaskRuntime:
             if permit.verdict is Verdict.NEEDS_REVIEW:
                 sr.verdict = permit.verdict.value
                 sr.reason = permit.reason
-                ctx.touch(TaskState.NEEDS_REVIEW)
                 ctx.approval_id = permit.approval_id
                 ctx.final_output = (
                     f"suspended for human review (approval_id={permit.approval_id}): {permit.reason}"
@@ -373,24 +477,62 @@ class TaskRuntime:
                     "task_needs_review", task_id=ctx.task_id, tool=step.tool,
                     approval_id=permit.approval_id, source="committee",
                 )
+                continuation = (
+                    workflow_continuation(permit.approval_id, i, steps)
+                    if permit.approval_id
+                    else None
+                )
+                self._record(
+                    ctx,
+                    RunPhase.WAITING_APPROVAL,
+                    "approval_requested",
+                    state=TaskState.NEEDS_REVIEW,
+                    continuation=continuation,
+                    tool=step.tool,
+                )
                 if self.approvals is not None and permit.approval_id:
-                    self.approvals.add(PendingApproval(
+                    pending = PendingApproval(
                         approval_id=permit.approval_id, task_id=ctx.task_id, tool=step.tool,
                         reason=permit.reason, scenario=ctx.scenario, ctx=ctx,
                         held_index=i, steps=list(steps),
-                    ))
+                    )
+                    self.approvals.add(pending)
                 return False
 
-            ctx.touch(TaskState.EXECUTING)
+            self._record(
+                ctx,
+                RunPhase.TOOL_RUNNING,
+                "tool_started",
+                state=TaskState.EXECUTING,
+                continuation={
+                    "kind": "tool_operation",
+                    "step_index": i,
+                    "tool": step.tool,
+                    "args": list(step.args),
+                },
+                step_index=i,
+                tool=step.tool,
+            )
             result = self.executor.execute(step)
             sr.executed = True
             sr.output = result.output
             ctx.executed_action_count += 1
+            self._record(
+                ctx,
+                RunPhase.TOOL_RESULT,
+                "tool_finished",
+                state=TaskState.EXECUTING,
+                step_index=i,
+                tool=step.tool,
+                ok=result.ok,
+            )
             self.audit.append("step_executed", task_id=ctx.task_id, tool=step.tool, ok=result.ok)
             if not result.ok:
-                ctx.error = f"step failed: {step.tool}: {result.output}"
-                ctx.touch(TaskState.FAILED)
-                self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+                self._fail(
+                    ctx,
+                    f"step failed: {step.tool}: {result.output}",
+                    kind=FailureKind.TOOL_EXIT_NONZERO,
+                )
                 return False
 
         return True
@@ -429,8 +571,14 @@ class TaskRuntime:
         self.approvals.remove(approval_id)
 
         if not approve:
-            ctx.touch(TaskState.REJECTED)
             ctx.final_output = f"rejected by human reviewer (approval_id={approval_id})"
+            self._record(
+                ctx,
+                RunPhase.SETTLED,
+                "run_settled",
+                state=TaskState.REJECTED,
+                approval_id=approval_id,
+            )
             self.audit.append("human_rejected", task_id=ctx.task_id, approval_id=approval_id)
             return ctx
 
@@ -441,6 +589,13 @@ class TaskRuntime:
         # not merely a review), the step is refused. This closes the one place
         # where an execute previously had no preceding permit.
         self.audit.append("human_approved", task_id=ctx.task_id, approval_id=approval_id)
+        self._record(
+            ctx,
+            RunPhase.RECOVERING,
+            "approval_resolved",
+            state=TaskState.AWAITING_PERMIT,
+            approval_id=approval_id,
+        )
         held_step = pending.steps[pending.held_index]
         held_sr = ctx.step_results[-1]
         repermit = self.scheduler.request_permit(
@@ -454,26 +609,56 @@ class TaskRuntime:
             held_sr.verdict = "DENY(human-resubmit)"
             held_sr.reason = repermit.reason
             held_sr.matched_rule_id = repermit.matched_rule_id
-            ctx.touch(TaskState.REJECTED)
             ctx.final_output = (
                 f"human approved, but governance now denies {held_step.tool!r} "
                 f"({repermit.reason}); step not executed"
+            )
+            self._record(
+                ctx,
+                RunPhase.SETTLED,
+                "run_settled",
+                state=TaskState.REJECTED,
+                reason=repermit.reason,
             )
             self.audit.append("task_rejected", task_id=ctx.task_id, tool=held_step.tool,
                               reason=repermit.reason)
             return ctx
 
-        ctx.touch(TaskState.EXECUTING)
+        self._record(
+            ctx,
+            RunPhase.TOOL_RUNNING,
+            "tool_started",
+            state=TaskState.EXECUTING,
+            continuation={
+                "kind": "tool_operation",
+                "step_index": pending.held_index,
+                "tool": held_step.tool,
+                "args": list(held_step.args),
+                "approved_by": "human",
+            },
+            tool=held_step.tool,
+        )
         result = self.executor.execute(held_step)
         held_sr.verdict = "ALLOW(human)"
         held_sr.executed = True
         held_sr.output = result.output
         ctx.executed_action_count += 1
+        self._record(
+            ctx,
+            RunPhase.TOOL_RESULT,
+            "tool_finished",
+            state=TaskState.EXECUTING,
+            tool=held_step.tool,
+            ok=result.ok,
+        )
         self.audit.append("step_executed", task_id=ctx.task_id, tool=held_step.tool, ok=result.ok,
                           approved_by="human")
         if not result.ok:
-            ctx.error = f"step failed: {held_step.tool}: {result.output}"
-            ctx.touch(TaskState.FAILED)
+            self._fail(
+                ctx,
+                f"step failed: {held_step.tool}: {result.output}",
+                kind=FailureKind.TOOL_EXIT_NONZERO,
+            )
             return ctx
 
         if not self._execute_steps(ctx, pending.steps, pending.held_index + 1):
@@ -493,13 +678,100 @@ class TaskRuntime:
             ctx.final_output = (
                 f"QUESTION: Please review this validation result: {vr.repair_feedback}"
             )
-            ctx.touch(TaskState.NEEDS_INPUT)
+            self._record(
+                ctx,
+                RunPhase.WAITING_INPUT,
+                "input_requested",
+                state=TaskState.NEEDS_INPUT,
+            )
         else:
             ctx.validation_attempts += 1
             ctx.validation_summary = vr.repair_feedback
             ctx.error = f"validation failed after resume: {vr.repair_feedback}"
-            ctx.touch(TaskState.FAILED)
+            ctx.failure_kind = FailureKind.EXTERNAL_FAILURE.value
+            self._record(ctx, RunPhase.SETTLED, "run_settled", state=TaskState.FAILED)
         return ctx
+
+    def recover_pending(self) -> int:
+        """Rehydrate workflow approvals persisted before a process restart."""
+
+        if self.approvals is None:
+            return 0
+        recovered = 0
+        for checkpoint in self.run_store.iter_checkpoints():
+            snapshot = checkpoint.get("context") or {}
+            if checkpoint.get("_load_error"):
+                self.audit.append(
+                    "run_recovery_failed",
+                    task_id=snapshot.get("task_id"),
+                    error=checkpoint["_load_error"],
+                )
+                continue
+            continuation = checkpoint.get("continuation") or {}
+            if snapshot.get("runtime_mode") != "workflow":
+                continue
+            if snapshot.get("phase") != RunPhase.WAITING_APPROVAL.value:
+                continue
+            if continuation.get("kind") != "workflow_approval":
+                continue
+            approval_id = str(continuation.get("approval_id", ""))
+            if not approval_id or self.approvals.get(approval_id) is not None:
+                continue
+            try:
+                ctx = restore_context(
+                    snapshot,
+                    validator=self.validator,
+                    value_stream=self.value_stream,
+                )
+                steps = continuation_steps(continuation)
+                held_index = int(continuation["held_index"])
+                held = steps[held_index]
+                if ctx.approval_id != approval_id:
+                    raise CheckpointIncompatibleError("approval id differs from checkpoint context")
+                if ctx.plan is None or ctx.plan.steps != steps:
+                    raise CheckpointIncompatibleError("continuation plan differs from frozen plan")
+                if ctx.step_results[held_index].step != held:
+                    raise CheckpointIncompatibleError("held step differs from checkpoint context")
+            except (
+                CheckpointIncompatibleError,
+                KeyError,
+                IndexError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                self.audit.append(
+                    "run_recovery_failed",
+                    task_id=snapshot.get("task_id"),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                continue
+            previous_attempt = ctx.attempt_id
+            ctx.attempt_id += 1
+            reason = (
+                ctx.step_results[-1].reason
+                if ctx.step_results
+                else "restored pending approval"
+            )
+            self.approvals.add(PendingApproval(
+                approval_id=approval_id,
+                task_id=ctx.task_id,
+                tool=held.tool,
+                reason=reason,
+                scenario=ctx.scenario,
+                ctx=ctx,
+                held_index=held_index,
+                steps=steps,
+            ))
+            self._record(
+                ctx,
+                RunPhase.WAITING_APPROVAL,
+                "run_recovered",
+                state=TaskState.NEEDS_REVIEW,
+                continuation=continuation,
+                previous_attempt=previous_attempt,
+            )
+            recovered += 1
+        return recovered
 
     # --- C -------------------------------------------------------------------
     def _validate(self, ctx: TaskContext):
@@ -507,7 +779,7 @@ class TaskRuntime:
             return None
         if ctx.validation_checklist is None:
             raise RuntimeError("validator configured without a frozen validation checklist")
-        ctx.touch(TaskState.VALIDATING)
+        self._record(ctx, RunPhase.VALIDATING, "validation_started", state=TaskState.VALIDATING)
         vctx = ValidationContext(
             prompt=ctx.prompt,
             scenario=ctx.scenario,
@@ -561,7 +833,7 @@ class TaskRuntime:
             execution_environment=ctx.execution_environment,
             executed_actions=ctx.executed_action_count,
         )
-        ctx.touch(state)
+        self._record(ctx, RunPhase.SETTLED, "run_settled", state=state)
         payload = {
             "task_id": ctx.task_id,
             "steps": len(ctx.executed_steps),
