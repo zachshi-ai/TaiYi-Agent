@@ -14,6 +14,15 @@ auth_tokens: []
 #   sandbox — real shell/file execution inside sandbox_dir (governed + credential-isolated)
 executor: mock
 sandbox_dir: ./state/sandbox
+# Shell tools run under a persistent supervisor rather than the gateway request.
+# The hard deadline prevents a truly stuck command from running forever. The
+# idle deadline is optional because long builds can legitimately be quiet.
+tool_hard_timeout: 1800
+tool_idle_timeout: null
+job_heartbeat_interval: 1
+# Only this many bytes are returned to the model; full stdout/stderr remain in
+# base_dir/jobs/<job_id>/ as artifacts for inspection and independent validation.
+tool_output_limit: 16384
 # When executor=sandbox, independently inspect Git HEAD and repository-local
 # identity after Git tasks. This verifier is read-only and does not trust the
 # executor's success text.

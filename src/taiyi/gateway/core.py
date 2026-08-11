@@ -260,7 +260,16 @@ def build_gateway_from_config(config) -> Gateway:
         from taiyi.validation import GitAuthority, GitHubAuthority, GitRemoteAuthority
 
         sandbox = config.sandbox_dir or (str(Path(config.base_dir or ".") / "sandbox"))
-        executor = SandboxExecutor(sandbox, backend=config.sandbox_backend)
+        job_dir = str(Path(config.base_dir) / "jobs") if config.base_dir else None
+        executor = SandboxExecutor(
+            sandbox,
+            backend=config.sandbox_backend,
+            hard_timeout=config.tool_hard_timeout,
+            idle_timeout=config.tool_idle_timeout,
+            heartbeat_interval=config.job_heartbeat_interval,
+            job_dir=job_dir,
+            output_limit=config.tool_output_limit,
+        )
         authorities = []
         if config.external_git_validation:
             authorities.append(GitAuthority(sandbox))

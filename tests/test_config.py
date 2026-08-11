@@ -69,6 +69,10 @@ def test_operating_mode_env_override(tmp_path, monkeypatch):
     monkeypatch.setenv("TAIYI_EXTERNAL_GIT_REMOTE_VALIDATION", "true")
     monkeypatch.setenv("TAIYI_EXTERNAL_GITHUB_VALIDATION", "true")
     monkeypatch.setenv("TAIYI_GITHUB_EXPECTED_LOGIN", "zachshi-ai")
+    monkeypatch.setenv("TAIYI_TOOL_HARD_TIMEOUT", "900")
+    monkeypatch.setenv("TAIYI_TOOL_IDLE_TIMEOUT", "45")
+    monkeypatch.setenv("TAIYI_JOB_HEARTBEAT_INTERVAL", "0.5")
+    monkeypatch.setenv("TAIYI_TOOL_OUTPUT_LIMIT", "8192")
     cfg = load_config(p)
     assert cfg.runtime_mode == "agent"
     assert cfg.operating_mode == "efficiency"
@@ -78,6 +82,10 @@ def test_operating_mode_env_override(tmp_path, monkeypatch):
     assert cfg.external_git_remote_validation is True
     assert cfg.external_github_validation is True
     assert cfg.github_expected_login == "zachshi-ai"
+    assert cfg.tool_hard_timeout == 900
+    assert cfg.tool_idle_timeout == 45
+    assert cfg.job_heartbeat_interval == 0.5
+    assert cfg.tool_output_limit == 8192
 
 
 def test_configured_mode_models_build_explicit_routes_with_default_fallback():
@@ -126,6 +134,25 @@ def test_build_gateway_from_config_runs(tmp_path):
     gw = build_gateway_from_config(load_config(p))
     ctx = gw.submit("commit my changes")
     assert ctx.state is TaskState.SIMULATED
+
+
+def test_sandbox_job_settings_are_wired_from_config(tmp_path):
+    cfg = TaiyiConfig(
+        base_dir=str(tmp_path / "state"),
+        executor="sandbox",
+        tool_hard_timeout=321,
+        tool_idle_timeout=17,
+        job_heartbeat_interval=0.25,
+        tool_output_limit=4096,
+    )
+    gw = build_gateway_from_config(cfg)
+    executor = gw.runtime.executor
+
+    assert executor.hard_timeout == 321
+    assert executor.idle_timeout == 17
+    assert executor.heartbeat_interval == 0.25
+    assert executor.output_limit == 4096
+    assert executor.jobs.root == (tmp_path / "state" / "jobs").resolve()
 
 
 def test_gateway_honors_extra_rules_dir(tmp_path):

@@ -27,10 +27,11 @@ import os
 import platform
 import shlex
 import shutil
-import subprocess
+import uuid
 from pathlib import Path
 
 from taiyi.runtime.executor import ExecResult
+from taiyi.runtime.jobs import JobHandle, JobRecord, JobStatus, JobStore
 from taiyi.scheduler.planner import PlanStep
 from taiyi.tools.credentials import safe_environment
 from taiyi.tools.ssrf import SSRFError, SSRFGuard
@@ -47,14 +48,29 @@ class SandboxExecutor:
         *,
         ssrf_guard: SSRFGuard | None = None,
         env_allow: tuple[str, ...] = (),
-        timeout: float = 30.0,
+        timeout: float | None = None,
+        hard_timeout: float = 1800.0,
+        idle_timeout: float | None = None,
+        heartbeat_interval: float = 1.0,
+        job_dir: str | Path | None = None,
+        output_limit: int = 16_384,
         backend: str = "local",
     ):
         self.sandbox = Path(sandbox).resolve()
         self.sandbox.mkdir(parents=True, exist_ok=True)
         self.ssrf = ssrf_guard or SSRFGuard()
         self.env_allow = env_allow
-        self.timeout = timeout
+        self.hard_timeout = timeout if timeout is not None else hard_timeout
+        self.idle_timeout = idle_timeout
+        if self.hard_timeout is not None and self.hard_timeout <= 0:
+            raise ValueError("hard_timeout must be positive")
+        if self.idle_timeout is not None and self.idle_timeout <= 0:
+            raise ValueError("idle_timeout must be positive")
+        self.heartbeat_interval = max(0.05, heartbeat_interval)
+        self.output_limit = max(256, output_limit)
+        self.timeout = self.hard_timeout  # backward-compatible public attribute
+        default_job_dir = self.sandbox.parent / f".{self.sandbox.name}.taiyi-jobs"
+        self.jobs = JobStore(job_dir or default_job_dir)
         # sandbox_exec only works on macOS and only if the binary exists; degrade
         # gracefully elsewhere so the same code runs on Linux CI.
         self.backend = self._resolve_backend(backend)
@@ -70,7 +86,8 @@ class SandboxExecutor:
         tool = step.tool
         try:
             if tool.startswith("shell:"):
-                return self._run_shell(tool[len("shell:"):], step.args)
+                handle = self.start(step, operation_id=f"adhoc:{uuid.uuid4().hex}")
+                return self.wait(handle.job_id)
             if tool.startswith("file:read"):
                 return self._read_file(step.args)
             if tool.startswith("file:write"):
@@ -83,48 +100,77 @@ class SandboxExecutor:
             return ExecResult(f"executor error: {type(e).__name__}: {e}", ok=False)
 
     # --- shell ---------------------------------------------------------------
-    def _run_shell(self, command: str, args: list[str]) -> ExecResult:
-        argv = shlex.split(command) + list(args)
-        if not argv:
-            return ExecResult("empty command", ok=False)
-        env = safe_environment(self.env_allow)
-        env.setdefault("GIT_TERMINAL_PROMPT", "0")  # never block on a prompt
-        if self.backend == "sandbox_exec":
-            return self._run_shell_sandboxed(argv, env)
-        return self._run_shell_local(argv, env)
+    def supports_jobs(self, step: PlanStep) -> bool:
+        return step.tool.startswith("shell:")
 
-    def _run_shell_local(self, argv: list[str], env: dict) -> ExecResult:
-        proc = subprocess.run(
+    def start(self, step: PlanStep, *, operation_id: str) -> JobHandle:
+        if not self.supports_jobs(step):
+            raise ValueError(f"tool does not support durable jobs: {step.tool}")
+        argv, env = self._shell_argv(step.tool[len("shell:"):], step.args)
+        return self.jobs.start(
             argv,
             cwd=self.sandbox,
             env=env,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout,
+            operation_id=operation_id,
+            tool=step.tool,
+            hard_timeout=self.hard_timeout,
+            idle_timeout=self.idle_timeout,
+            heartbeat_interval=self.heartbeat_interval,
         )
-        out = (proc.stdout + proc.stderr).strip()
-        return ExecResult(out or f"[exit {proc.returncode}]", ok=proc.returncode == 0)
 
-    def _run_shell_sandboxed(self, argv: list[str], env: dict) -> ExecResult:
-        """Run argv under a macOS sandbox-exec deny-all profile.
+    def poll(self, job_id: str) -> JobRecord:
+        return self.jobs.poll(job_id)
 
-        The profile allows: writing only inside the sandbox dir, reading system
-        binaries/libs + the sandbox dir + TMPDIR, and denies all network. The
-        command itself is exec'd inside the sandbox, so a write outside it is
-        refused by the kernel — not by a denylist we hope is complete.
-        """
-        profile = self._build_profile()
-        sandbox_argv = ["sandbox-exec", "-p", profile, "--", *argv]
-        proc = subprocess.run(
-            sandbox_argv,
-            cwd=self.sandbox,
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=self.timeout,
+    def cancel(self, job_id: str) -> JobRecord:
+        return self.jobs.cancel(job_id)
+
+    def wait(self, job_id: str) -> ExecResult:
+        record = self.jobs.wait(job_id)
+        output, truncated = self.jobs.output_tail(job_id, max_bytes=self.output_limit)
+        stdout_path, stderr_path = self.jobs.output_paths(job_id)
+        if not output:
+            output = self._empty_output(record)
+        duration = None
+        if record.started_at is not None and record.finished_at is not None:
+            duration = max(0.0, record.finished_at - record.started_at)
+        return ExecResult(
+            output=output,
+            ok=record.status is JobStatus.SUCCEEDED,
+            operation_id=record.operation_id,
+            job_id=record.job_id,
+            exit_code=record.returncode,
+            signal=record.signal,
+            failure_kind=record.failure_kind,
+            timeout_kind=record.timeout_kind,
+            stdout_artifact=str(stdout_path),
+            stderr_artifact=str(stderr_path),
+            output_truncated=truncated,
+            duration_seconds=duration,
+            error=record.error,
         )
-        out = (proc.stdout + proc.stderr).strip()
-        return ExecResult(out or f"[exit {proc.returncode}]", ok=proc.returncode == 0)
+
+    def _shell_argv(self, command: str, args: list[str]) -> tuple[list[str], dict[str, str]]:
+        argv = shlex.split(command) + list(args)
+        if not argv:
+            raise ValueError("empty command")
+        env = safe_environment(self.env_allow)
+        env.setdefault("GIT_TERMINAL_PROMPT", "0")  # never block on a prompt
+        env["PWD"] = str(self.sandbox)
+        if self.backend == "sandbox_exec":
+            argv = ["sandbox-exec", "-p", self._build_profile(), "--", *argv]
+        return argv, env
+
+    @staticmethod
+    def _empty_output(record: JobRecord) -> str:
+        if record.status is JobStatus.SUCCEEDED:
+            return "[exit 0]"
+        if record.timeout_kind:
+            return f"[{record.timeout_kind} timeout]"
+        if record.signal is not None:
+            return f"[signal {record.signal}]"
+        if record.returncode is not None:
+            return f"[exit {record.returncode}]"
+        return record.error or f"[{record.status.value.lower()}]"
 
     def _build_profile(self) -> str:
         """A deny-all sandbox profile: whitelist sandbox writes + system reads, no net.

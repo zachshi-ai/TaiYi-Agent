@@ -12,7 +12,7 @@
 |---|---|
 | **产（生产，留根）** — Agent 本体 | |
 | `src/taiyi/` | **生产代码** — 17 个模块 |
-| `tests/` | 271 个测试，覆盖治理不变量、三模式、可恢复运行协议与可执行 Skill 门禁 |
+| `tests/` | 287 个测试，覆盖治理不变量、三模式、持久任务/可恢复运行协议与可执行 Skill 门禁 |
 | `web/` | 内置 React Web UI（构建产物在 `web/dist`） |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | 打包 + 配置模板 |
@@ -63,8 +63,13 @@ Agent Runtime 和模型驱动的 Workflow Runtime 会把三种模式分别路由
 配置 `base_dir` 后，每个任务都会写入 fsync 的类型化事件流和原子 checkpoint。
 Workflow 与 ReAct Agent 在等待人工审批时都会保存计划/对话、已执行步骤、冻结合同和
 继续点；进程重启后会恢复审批队列，批准后仍须重新经过 governance permit。
-当前切片不会自动重跑崩溃时处于 `TOOL_RUNNING` 的动作，因为外部副作用可能已经发生；
-这要等 durable job id、幂等策略和执行后 authority 验证完成后才能安全开放。详细设计见
+
+Sandbox 的 shell 工具现在由独立持久 supervisor 执行，不再受一次 30 秒阻塞调用限制。
+每次操作会在启动前获得稳定 operation id；重复 id 只会重连同一个 job，不会重放副作用。
+心跳、进程组取消、空闲/硬超时、精确退出码或信号、完整 stdout/stderr artifact 共同让
+长命令可观察，同时只把有上限的输出尾部送进模型上下文。新 executor 已可重连运行中的
+job；但网关重启后自动续接整个 Agent 循环、异步客户端轮询/流式接口和 LLM 分阶段超时
+仍是下一阶段。太一不会自动重跑结果不确定的外部副作用。详细设计见
 [`learning/docs/07_Durable_Runtime_Protocol.md`](./learning/docs/07_Durable_Runtime_Protocol.md)。
 
 使用 `executor: sandbox` 时还可启用只读 Git Authority：执行前冻结 HEAD 和仓库本地身份，执行后独立证明出现了新提交，并核对 author/committer。详见 [`learning/docs/06_External_Authority_Checks.md`](./learning/docs/06_External_Authority_Checks.md)。
