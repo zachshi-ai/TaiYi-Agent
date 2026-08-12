@@ -57,6 +57,8 @@ def test_workflow_approval_survives_process_restart(tmp_path):
         "sql:query",
         "notify:feishu",
     ]
+    assert second.runtime.run_store.acquire_task_lease(held.task_id, blocking=False)
+    second.runtime.run_store.release_task_lease(held.task_id)
 
     third = build_gateway(base_dir=tmp_path, mode="workflow")
     assert third.approvals.get(approval_id) is None
@@ -84,6 +86,8 @@ def test_agent_approval_restores_react_conversation_after_restart(tmp_path):
     assert resumed.state is TaskState.SIMULATED
     assert resumed.settled
     assert [result.step.tool for result in resumed.executed_steps] == ["shell:git push"]
+    assert second.runtime.run_store.acquire_task_lease(held.task_id, blocking=False)
+    second.runtime.run_store.release_task_lease(held.task_id)
 
 
 def test_stale_approval_from_another_gateway_cannot_replay_resolved_step(tmp_path):

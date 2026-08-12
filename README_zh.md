@@ -12,7 +12,7 @@
 |---|---|
 | **产（生产，留根）** — Agent 本体 | |
 | `src/taiyi/` | **生产代码** — 可靠运行、上下文、治理、执行与验证模块 |
-| `tests/` | 326 个测试，覆盖治理不变量、三模式、持久任务/恢复、仓库上下文、LLM 故障与可执行 Skill 门禁 |
+| `tests/` | 349 个测试，覆盖治理不变量、三模式、持久任务/副作用恢复、仓库上下文、LLM 故障与可执行 Skill 门禁 |
 | `web/` | 内置 React Web UI（构建产物在 `web/dist`） |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | 打包 + 配置模板 |
@@ -72,6 +72,21 @@ job；重启后的网关会先取得任务级 lease，再重连原 operation，�
 ReAct 对话，并从精确的下一步继续。`POST /v1/tasks` 支持 `async=true`，客户端可以查询任务
 状态、类型化事件、job 心跳并取消，不必一直占用原 HTTP 请求。太一不会自动重跑结果不确定的非持久外部副作用。详细设计见
 [`learning/docs/07_Durable_Runtime_Protocol.md`](./learning/docs/07_Durable_Runtime_Protocol.md)。
+
+### 副作用恢复协议
+
+Workflow 与 Agent Runtime 在派发任何受治理工具前，都会先把 Effect Record 写入
+checkpoint：冻结逻辑 operation、参数摘要、由 Harness 决定的副作用等级与重放策略、稳定
+idempotency key，以及可用的独立观察 Authority。Connector 的自报文字不能把自己声明成安全
+或幂等。
+
+发生超时、取消、Connector 异常或进程退出后，Harness 会区分 `APPLIED`、`NOT_APPLIED` 和
+`UNKNOWN`：独立证明已发生时只继续一次；证明未发生时才允许在冻结策略和模式预算内使用同一
+key 有界重放；无法判断时进入 `WAITING_INPUT`，步骤不标记为已执行。人工可以选择 `applied`、
+`not_applied` 或 `abandon`，但必须提交审计说明，而且这与执行前 approval 是两个不同决策。
+任意 shell、SQL、HTTP 和不可逆动作默认 `NEVER` 重放。三种模式只能改变恢复次数，不能改变
+真值边界。详见
+[`learning/docs/10_Side_Effect_Recovery_Protocol.md`](./learning/docs/10_Side_Effect_Recovery_Protocol.md)。
 
 LLM 请求使用独立的可靠性协议。OpenAI 兼容响应以流式方式读取，并分别约束连接、首 token、
 流空闲和单次硬截止。429、5xx、网络和阶段超时可以在模式预算内重试或切换 provider；鉴权失败和
@@ -154,7 +169,7 @@ api_key: sk-...
 ### 运行测试与示例
 
 ```bash
-python -m pytest                            # 326 测试
+python -m pytest                            # 349 测试
 taiyi verify-skills                        # 执行 3 个内置 Skill 的 9 个质量门案例
 python3 research/examples/agent_demo.py     # 演示 ReAct loop + 治理拦截
 python3 research/demo/src/main.py           # Phase 0 demo

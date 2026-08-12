@@ -16,6 +16,7 @@ interface TaskResult {
   scenario: string;
   final_output: string | null;
   approval_id: string | null;
+  failure_kind?: string | null;
   operating_mode: "quality" | "balanced" | "efficiency";
   execution_environment: "mock" | "workspace" | "custom" | "unknown";
   policy?: { verification_depth?: string; max_validation_rounds?: number };
@@ -51,6 +52,20 @@ interface TaskResult {
       configuration_digest: string;
     }[];
   };
+  effects?: {
+    operation_id: string;
+    side_effect_class: string;
+    replay_policy: string;
+    status: string;
+    authority?: string | null;
+    idempotency_key: string;
+    human_resolution?: string | null;
+    observations?: {
+      status: string;
+      authority: string;
+      evidence: string;
+    }[];
+  }[];
   steps: Step[];
 }
 interface Session {
@@ -70,6 +85,8 @@ export default function Chat() {
   const [lastResult, setLastResult] = useState<TaskResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [effectNote, setEffectNote] = useState("");
+  const [resolvingEffect, setResolvingEffect] = useState(false);
 
   const loadSessions = async () => {
     try {
@@ -135,6 +152,29 @@ export default function Chat() {
     setSessionId(id);
     setNewSession("");
     setMessages([]);
+  };
+
+  const resolveEffect = async (resolution: "applied" | "not_applied" | "abandon") => {
+    if (!lastResult || !effectNote.trim()) return;
+    setResolvingEffect(true);
+    setError("");
+    try {
+      const resolved: TaskResult = await api.resolveEffect(
+        lastResult.task_id,
+        resolution,
+        effectNote.trim(),
+      );
+      setLastResult(resolved);
+      setEffectNote("");
+      if (["COMPLETED", "SIMULATED", "FAILED", "REJECTED"].includes(resolved.state)
+          && resolved.final_output) {
+        setMessages((m) => [...m, { role: "assistant", content: resolved.final_output! }]);
+      }
+    } catch (e: any) {
+      setError(e.message || String(e));
+    } finally {
+      setResolvingEffect(false);
+    }
   };
 
   const contractStatus = lastResult ? acceptanceStatus(lastResult) : null;
@@ -206,6 +246,45 @@ export default function Chat() {
           {lastResult.state === "SIMULATED" && (
             <div className="notice" style={{ marginTop: 10 }}>
               本次只完成了无副作用模拟：治理与验收链路已通过，但没有向真实系统交付任何动作。
+            </div>
+          )}
+          {lastResult.state === "NEEDS_INPUT"
+            && lastResult.failure_kind === "EFFECT_OUTCOME_UNKNOWN" && (
+            <div className="notice" style={{ marginTop: 10 }}>
+              <strong>外部副作用结果未知，系统已停止自动执行。</strong>
+              <p className="muted">
+                请先在目标系统中核对回执。选择“未发生”也不会覆盖 NEVER 重放策略；
+                只有冻结策略允许时才会重新执行。
+              </p>
+              {lastResult.effects?.filter((effect) => effect.status === "AMBIGUOUS").map((effect) => (
+                <div key={effect.operation_id} className="mono muted" style={{ marginBottom: 8 }}>
+                  {effect.operation_id} · {effect.side_effect_class} · {effect.replay_policy}
+                  {effect.observations?.at(-1)?.evidence
+                    ? ` · ${effect.observations.at(-1)?.evidence}`
+                    : ""}
+                </div>
+              ))}
+              <textarea
+                placeholder="必填：外部回执、查询结果或人工判断依据"
+                value={effectNote}
+                onChange={(e) => setEffectNote(e.target.value)}
+              />
+              <div className="row" style={{ marginTop: 8 }}>
+                <button
+                  onClick={() => resolveEffect("applied")}
+                  disabled={resolvingEffect || !effectNote.trim()}
+                >已发生，继续</button>
+                <button
+                  className="secondary"
+                  onClick={() => resolveEffect("not_applied")}
+                  disabled={resolvingEffect || !effectNote.trim()}
+                >确认未发生</button>
+                <button
+                  className="danger"
+                  onClick={() => resolveEffect("abandon")}
+                  disabled={resolvingEffect || !effectNote.trim()}
+                >放弃本任务</button>
+              </div>
             </div>
           )}
           {lastResult.steps && lastResult.steps.length > 0 && (

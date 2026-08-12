@@ -20,7 +20,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
 | `src/taiyi/` | **Production code** — reliable runtime, context, governance, execution, and validation modules |
-| `tests/` | 326 tests covering governance, operating modes, durable jobs/recovery, repository context, LLM faults, and executable Skill gates |
+| `tests/` | 349 tests covering governance, operating modes, durable jobs/effect recovery, repository context, LLM faults, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -122,6 +122,24 @@ supports `async=true`; task status, typed events, job heartbeats, and cancellati
 are available without holding one HTTP request open. TaiYi still never auto-reruns
 an ambiguous non-durable external effect. See
 [`learning/docs/07_Durable_Runtime_Protocol.md`](./learning/docs/07_Durable_Runtime_Protocol.md).
+
+### Side-effect recovery protocol
+
+Before either runtime dispatches a governed tool, TaiYi now checkpoints a frozen
+Effect Record: the logical operation and argument digest, a harness-owned effect
+class, replay policy, stable idempotency key, and any independent observation
+authority. Connector text never gets to declare itself safe or idempotent.
+
+After a timeout, cancellation, connector exception, or process exit, the harness
+distinguishes `APPLIED`, `NOT_APPLIED`, and `UNKNOWN`. An independently observed
+application continues exactly once; proven non-application permits only a bounded
+policy-authorized replay with the same key; unknown state enters `WAITING_INPUT`
+without marking the step executed. Human `applied`, `not_applied`, and `abandon`
+resolutions require an audit note and are separate from pre-execution approval.
+Arbitrary shell/SQL/HTTP and irreversible operations default to `NEVER` replay.
+Quality, balanced, and efficiency change only recovery budgets, never this truth
+boundary. See
+[`learning/docs/10_Side_Effect_Recovery_Protocol.md`](./learning/docs/10_Side_Effect_Recovery_Protocol.md).
 
 Model requests use a separate resilience protocol. OpenAI-compatible responses
 are streamed under distinct connect, first-token, stream-idle, and hard

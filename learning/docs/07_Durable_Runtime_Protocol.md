@@ -164,8 +164,8 @@ class, idempotency contract, and authority-specific post-crash verification.
 
 ## Next milestones
 
-1. Add side-effect classes, idempotency policies, and post-crash
-   external verification before any retry.
+1. Add connector-specific effect authorities and compensation protocols on top
+   of the delivered generic effect ledger.
 2. Add SSE progress streaming on top of the persisted event cursor.
 3. Move the now-delivered synchronous repository refresh onto the durable job
    scheduler for very large monorepos.
@@ -176,3 +176,8 @@ Structured compaction, Git-HEAD/content-addressed repository snapshots, bounded
 hierarchical retrieval, exact prompt freezing, and context-overflow recovery are
 now delivered in Phase 5. See
 [`09_Large_Repository_Context_Protocol.md`](./09_Large_Repository_Context_Protocol.md).
+
+Phase 6 adds a frozen effect ledger, harness-owned side-effect classes, stable
+idempotency keys, independent applied/not-applied/unknown observations, bounded
+safe replay, and three-state human resolution. See
+[`10_Side_Effect_Recovery_Protocol.md`](./10_Side_Effect_Recovery_Protocol.md).

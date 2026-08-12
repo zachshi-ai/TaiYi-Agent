@@ -74,6 +74,7 @@ class TaskPolicy:
     repository_context_chunks: int
     context_keep_recent_tokens: int
     max_context_recovery_attempts: int
+    max_effect_recovery_attempts: int
     completion_rule: str
 
     @property
@@ -131,6 +132,7 @@ class TaskPolicy:
             "repository_context_chunks": self.repository_context_chunks,
             "context_keep_recent_tokens": self.context_keep_recent_tokens,
             "max_context_recovery_attempts": self.max_context_recovery_attempts,
+            "max_effect_recovery_attempts": self.max_effect_recovery_attempts,
             "completion_rule": self.completion_rule,
         }
 
@@ -155,6 +157,7 @@ _PROFILES: dict[OperatingMode, TaskPolicy] = {
         repository_context_chunks=24,
         context_keep_recent_tokens=24_000,
         max_context_recovery_attempts=2,
+        max_effect_recovery_attempts=2,
         completion_rule="every required acceptance criterion has passing evidence",
     ),
     OperatingMode.BALANCED: TaskPolicy(
@@ -176,6 +179,7 @@ _PROFILES: dict[OperatingMode, TaskPolicy] = {
         repository_context_chunks=12,
         context_keep_recent_tokens=12_000,
         max_context_recovery_attempts=1,
+        max_effect_recovery_attempts=1,
         completion_rule="critical criteria pass and material gaps are resolved",
     ),
     OperatingMode.EFFICIENCY: TaskPolicy(
@@ -197,6 +201,7 @@ _PROFILES: dict[OperatingMode, TaskPolicy] = {
         repository_context_chunks=6,
         context_keep_recent_tokens=8_000,
         max_context_recovery_attempts=1,
+        max_effect_recovery_attempts=1,
         completion_rule="a usable deliverable exists and every critical criterion passes",
     ),
 }

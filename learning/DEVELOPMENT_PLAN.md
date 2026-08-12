@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 3 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 6 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 5 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 6 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -475,11 +475,21 @@ the interrupted repository evidence and fault injection proves one prior tool
 effect after compaction recovery. See
 `learning/docs/09_Large_Repository_Context_Protocol.md`.
 
-**Remaining before M18 is complete.** Side-effect classes; idempotent or
-authority-verified external retry; SSE event streaming; durable/background index
-maintenance for very large monorepos; provider-specific tokenizers; and the
-controlled real-provider/OpenClaw/ZCode network/context/huge-output benchmark.
-An ambiguous side effect is never auto-rerun before those controls exist. See
+**Delivered in Phase 6.** Every governed tool dispatch now freezes an Effect
+Record before execution: operation/argument digest, harness-owned side-effect
+class, replay policy, idempotency key, authority snapshot, attempts, and
+observations. Fixed file writes demonstrate the complete protocol across direct
+timeouts and process restart: independently observed application continues once,
+proven non-application permits bounded same-key replay, and unknown outcomes
+suspend for auditable three-state human resolution. `NEVER` cannot be overridden
+into a replay. See `learning/docs/10_Side_Effect_Recovery_Protocol.md`.
+
+**Remaining before M18 is complete.** Connector-specific refund/notification
+authorities and compensation; SSE event streaming; durable/background index
+maintenance for very large monorepos; provider-specific tokenizers; distributed
+leases; and the controlled real-provider/OpenClaw/ZCode
+network/context/huge-output/duplicate-effect benchmark. Ambiguous effects remain
+human-owned until those connector proofs exist. See
 `learning/docs/07_Durable_Runtime_Protocol.md`. **Depends on.** M3–M6, M17.
 
 ### M16 — Iterative agent loop ✅ Done

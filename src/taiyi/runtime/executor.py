@@ -7,8 +7,8 @@ state machine can be exercised end-to-end at zero cost and zero risk.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Callable, Protocol, runtime_checkable
+from dataclasses import asdict, dataclass
+from typing import Any, Callable, Protocol, runtime_checkable
 
 from taiyi.runtime.jobs import JobHandle, JobRecord
 from taiyi.scheduler import PlanStep
@@ -29,6 +29,17 @@ class ExecResult:
     output_truncated: bool = False
     duration_seconds: float | None = None
     error: str | None = None
+    effect_status: str | None = None
+    effect_evidence: str | None = None
+    original_failure_kind: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, value: dict[str, Any]) -> "ExecResult":
+        known = cls.__dataclass_fields__
+        return cls(**{key: value[key] for key in known if key in value})
 
 
 class Executor(Protocol):
@@ -53,11 +64,27 @@ class RecoverableExecutor(DurableExecutor, Protocol):
     def cancel(self, job_id: str) -> JobRecord: ...
 
 
+@runtime_checkable
+class IdempotentExecutor(Protocol):
+    """Connector contract for server-enforced replay of one logical operation."""
+
+    def supports_idempotency(self, step: PlanStep) -> bool: ...
+
+    def execute_idempotent(
+        self,
+        step: PlanStep,
+        *,
+        operation_id: str,
+        idempotency_key: str,
+    ) -> ExecResult: ...
+
+
 def execute_step(
     executor: Executor,
     step: PlanStep,
     *,
     operation_id: str,
+    idempotency_key: str | None = None,
     on_started: Callable[[JobHandle], None] | None = None,
 ) -> ExecResult:
     """Execute through the durable job seam when the executor supports it."""
@@ -67,7 +94,23 @@ def execute_step(
         if on_started is not None:
             on_started(handle)
         return executor.wait(handle.job_id)
-    return executor.execute(step)
+    if (
+        idempotency_key is not None
+        and isinstance(executor, IdempotentExecutor)
+        and executor.supports_idempotency(step)
+    ):
+        result = executor.execute_idempotent(
+            step,
+            operation_id=operation_id,
+            idempotency_key=idempotency_key,
+        )
+        if result.operation_id is None:
+            result.operation_id = operation_id
+        return result
+    result = executor.execute(step)
+    if result.operation_id is None:
+        result.operation_id = operation_id
+    return result
 
 
 class MockExecutor:

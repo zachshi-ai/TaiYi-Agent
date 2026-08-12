@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass, field
 
 from taiyi.policy import EvidenceLedger, TaskContract, TaskPolicy
+from taiyi.runtime.effects import EffectRecord
 from taiyi.runtime.protocol import RunPhase
 from taiyi.runtime.state import TaskState
 from taiyi.scheduler import ExecutionPlan, PlanStep
@@ -29,6 +30,10 @@ class StepResult:
     stdout_artifact: str | None = None
     stderr_artifact: str | None = None
     output_truncated: bool = False
+    operation_id: str | None = None
+    effect_status: str | None = None
+    effect_evidence: str | None = None
+    original_failure_kind: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -42,6 +47,10 @@ class StepResult:
             "stdout_artifact": self.stdout_artifact,
             "stderr_artifact": self.stderr_artifact,
             "output_truncated": self.output_truncated,
+            "operation_id": self.operation_id,
+            "effect_status": self.effect_status,
+            "effect_evidence": self.effect_evidence,
+            "original_failure_kind": self.original_failure_kind,
         }
 
 
@@ -77,6 +86,7 @@ class TaskContext:
     provider_route: dict | None = None
     repository_context: dict | None = None
     context_state: dict | None = None
+    effects: list[EffectRecord] = field(default_factory=list)
     contract: TaskContract | None = None
     validation_checklist: object | None = field(default=None, repr=False)
     evidence: EvidenceLedger = field(default_factory=EvidenceLedger)
@@ -127,6 +137,7 @@ class TaskContext:
             "provider_route": self.provider_route,
             "repository_context": self.repository_context,
             "context_state": self.context_state,
+            "effects": [effect.to_dict() for effect in self.effects],
             "contract": self.contract.to_dict() if self.contract else None,
             "evidence": self.evidence.to_dict(),
             "goal": self.goal.to_dict() if self.goal else None,

@@ -35,10 +35,16 @@ from taiyi.policy import (
     resolve_policy,
 )
 from taiyi.runtime.context import StepResult, TaskContext
+from taiyi.runtime.effects import (
+    EffectManager,
+    HumanEffectResolution,
+    ReplayPolicy,
+)
 from taiyi.runtime.executor import (
     DurableExecutor,
     ExecResult,
     Executor,
+    IdempotentExecutor,
     MockExecutor,
     RecoverableExecutor,
     execute_step,
@@ -82,6 +88,7 @@ class TaskRuntime:
         provider_router: ProviderRouter | None = None,
         run_store: RunStore | None = None,
         context_engine: ContextEngine | None = None,
+        effect_manager: EffectManager | None = None,
         llm_sleep=time.sleep,
         llm_clock=time.time,
     ):
@@ -102,6 +109,7 @@ class TaskRuntime:
         self.completion = CompletionController()
         self.run_store = run_store or RunStore()
         self.context_engine = context_engine
+        self.effect_manager = effect_manager
         self._llm_sleep = llm_sleep
         self._llm_clock = llm_clock
         self._recovery_threads: dict[str, threading.Thread] = {}
@@ -757,12 +765,64 @@ class TaskRuntime:
         approved_by: str | None = None,
     ) -> bool:
         sr = ctx.step_results[step_index]
+        effect = (
+            self.effect_manager.find(ctx.effects, str(result.operation_id))
+            if self.effect_manager is not None and result.operation_id
+            else None
+        )
+        if result.failure_kind == FailureKind.EFFECT_OUTCOME_UNKNOWN.value:
+            sr.output = result.output
+            sr.stdout_artifact = result.stdout_artifact
+            sr.stderr_artifact = result.stderr_artifact
+            sr.output_truncated = result.output_truncated
+            sr.operation_id = result.operation_id
+            sr.effect_status = result.effect_status
+            sr.effect_evidence = result.effect_evidence
+            sr.original_failure_kind = result.original_failure_kind
+            ctx.failure_kind = FailureKind.EFFECT_OUTCOME_UNKNOWN.value
+            ctx.error = result.error or result.effect_evidence or result.output
+            ctx.final_output = (
+                "tool outcome is ambiguous; resolve as applied, not_applied, or abandon "
+                f"before continuing (operation_id={result.operation_id})"
+            )
+            continuation = {
+                "kind": "workflow_effect_resolution",
+                "round": ctx.round,
+                "operation_id": result.operation_id,
+                "step_index": step_index,
+                "tool": step.tool,
+                "args": list(step.args),
+                "next_step_index": next_step_index,
+                "result": result.to_dict(),
+            }
+            self._record(
+                ctx,
+                RunPhase.WAITING_INPUT,
+                "effect_resolution_required",
+                state=TaskState.NEEDS_INPUT,
+                continuation=continuation,
+                operation_id=result.operation_id,
+                original_failure_kind=result.original_failure_kind,
+                evidence=result.effect_evidence,
+                effect=(effect.to_dict() if effect is not None else None),
+            )
+            self.audit.append(
+                "effect_resolution_required",
+                task_id=ctx.task_id,
+                operation_id=result.operation_id,
+                original_failure_kind=result.original_failure_kind,
+            )
+            return False
         if not sr.executed:
             sr.executed = True
             sr.output = result.output
             sr.stdout_artifact = result.stdout_artifact
             sr.stderr_artifact = result.stderr_artifact
             sr.output_truncated = result.output_truncated
+            sr.operation_id = result.operation_id
+            sr.effect_status = result.effect_status
+            sr.effect_evidence = result.effect_evidence
+            sr.original_failure_kind = result.original_failure_kind
             ctx.executed_action_count += 1
         if self.context_engine is not None:
             self.context_engine.mark_repository_dirty(ctx)
@@ -802,6 +862,10 @@ class TaskRuntime:
             duration_seconds=result.duration_seconds,
             error=result.error,
             recovered=recovered,
+            effect=(effect.to_dict() if effect is not None else None),
+            effect_status=result.effect_status,
+            effect_evidence=result.effect_evidence,
+            original_failure_kind=result.original_failure_kind,
         )
         self.audit.append(
             "step_executed",
@@ -882,6 +946,7 @@ class TaskRuntime:
                 approval_id=approval_id,
             )
             self.audit.append("human_rejected", task_id=ctx.task_id, approval_id=approval_id)
+            self.run_store.release_task_lease(ctx.task_id)
             return ctx
 
         # Approved: re-check the held step against governance before executing.
@@ -924,6 +989,7 @@ class TaskRuntime:
             )
             self.audit.append("task_rejected", task_id=ctx.task_id, tool=held_step.tool,
                               reason=repermit.reason)
+            self.run_store.release_task_lease(ctx.task_id)
             return ctx
 
         result = self._execute_tool(
@@ -931,6 +997,9 @@ class TaskRuntime:
             held_step,
             pending.held_index,
             approved_by="human",
+            effect_recovery=self._approval_is_effect_recovery(
+                ctx, pending.held_index
+            ),
         )
         held_sr.verdict = "ALLOW(human)"
         if not self._apply_tool_result(
@@ -941,15 +1010,199 @@ class TaskRuntime:
             next_step_index=pending.held_index + 1,
             approved_by="human",
         ):
+            self.run_store.release_task_lease(ctx.task_id)
             return ctx
 
         if not self._execute_steps(ctx, pending.steps, pending.held_index + 1):
+            self.run_store.release_task_lease(ctx.task_id)
             return ctx  # re-suspended / rejected / failed downstream
 
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         if not self._finish_round(ctx, trace, ctx.round):
             self._execute_rounds(ctx, trace, start_round=ctx.round + 1)
+        self.run_store.release_task_lease(ctx.task_id)
         return ctx
+
+    def _approval_is_effect_recovery(self, ctx: TaskContext, step_index: int) -> bool:
+        if self.effect_manager is None:
+            return False
+        operation_id = f"{ctx.task_id}:round:{ctx.round}:step:{step_index}"
+        effect = self.effect_manager.find(ctx.effects, operation_id)
+        return (
+            effect is not None
+            and effect.human_resolution == HumanEffectResolution.NOT_APPLIED.value
+        )
+
+    def resolve_effect(
+        self,
+        task_id: str,
+        *,
+        resolution: str,
+        note: str,
+    ) -> TaskContext:
+        """Resolve an ambiguous Workflow effect from its durable checkpoint."""
+
+        if not note.strip():
+            raise ValueError("effect resolution requires an audit note or external receipt")
+        checkpoint = self.run_store.load(task_id)
+        if checkpoint is None:
+            raise KeyError(task_id)
+        if not self.run_store.acquire_task_lease(task_id, blocking=False):
+            raise RuntimeError(f"task {task_id} is already being advanced by another runtime")
+
+        start = time.time()
+        try:
+            checkpoint = self.run_store.load(task_id)
+            if checkpoint is None:
+                raise KeyError(task_id)
+            continuation = checkpoint.get("continuation") or {}
+            if (
+                checkpoint["context"].get("phase") != RunPhase.WAITING_INPUT.value
+                or continuation.get("kind") != "workflow_effect_resolution"
+            ):
+                raise RuntimeError(f"task {task_id} is not waiting for an effect resolution")
+            ctx = restore_context(
+                checkpoint["context"],
+                validator=self.validator,
+                value_stream=self.value_stream,
+            )
+            if ctx.plan is None:
+                raise CheckpointIncompatibleError("effect resolution has no frozen plan")
+            step_index = int(continuation["step_index"])
+            if not 0 <= step_index < len(ctx.plan.steps):
+                raise CheckpointIncompatibleError("effect step is out of range")
+            step = ctx.plan.steps[step_index]
+            if continuation.get("tool") != step.tool or list(
+                continuation.get("args", [])
+            ) != step.args:
+                raise CheckpointIncompatibleError("effect resolution differs from frozen step")
+            operation_id = str(continuation["operation_id"])
+            effect = (
+                self.effect_manager.find(ctx.effects, operation_id)
+                if self.effect_manager is not None
+                else None
+            )
+            if effect is None:
+                raise CheckpointIncompatibleError("effect ledger entry is missing")
+            parsed = HumanEffectResolution.parse(resolution)
+            self.effect_manager.apply_human_resolution(effect, parsed, note=note.strip())
+            self._record(
+                ctx,
+                RunPhase.RECOVERING,
+                "effect_resolution_received",
+                state=TaskState.EXECUTING,
+                continuation=continuation,
+                operation_id=operation_id,
+                resolution=parsed.value,
+                effect=effect.to_dict(),
+            )
+            self.audit.append(
+                "effect_resolution_received",
+                task_id=ctx.task_id,
+                operation_id=operation_id,
+                resolution=parsed.value,
+                note=note.strip(),
+            )
+
+            if parsed is HumanEffectResolution.ABANDON:
+                self._fail(
+                    ctx,
+                    f"ambiguous effect abandoned by human: {note.strip()}",
+                    kind=FailureKind.EFFECT_OUTCOME_UNKNOWN,
+                )
+                return ctx
+
+            if parsed is HumanEffectResolution.APPLIED:
+                result = ExecResult(
+                    f"human independently confirmed effect applied: {note.strip()}",
+                    ok=True,
+                    operation_id=operation_id,
+                    effect_status=effect.status.value,
+                    effect_evidence=effect.observations[-1].evidence,
+                )
+            else:
+                idempotent = (
+                    isinstance(self.executor, IdempotentExecutor)
+                    and self.executor.supports_idempotency(step)
+                )
+                replay_allowed = effect.replay_policy in {
+                    ReplayPolicy.SAFE,
+                    ReplayPolicy.VERIFY_THEN_RETRY,
+                } or (effect.replay_policy is ReplayPolicy.IDEMPOTENCY_KEY and idempotent)
+                if not replay_allowed:
+                    original = ExecResult.from_dict(dict(continuation.get("result") or {}))
+                    original_kind = original.original_failure_kind or original.failure_kind
+                    self._fail(
+                        ctx,
+                        "human confirmed the effect was not applied, but the frozen policy "
+                        "forbids automatic replay; start a newly authorized task",
+                        kind=(
+                            FailureKind(original_kind)
+                            if original_kind in FailureKind._value2member_map_
+                            else FailureKind.EXTERNAL_FAILURE
+                        ),
+                    )
+                    return ctx
+                permit = self.scheduler.request_permit(
+                    step,
+                    ctx.scenario,
+                    user_id=ctx.user_id,
+                    task_id=ctx.task_id,
+                )
+                if permit.verdict is Verdict.ALLOW:
+                    permit = self._second_opinion(
+                        permit,
+                        step,
+                        ctx,
+                        step_index,
+                        ctx.plan.steps,
+                    )
+                if permit.verdict is Verdict.DENY:
+                    ctx.step_results[step_index].verdict = permit.verdict.value
+                    ctx.step_results[step_index].reason = permit.reason
+                    self._record(
+                        ctx,
+                        RunPhase.SETTLED,
+                        "run_settled",
+                        state=TaskState.REJECTED,
+                        reason=permit.reason,
+                    )
+                    return ctx
+                if permit.verdict is Verdict.NEEDS_REVIEW:
+                    self._park_recovered_approval(ctx, step, step_index, permit)
+                    return ctx
+                result = self._execute_tool(
+                    ctx,
+                    step,
+                    step_index,
+                    approved_by="effect-resolution",
+                    effect_recovery=True,
+                )
+
+            ctx.failure_kind = None
+            ctx.error = None
+            ctx.final_output = None
+            next_step = int(continuation["next_step_index"])
+            if not self._apply_tool_result(
+                ctx,
+                step,
+                step_index,
+                result,
+                next_step_index=next_step,
+                recovered=True,
+                approved_by="effect-resolution",
+            ):
+                return ctx
+            if not self._execute_steps(ctx, ctx.plan.steps, next_step):
+                return ctx
+            trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
+            if not self._finish_round(ctx, trace, ctx.round):
+                self._execute_rounds(ctx, trace, start_round=ctx.round + 1)
+            return ctx
+        finally:
+            if "ctx" in locals():
+                self._finish(ctx, start)
+            self.run_store.release_task_lease(task_id)
 
     def _execute_tool(
         self,
@@ -958,8 +1211,14 @@ class TaskRuntime:
         step_index: int,
         *,
         approved_by: str | None = None,
+        effect_recovery: bool = False,
     ) -> ExecResult:
         operation_id = f"{ctx.task_id}:round:{ctx.round}:step:{step_index}"
+        effect = (
+            self.effect_manager.prepare(ctx.effects, step, operation_id)
+            if self.effect_manager is not None
+            else None
+        )
         continuation = {
             "kind": "tool_operation",
             "round": ctx.round,
@@ -968,6 +1227,14 @@ class TaskRuntime:
             "tool": step.tool,
             "args": list(step.args),
         }
+        if effect is not None:
+            continuation["effect"] = {
+                "operation_id": effect.operation_id,
+                "policy_digest": effect.policy_digest,
+                "side_effect_class": effect.side_effect_class.value,
+                "replay_policy": effect.replay_policy.value,
+                "idempotency_key": effect.idempotency_key,
+            }
         if approved_by:
             continuation["approved_by"] = approved_by
         self._record(
@@ -979,7 +1246,20 @@ class TaskRuntime:
             operation_id=operation_id,
             step_index=step_index,
             tool=step.tool,
+            effect=(effect.to_dict() if effect is not None else None),
         )
+
+        if effect is not None:
+            self.effect_manager.mark_dispatch(effect, recovery=effect_recovery)
+            self._record(
+                ctx,
+                RunPhase.TOOL_RUNNING,
+                "effect_dispatching",
+                state=TaskState.EXECUTING,
+                continuation=continuation,
+                operation_id=operation_id,
+                effect=effect.to_dict(),
+            )
 
         def attached(handle) -> None:
             attached_continuation = {**continuation, "job_id": handle.job_id}
@@ -995,12 +1275,63 @@ class TaskRuntime:
                 tool=step.tool,
             )
 
-        return execute_step(
-            self.executor,
+        try:
+            result = execute_step(
+                self.executor,
+                step,
+                operation_id=operation_id,
+                idempotency_key=(effect.idempotency_key if effect is not None else None),
+                on_started=attached,
+            )
+        except Exception as exc:
+            kind = classify_exception(exc, RunPhase.TOOL_RUNNING)
+            if (
+                effect is None
+                or effect.side_effect_class.value == "NONE"
+            ):
+                raise
+            result = ExecResult(
+                f"executor error: {type(exc).__name__}: {exc}",
+                ok=False,
+                operation_id=operation_id,
+                failure_kind=kind.value,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        if effect is None:
+            return result
+
+        def before_retry(record) -> None:
+            self._record(
+                ctx,
+                RunPhase.EFFECT_VERIFYING,
+                "effect_retry_started",
+                state=TaskState.EXECUTING,
+                continuation=continuation,
+                operation_id=operation_id,
+                effect=record.to_dict(),
+            )
+
+        assert ctx.policy is not None
+        reconciled = self.effect_manager.reconcile_result(
+            effect,
             step,
-            operation_id=operation_id,
-            on_started=attached,
+            result,
+            executor=self.executor,
+            max_recovery_attempts=ctx.policy.max_effect_recovery_attempts,
+            before_retry=before_retry,
         )
+        if effect.observations:
+            self._record(
+                ctx,
+                RunPhase.EFFECT_VERIFYING,
+                "effect_observed",
+                state=TaskState.EXECUTING,
+                continuation=continuation,
+                operation_id=operation_id,
+                observation=effect.observations[-1].to_dict(),
+                effect=effect.to_dict(),
+            )
+        return reconciled
 
     @staticmethod
     def _result_failure_kind(result: ExecResult) -> FailureKind:
@@ -1291,11 +1622,71 @@ class TaskRuntime:
         step_index: int,
         continuation: dict,
     ) -> ExecResult | None:
+        operation_id = str(continuation["operation_id"])
+        effect = (
+            self.effect_manager.find(ctx.effects, operation_id)
+            if self.effect_manager is not None
+            else None
+        )
+        frozen_effect = continuation.get("effect") or {}
+        if frozen_effect:
+            if effect is None or frozen_effect.get("policy_digest") != effect.policy_digest:
+                raise CheckpointIncompatibleError(
+                    "frozen effect policy differs from the persisted effect ledger"
+                )
+            self.effect_manager.validate(effect, step)
+
+        def reconcile(result: ExecResult) -> ExecResult:
+            if effect is None:
+                return result
+
+            def before_retry(record) -> None:
+                self._record(
+                    ctx,
+                    RunPhase.EFFECT_VERIFYING,
+                    "effect_retry_started",
+                    state=TaskState.EXECUTING,
+                    continuation=continuation,
+                    operation_id=operation_id,
+                    recovered=True,
+                    effect=record.to_dict(),
+                )
+
+            assert ctx.policy is not None
+            resolved = self.effect_manager.reconcile_result(
+                effect,
+                step,
+                result,
+                executor=self.executor,
+                max_recovery_attempts=ctx.policy.max_effect_recovery_attempts,
+                before_retry=before_retry,
+            )
+            if effect.observations:
+                self._record(
+                    ctx,
+                    RunPhase.EFFECT_VERIFYING,
+                    "effect_observed",
+                    state=TaskState.EXECUTING,
+                    continuation=continuation,
+                    operation_id=operation_id,
+                    recovered=True,
+                    observation=effect.observations[-1].to_dict(),
+                    effect=effect.to_dict(),
+                )
+            return resolved
+
         if not isinstance(self.executor, RecoverableExecutor):
+            if effect is not None:
+                return reconcile(ExecResult(
+                    "executor process exited before returning an effect receipt",
+                    ok=False,
+                    operation_id=operation_id,
+                    failure_kind=FailureKind.TOOL_LOST.value,
+                    error="non-durable executor outcome was not checkpointed",
+                ))
             raise CheckpointIncompatibleError(
                 "executor cannot reattach a TOOL_RUNNING checkpoint"
             )
-        operation_id = str(continuation["operation_id"])
         recorded_job_id = continuation.get("job_id")
         handle = self.executor.find(operation_id)
         reattached = handle is not None
@@ -1310,6 +1701,14 @@ class TaskRuntime:
                     "checkpoint names a job that is absent from the operation index"
                 )
             if not self.executor.supports_jobs(step):
+                if effect is not None:
+                    return reconcile(ExecResult(
+                        "non-durable tool outcome is unknown after restart",
+                        ok=False,
+                        operation_id=operation_id,
+                        failure_kind=FailureKind.TOOL_LOST.value,
+                        error="no durable job receipt exists for the interrupted effect",
+                    ))
                 raise CheckpointIncompatibleError(
                     "non-durable tool outcome is unknown; refusing duplicate execution"
                 )
@@ -1376,7 +1775,7 @@ class TaskRuntime:
         result = self.executor.wait(handle.job_id)
         if result.operation_id != operation_id or result.job_id != handle.job_id:
             raise CheckpointIncompatibleError("durable job result identity does not match continuation")
-        return result
+        return reconcile(result)
 
     def _park_recovered_approval(self, ctx: TaskContext, step, step_index: int, permit) -> None:
         approval_id = permit.approval_id or f"recovery_{ctx.task_id}_{step_index}"
