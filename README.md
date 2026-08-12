@@ -20,7 +20,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
 | `src/taiyi/` | **Production code** — reliable runtime, context, governance, execution, and validation modules |
-| `tests/` | 349 tests covering governance, operating modes, durable jobs/effect recovery, repository context, LLM faults, and executable Skill gates |
+| `tests/` | 356 tests covering governance, operating modes, durable jobs/effect recovery, repository context, LLM faults, benchmark contracts, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -33,6 +33,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 | [`learning/DEVELOPMENT_PLAN.md`](./learning/DEVELOPMENT_PLAN.md) | The modular build order |
 | **Research (研)** — turning theory into a path; test & demo (`research/`) | |
 | [`research/examples/`](./research/examples/) | Runnable examples against the production package |
+| [`research/benchmark/`](./research/benchmark/) | Versioned harness protocol benchmark, per-run receipts, and baselines |
 | [`research/demo/`](./research/demo/) | Phase 0 throwaway demo (mock everything; reference only) |
 | **Practices (用)** — production-baked best practices (`practices/`) | |
 | [`practices/`](./practices/) | Field-tested skills, prompts, ops notes (growing) |
@@ -225,6 +226,15 @@ default "highest decision-maker" path); M17 Human approval & resume (HITL, with
 To go live: `pip install -e ".[live]"` (adds httpx), set provider + base_url in
 the config, restart. (Phase 0's demo remains under `demo/` as reference.)
 
+M18 Phase 7A adds a controlled harness benchmark: six deterministic
+fault/large-repository cases run across all three operating modes through the
+production retry, context, checkpoint, Effect Ledger, and completion paths. The
+committed 18-run baseline has 100% protocol conformance, zero false completions,
+and zero duplicate effects. Pi, OpenClaw, and ZCode remain capability cells—not
+ranked results—until the same model, isolated workspace, and batch/evidence
+contract can be proven. See
+[`learning/docs/11_Harness_Benchmark_Protocol.md`](./learning/docs/11_Harness_Benchmark_Protocol.md).
+
 ### Run it yourself
 
 One command, straight from GitHub (repo is public, no clone needed). pipx is
@@ -318,6 +328,7 @@ python3 examples/scheduler_demo.py    # planning + the governance boundary
 pip install -e ".[dev]"
 pytest
 taiyi verify-skills  # execute the 9 built-in Skill gate cases
+taiyi benchmark protocol --output research/benchmark/results/protocol-v1
 ```
 
 Expected from the example:

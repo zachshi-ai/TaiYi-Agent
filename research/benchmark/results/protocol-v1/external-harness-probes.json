@@ -1,0 +1,62 @@
+{
+  "digest": "sha256:cdeeb2367bb81ca77675e6f08fb46d91cfd25131ea87f2d97f9fecfafd36d468",
+  "payload": {
+    "observed_at": 1786551763.206136,
+    "probe_set_digest": "sha256:89199d95322799880003cb8240a1116f79aa73e816677724535d3c5e868b8d30",
+    "probes": [
+      {
+        "adapter": "pi-json",
+        "batch_command": [
+          "pi",
+          "--mode",
+          "json",
+          "--no-session",
+          "--no-approve"
+        ],
+        "harness_id": "pi",
+        "isolated_workspace": false,
+        "model": null,
+        "observed_at": 1786551763.180511,
+        "reason": "pi CLI is not installed",
+        "same_model_configurable": false,
+        "source_url": "https://github.com/earendil-works/pi",
+        "status": "UNAVAILABLE",
+        "version": null
+      },
+      {
+        "adapter": "openclaw-agent-json",
+        "batch_command": [
+          "openclaw",
+          "agent",
+          "--local",
+          "--json",
+          "--message-file"
+        ],
+        "harness_id": "openclaw",
+        "isolated_workspace": false,
+        "model": null,
+        "observed_at": 1786551763.2060091,
+        "reason": "installed profile is host-running or isolation could not be proven; a dedicated benchmark profile and common model route are required",
+        "same_model_configurable": true,
+        "source_url": "https://github.com/openclaw/openclaw",
+        "status": "NOT_COMPARABLE",
+        "version": "OpenClaw 2026.7.1-2 (0790d9f)"
+      },
+      {
+        "adapter": "zcode-desktop",
+        "batch_command": [],
+        "harness_id": "zcode",
+        "isolated_workspace": false,
+        "model": null,
+        "observed_at": 1786551763.2061272,
+        "reason": "desktop app is installed but no documented non-interactive CLI/adapter is available",
+        "same_model_configurable": false,
+        "source_url": "https://zcode.z.ai/en/docs/agents",
+        "status": "UNAVAILABLE",
+        "version": null
+      }
+    ],
+    "scoring_rule": "UNAVAILABLE and NOT_COMPARABLE cells are reported but excluded from scores"
+  },
+  "schema_version": "taiyi.harness-benchmark/v1"
+}

@@ -1,0 +1,176 @@
+"""Versioned benchmark contracts and tamper-evident JSON artifacts."""
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import time
+import uuid
+from dataclasses import asdict, dataclass, field
+from enum import Enum
+from pathlib import Path
+from typing import Any, Mapping
+
+
+BENCHMARK_SCHEMA = "taiyi.harness-benchmark/v1"
+RECEIPT_SCHEMA = "taiyi.harness-run-receipt/v1"
+REPORT_SCHEMA = "taiyi.harness-benchmark-report/v1"
+
+
+class MeasurementStatus(str, Enum):
+    MEASURED = "MEASURED"
+    UNAVAILABLE = "UNAVAILABLE"
+    NOT_COMPARABLE = "NOT_COMPARABLE"
+    ERROR = "ERROR"
+
+
+class ExpectedOutcome(str, Enum):
+    DELIVER = "DELIVER"
+    BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
+    SAFE_HANDOFF = "SAFE_HANDOFF"
+
+
+@dataclass(frozen=True)
+class BenchmarkCase:
+    case_id: str
+    description: str
+    fault: str
+    acceptance_path: str = "result.txt"
+    acceptance_content: str = "verified\n"
+    repository_files: int = 0
+    tags: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["tags"] = list(self.tags)
+        return value
+
+
+@dataclass(frozen=True)
+class HarnessProbe:
+    harness_id: str
+    adapter: str
+    status: MeasurementStatus
+    version: str | None = None
+    model: str | None = None
+    batch_command: tuple[str, ...] = ()
+    isolated_workspace: bool = False
+    same_model_configurable: bool = False
+    reason: str | None = None
+    source_url: str | None = None
+    observed_at: float = field(default_factory=time.time)
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["status"] = self.status.value
+        value["batch_command"] = list(self.batch_command)
+        return value
+
+
+@dataclass(frozen=True)
+class RunReceipt:
+    run_id: str
+    case_id: str
+    harness_id: str
+    harness_version: str
+    adapter: str
+    model_id: str
+    operating_mode: str
+    measurement_status: MeasurementStatus
+    reported_state: str
+    expected_outcome: ExpectedOutcome
+    task_passed: bool
+    protocol_passed: bool
+    claimed_complete: bool
+    false_completion: bool
+    fault_injected: bool
+    recovered: bool
+    human_handoffs: int
+    connector_attempts: int
+    applied_effects: int
+    duplicate_effects: int
+    llm_calls: int
+    duration_seconds: float
+    failure_kind: str | None
+    case_digest: str
+    environment_digest: str
+    evidence: Mapping[str, Any]
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["measurement_status"] = self.measurement_status.value
+        value["expected_outcome"] = self.expected_outcome.value
+        value["evidence"] = dict(self.evidence)
+        return value
+
+
+def canonical_digest(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def artifact_envelope(schema_version: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+    content = dict(payload)
+    return {
+        "schema_version": schema_version,
+        "payload": content,
+        "digest": canonical_digest({"schema_version": schema_version, "payload": content}),
+    }
+
+
+def verify_artifact(value: Mapping[str, Any], *, schema_version: str) -> dict[str, Any]:
+    if value.get("schema_version") != schema_version:
+        raise ValueError(f"unsupported benchmark artifact schema: {value.get('schema_version')!r}")
+    payload = value.get("payload")
+    if not isinstance(payload, dict):
+        raise ValueError("benchmark artifact has no object payload")
+    expected = canonical_digest({"schema_version": schema_version, "payload": payload})
+    if value.get("digest") != expected:
+        raise ValueError("benchmark artifact digest mismatch")
+    return dict(payload)
+
+
+def write_artifact(path: str | Path, schema_version: str, payload: Mapping[str, Any]) -> Path:
+    """Atomically persist one self-verifying benchmark artifact."""
+
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    envelope = artifact_envelope(schema_version, payload)
+    temporary = destination.with_name(
+        f".{destination.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp"
+    )
+    try:
+        with temporary.open("x", encoding="utf-8") as handle:
+            json.dump(envelope, handle, ensure_ascii=False, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, destination)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+    return destination
+
+
+__all__ = [
+    "BENCHMARK_SCHEMA",
+    "REPORT_SCHEMA",
+    "RECEIPT_SCHEMA",
+    "BenchmarkCase",
+    "ExpectedOutcome",
+    "HarnessProbe",
+    "MeasurementStatus",
+    "RunReceipt",
+    "artifact_envelope",
+    "canonical_digest",
+    "verify_artifact",
+    "write_artifact",
+]
