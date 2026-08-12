@@ -3,6 +3,9 @@ from dataclasses import replace
 
 from taiyi.benchmark.comparative import (
     COMPARATIVE_PROMPT,
+    _read_json_object,
+    _requests_match_tool_surface,
+    _write_openclaw_config,
     comparative_manifest,
     run_taiyi_cell,
 )
@@ -51,6 +54,52 @@ def test_comparability_signature_does_not_depend_on_ephemeral_port():
     assert one["ranking_eligible"] is False
 
 
+def test_openclaw_config_pins_only_the_controlled_provider(tmp_path):
+    path = tmp_path / "openclaw.json"
+    _write_openclaw_config(path, "http://127.0.0.1:43210/v1")
+    value = json.loads(path.read_text())
+
+    model_ref = f"taiyi-benchmark/{CONTROLLED_MODEL_ID}"
+    provider = value["models"]["providers"]["taiyi-benchmark"]
+    assert value["agents"]["defaults"]["model"]["primary"] == model_ref
+    assert provider["baseUrl"] == "http://127.0.0.1:43210/v1"
+    assert provider["api"] == "openai-completions"
+    assert provider["models"][0]["id"] == CONTROLLED_MODEL_ID
+    assert value["tools"]["allow"] == ["read", "write"]
+    assert "apply_patch" in value["tools"]["deny"]
+    assert value["tools"]["toolSearch"] is False
+    assert value["tools"]["codeMode"] is False
+    assert value["tools"]["fs"]["workspaceOnly"] is True
+    assert "api.openai.com" not in path.read_text()
+
+
+def test_openclaw_envelope_parser_rejects_non_object_json(tmp_path):
+    path = tmp_path / "stdout.log"
+    path.write_text('{"ok":true,"status":"ok"}')
+    value, error = _read_json_object(path)
+    assert value == {"ok": True, "status": "ok"}
+    assert error is None
+
+    path.write_text("[]")
+    value, error = _read_json_object(path)
+    assert value is None
+    assert error == "invalid JSON response: expected an object"
+
+
+def test_every_model_request_must_have_the_frozen_tool_surface():
+    expected = ["read", "write"]
+
+    assert _requests_match_tool_surface([
+        {"tool_names": ["write", "read"]},
+        {"tool_names": ["read", "write"]},
+    ], expected)
+    assert not _requests_match_tool_surface([
+        {"tool_names": ["read", "write"]},
+        {"tool_names": ["read"]},
+    ], expected)
+    assert not _requests_match_tool_surface([], expected)
+
+
 def test_taiyi_comparative_cell_uses_live_http_and_independent_acceptance(tmp_path):
     with ControlledModelServer() as server:
         manifest = comparative_manifest(server.policy_digest)
@@ -69,6 +118,12 @@ def test_taiyi_comparative_cell_uses_live_http_and_independent_acceptance(tmp_pa
     assert receipt.model_requests == 2
     assert receipt.tool_calls == 1
     assert receipt.evidence["effect_statuses"] == ["CONFIRMED_APPLIED"]
+    assert receipt.evidence["model_visible_tools"] == ["file:read", "file:write"]
+    assert receipt.evidence["executor_allowed_tools"] == [
+        "file:read",
+        "file:write",
+    ]
+    assert receipt.evidence["tool_surface_matches"] is True
     assert receipt.evidence["isolation"] == {
         "separate_process": True,
         "isolated_home": True,
@@ -114,7 +169,11 @@ def test_comparative_aggregate_requires_delivery_and_completion(tmp_path):
 
 
 def test_comparative_runner_emits_verified_cells_and_explicit_blockers(tmp_path):
-    report = run_comparative_smoke(tmp_path, pi_executable=tmp_path / "missing-pi")
+    report = run_comparative_smoke(
+        tmp_path,
+        pi_executable=tmp_path / "missing-pi",
+        openclaw_executable=tmp_path / "missing-openclaw",
+    )
     cells = {item["harness_id"]: item for item in report["cells"]}
 
     assert report["cell_count"] == 4
@@ -123,6 +182,7 @@ def test_comparative_runner_emits_verified_cells_and_explicit_blockers(tmp_path)
     assert cells["taiyi"]["task_passed"] is True
     assert cells["pi"]["measurement_status"] == "NOT_COMPARABLE"
     assert cells["pi"]["blockers"]
+    assert cells["openclaw"]["measurement_status"] == "NOT_COMPARABLE"
     assert cells["openclaw"]["blockers"]
     assert cells["zcode"]["blockers"]
 

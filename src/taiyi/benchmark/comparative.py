@@ -179,6 +179,24 @@ def run_taiyi_cell(
         if exit_code == 0 and worker is not None and error is None and not timed_out
         else MeasurementStatus.ERROR
     )
+    expected_taiyi_tools = sorted(
+        f"file:{item}" for item in manifest["budgets"]["allowed_tools"]
+    )
+    model_visible_tools = sorted(
+        str(item) for item in (worker or {}).get("model_visible_tools", [])
+    )
+    executor_allowed_tools = sorted(
+        str(item) for item in (worker or {}).get("executor_allowed_tools", [])
+    )
+    tool_surface_matches = (
+        model_visible_tools == expected_taiyi_tools
+        and executor_allowed_tools == expected_taiyi_tools
+    )
+    comparison_blockers = (
+        ()
+        if tool_surface_matches
+        else ("observed tool surface does not match the frozen manifest",)
+    )
     private_roots = (run_root, workspace, Path.home(), Path(sys.executable).parent)
     _sanitize_log(process_stdout, private_roots)
     _sanitize_log(process_stderr, private_roots)
@@ -191,8 +209,8 @@ def run_taiyi_cell(
         harness_version="0.1.0",
         adapter="taiyi-live-openai-production-runtime",
         measurement_status=status,
-        comparable=status is MeasurementStatus.MEASURED,
-        blockers=(),
+        comparable=status is MeasurementStatus.MEASURED and tool_surface_matches,
+        blockers=comparison_blockers,
         model_id=CONTROLLED_MODEL_ID,
         case_id=COMPARATIVE_CASE_ID,
         reported_state=(
@@ -214,6 +232,9 @@ def run_taiyi_cell(
             "initial_workspace": initial,
             "final_workspace": final,
             "model_requests": requests,
+            "model_visible_tools": model_visible_tools,
+            "executor_allowed_tools": executor_allowed_tools,
+            "tool_surface_matches": tool_surface_matches,
             "execution_environment": (
                 worker.get("execution_environment") if worker is not None else "workspace"
             ),
@@ -356,6 +377,9 @@ def run_pi_cell(
     task_passed = _acceptance_passed(workspace)
     claimed_complete = bool(exit_code == 0 and agent_ended and not timed_out)
     requests = server.request_summaries(since=request_start)
+    advertised_tools = _advertised_tools(requests)
+    allowed_tools = sorted(str(item) for item in manifest["budgets"]["allowed_tools"])
+    tool_surface_matches = _requests_match_tool_surface(requests, allowed_tools)
     budget_passed = (
         not timed_out
         and duration <= float(manifest["budgets"]["wall_timeout_seconds"])
@@ -367,7 +391,7 @@ def run_pi_cell(
         workspace,
         executable.parent,
         executable.resolve().parent,
-        _pi_install_root(executable),
+        _node_package_root(executable),
         Path.home(),
     ]
     private_roots.append(node_executable.parent)
@@ -384,14 +408,19 @@ def run_pi_cell(
     )
     if status is MeasurementStatus.ERROR and error is None:
         error = f"Pi exited {exit_code} without a terminal agent event"
+    comparison_blockers = (
+        ()
+        if tool_surface_matches
+        else ("observed tool surface does not match the frozen manifest",)
+    )
     return ComparativeReceipt(
         run_id=f"pi-{uuid.uuid4().hex[:12]}",
         harness_id="pi",
         harness_version=version,
         adapter="pi-json-sandbox-exec",
         measurement_status=status,
-        comparable=status is MeasurementStatus.MEASURED,
-        blockers=(),
+        comparable=status is MeasurementStatus.MEASURED and tool_surface_matches,
+        blockers=comparison_blockers,
         model_id=CONTROLLED_MODEL_ID,
         case_id=COMPARATIVE_CASE_ID,
         reported_state=("COMPLETED" if claimed_complete else "FAILED"),
@@ -411,6 +440,8 @@ def run_pi_cell(
             "initial_workspace": initial,
             "final_workspace": final,
             "model_requests": requests,
+            "advertised_tools": advertised_tools,
+            "tool_surface_matches": tool_surface_matches,
             "event_count": len(events),
             "event_types": event_types,
             "tool_errors": sum(bool(event.get("isError")) for event in tool_ends),
@@ -427,35 +458,275 @@ def run_pi_cell(
     )
 
 
-def blocked_external_receipts(
+def run_openclaw_cell(
+    *,
+    openclaw_executable: str | Path,
+    server: ControlledModelServer,
+    manifest: dict[str, Any],
+    run_root: Path,
+    artifact_dir: Path,
+) -> ComparativeReceipt:
+    """Run the published headless OpenClaw contract inside a confined process."""
+
+    executable = Path(openclaw_executable).expanduser().resolve()
+    workspace = run_root / "workspace"
+    isolated_home = run_root / "home"
+    temporary = run_root / "tmp"
+    state = run_root / "state"
+    process_logs = run_root / "logs"
+    config_path = run_root / "openclaw.json"
+    for path in (
+        workspace,
+        isolated_home,
+        temporary,
+        state,
+        process_logs,
+        artifact_dir,
+    ):
+        path.mkdir(parents=True, exist_ok=True)
+    materialize_fixture(workspace)
+    initial = workspace_snapshot(workspace)
+
+    blockers = _openclaw_blockers(executable)
+    version = _command_version((str(executable), "--version")) if executable.is_file() else None
+    if blockers:
+        return blocked_receipt(
+            harness_id="openclaw",
+            harness_version=version,
+            adapter="openclaw-agent-exec-json-sandbox-exec",
+            blockers=blockers,
+            manifest=manifest,
+            workspace=workspace,
+        )
+
+    _write_openclaw_config(config_path, server.base_url)
+    profile = _macos_profile(
+        run_root=run_root,
+        executable=executable,
+        model_port=server.port,
+    )
+    isolation = _prove_profile(profile, run_root)
+    if not isolation["passed"]:
+        return blocked_receipt(
+            harness_id="openclaw",
+            harness_version=version,
+            adapter="openclaw-agent-exec-json-sandbox-exec",
+            blockers=("macOS sandbox canary did not prove workspace confinement",),
+            manifest=manifest,
+            workspace=workspace,
+            evidence={"isolation": isolation, "sandbox_profile_digest": canonical_digest(profile)},
+        )
+
+    node_executable = Path(shutil.which("node") or "").resolve()
+    argv = [
+        "sandbox-exec", "-p", profile, "--",
+        str(node_executable), str(executable.resolve()),
+        "agent", "exec",
+        "--config", str(config_path),
+        "--cwd", str(workspace),
+        "--state-dir", str(state),
+        "--model", f"taiyi-benchmark/{CONTROLLED_MODEL_ID}",
+        "--code-mode", "direct",
+        "--local-model-lean",
+        "--thinking", "off",
+        "--timeout", str(int(WALL_TIMEOUT_SECONDS - 5)),
+        "--json",
+        COMPARATIVE_PROMPT,
+    ]
+    env = {
+        "PATH": "/usr/bin:/bin",
+        "HOME": str(isolated_home),
+        "TMPDIR": str(temporary),
+        "NO_COLOR": "1",
+        "OPENCLAW_TELEMETRY": "0",
+    }
+    process_stdout = process_logs / "stdout.log"
+    process_stderr = process_logs / "stderr.log"
+    stdout_path = artifact_dir / "stdout.log"
+    stderr_path = artifact_dir / "stderr.log"
+    request_start = server.request_count
+    started = time.monotonic()
+    timed_out = False
+    exit_code = None
+    error = None
+    with process_stdout.open("wb") as stdout, process_stderr.open("wb") as stderr:
+        try:
+            process = subprocess.Popen(
+                argv,
+                cwd=workspace,
+                env=env,
+                stdout=stdout,
+                stderr=stderr,
+                start_new_session=True,
+            )
+            try:
+                exit_code = process.wait(timeout=WALL_TIMEOUT_SECONDS)
+            except subprocess.TimeoutExpired:
+                timed_out = True
+                error = "outer benchmark timeout"
+                terminate_process_group(process)
+                exit_code = process.returncode
+        except OSError as exc:
+            error = f"{type(exc).__name__}: {exc}"
+    duration = max(0.0, time.monotonic() - started)
+    envelope, parse_error = _read_json_object(process_stdout)
+    if parse_error and error is None:
+        error = parse_error
+    structured_status = (
+        str(envelope.get("status") or "") if envelope is not None else ""
+    )
+    structured = (
+        envelope is not None
+        and isinstance(envelope.get("ok"), bool)
+        and structured_status in {"ok", "error", "timeout"}
+    )
+    if structured_status == "timeout":
+        timed_out = True
+    if structured and not envelope.get("ok") and error is None:
+        detail = envelope.get("error")
+        if isinstance(detail, dict) and detail.get("message"):
+            error = str(detail["message"])
+        else:
+            error = f"OpenClaw reported {structured_status}"
+
+    final = workspace_snapshot(workspace)
+    task_passed = _acceptance_passed(workspace)
+    claimed_complete = bool(
+        exit_code == 0
+        and structured
+        and envelope is not None
+        and envelope.get("ok") is True
+        and structured_status == "ok"
+        and not timed_out
+    )
+    requests = server.request_summaries(since=request_start)
+    advertised_tools = _advertised_tools(requests)
+    allowed_tools = sorted(str(item) for item in manifest["budgets"]["allowed_tools"])
+    tool_surface_matches = _requests_match_tool_surface(requests, allowed_tools)
+    budget_passed = (
+        not timed_out
+        and duration <= float(manifest["budgets"]["wall_timeout_seconds"])
+        and len(requests) <= int(manifest["budgets"]["max_model_requests"])
+    )
+    status = (
+        MeasurementStatus.MEASURED
+        if structured and not parse_error and not (timed_out and envelope is None)
+        else MeasurementStatus.ERROR
+    )
+    identity_matches = bool(
+        envelope is not None
+        and envelope.get("model") == CONTROLLED_MODEL_ID
+        and envelope.get("provider") == "taiyi-benchmark"
+    )
+    tool_summary = envelope.get("toolSummary") if envelope is not None else None
+    tool_calls = (
+        int(tool_summary.get("calls", 0)) if isinstance(tool_summary, dict) else 0
+    )
+
+    private_roots = (
+        run_root,
+        workspace,
+        executable.parent,
+        executable.resolve().parent,
+        _node_package_root(executable),
+        Path.home(),
+        node_executable.parent,
+    )
+    replacements = {
+        server.base_url: "<CONTROLLED_MODEL_ENDPOINT>",
+        f"http://127.0.0.1:{server.port}": "<CONTROLLED_MODEL_ORIGIN>",
+    }
+    _sanitize_log(process_stdout, private_roots, replacements=replacements)
+    _sanitize_log(process_stderr, private_roots, replacements=replacements)
+    if error is not None:
+        error = _sanitize_text(error, private_roots, replacements=replacements)
+    shutil.copy2(process_stdout, stdout_path)
+    shutil.copy2(process_stderr, stderr_path)
+    if status is MeasurementStatus.ERROR and error is None:
+        error = f"OpenClaw exited {exit_code} without a stable JSON envelope"
+    comparison_blockers = tuple(
+        reason
+        for condition, reason in (
+            (
+                not identity_matches,
+                "reported model/provider identity does not match the frozen manifest",
+            ),
+            (
+                not tool_surface_matches,
+                "observed tool surface does not match the frozen manifest",
+            ),
+        )
+        if condition
+    )
+
+    return ComparativeReceipt(
+        run_id=f"openclaw-{uuid.uuid4().hex[:12]}",
+        harness_id="openclaw",
+        harness_version=version,
+        adapter="openclaw-agent-exec-json-sandbox-exec",
+        measurement_status=status,
+        comparable=(
+            status is MeasurementStatus.MEASURED
+            and identity_matches
+            and tool_surface_matches
+        ),
+        blockers=comparison_blockers,
+        model_id=CONTROLLED_MODEL_ID,
+        case_id=COMPARATIVE_CASE_ID,
+        reported_state=(
+            "COMPLETED"
+            if claimed_complete
+            else ("TIMEOUT" if timed_out else "FAILED")
+        ),
+        task_passed=task_passed,
+        claimed_complete=claimed_complete,
+        false_completion=claimed_complete and not task_passed,
+        timed_out=timed_out,
+        exit_code=exit_code,
+        duration_seconds=duration,
+        budget_passed=budget_passed,
+        model_requests=len(requests),
+        tool_calls=tool_calls,
+        initial_workspace_digest=initial["tree_digest"],
+        final_workspace_digest=final["tree_digest"],
+        comparability_signature=manifest["comparability_signature"],
+        evidence={
+            "initial_workspace": initial,
+            "final_workspace": final,
+            "model_requests": requests,
+            "identity_matches": identity_matches,
+            "advertised_tools": advertised_tools,
+            "tool_surface_matches": tool_surface_matches,
+            "assistant_turns": (
+                envelope.get("assistantTurns") if envelope is not None else None
+            ),
+            "code_mode_engaged": (
+                envelope.get("codeModeEngaged") if envelope is not None else None
+            ),
+            "bridge_calls": (
+                envelope.get("bridgeCalls") if envelope is not None else None
+            ),
+            "tool_summary": tool_summary,
+            "isolation": isolation,
+            "isolated_home": True,
+            "explicit_config": True,
+            "explicit_state_dir": True,
+            "minimal_environment": True,
+            "direct_node_entrypoint": True,
+            "sandbox_profile_digest": canonical_digest(profile),
+            "stdout_log": "raw/openclaw/stdout.log",
+            "stderr_log": "raw/openclaw/stderr.log",
+            "acceptance_observed_digest": _acceptance_digest(workspace),
+            "secret_env_names": [],
+        },
+        error=error,
+    )
+
+
+def blocked_zcode_receipt(
     manifest: dict[str, Any],
     root: Path,
-) -> list[ComparativeReceipt]:
-    receipts: list[ComparativeReceipt] = []
-    openclaw = shutil.which("openclaw")
-    openclaw_version = _command_version((openclaw, "--version")) if openclaw else None
-    openclaw_blockers = []
-    if not openclaw:
-        openclaw_blockers.append("OpenClaw CLI is not installed")
-    elif not _openclaw_agent_exec_available(openclaw):
-        openclaw_blockers.append(
-            "installed OpenClaw release lacks the isolated agent exec batch interface"
-        )
-    else:
-        openclaw_blockers.append(
-            "the sandboxed normalized adapter for agent exec is not implemented in this baseline"
-        )
-    workspace = root / "openclaw" / "workspace"
-    materialize_fixture(workspace)
-    receipts.append(blocked_receipt(
-        harness_id="openclaw",
-        harness_version=openclaw_version,
-        adapter="openclaw-agent-exec",
-        blockers=tuple(openclaw_blockers),
-        manifest=manifest,
-        workspace=workspace,
-    ))
-
+) -> ComparativeReceipt:
     workspace = root / "zcode" / "workspace"
     materialize_fixture(workspace)
     zcode_reason = (
@@ -463,15 +734,14 @@ def blocked_external_receipts(
         if Path("/Applications/ZCode.app").exists()
         else "ZCode desktop and batch interface are unavailable"
     )
-    receipts.append(blocked_receipt(
+    return blocked_receipt(
         harness_id="zcode",
         harness_version=None,
         adapter="zcode-desktop",
         blockers=(zcode_reason,),
         manifest=manifest,
         workspace=workspace,
-    ))
-    return receipts
+    )
 
 
 def blocked_receipt(
@@ -533,6 +803,25 @@ def _acceptance_digest(workspace: Path) -> str | None:
     return canonical_digest(path.read_text(encoding="utf-8")) if path.is_file() else None
 
 
+def _advertised_tools(requests: list[dict[str, Any]]) -> list[str]:
+    return sorted({
+        str(name)
+        for request in requests
+        for name in request.get("tool_names", [])
+    })
+
+
+def _requests_match_tool_surface(
+    requests: list[dict[str, Any]],
+    allowed_tools: list[str],
+) -> bool:
+    return bool(requests) and all(
+        sorted({str(name) for name in request.get("tool_names", [])})
+        == allowed_tools
+        for request in requests
+    )
+
+
 def _write_pi_config(config: Path, base_url: str) -> None:
     value = {
         "providers": {
@@ -568,6 +857,66 @@ def _write_pi_config(config: Path, base_url: str) -> None:
     )
 
 
+def _write_openclaw_config(path: Path, base_url: str) -> None:
+    model_ref = f"taiyi-benchmark/{CONTROLLED_MODEL_ID}"
+    value = {
+        "agents": {
+            "defaults": {
+                "model": {"primary": model_ref},
+                "models": {model_ref: {"alias": "TaiYi Controlled"}},
+            }
+        },
+        "models": {
+            "mode": "merge",
+            "providers": {
+                "taiyi-benchmark": {
+                    "baseUrl": base_url,
+                    "apiKey": "benchmark-local-only",
+                    "api": "openai-completions",
+                    "models": [{
+                        "id": CONTROLLED_MODEL_ID,
+                        "name": "TaiYi Controlled Model",
+                        "reasoning": False,
+                        "input": ["text"],
+                        "cost": {
+                            "input": 0,
+                            "output": 0,
+                            "cacheRead": 0,
+                            "cacheWrite": 0,
+                        },
+                        "contextWindow": 16384,
+                        "maxTokens": 1024,
+                    }],
+                }
+            },
+        },
+        "tools": {
+            "profile": "coding",
+            "allow": ["read", "write"],
+            # OpenClaw treats `write` as implicitly compatible with
+            # `apply_patch`; deny it explicitly so the model sees exactly the
+            # two capabilities frozen in the comparative manifest.
+            "deny": [
+                "edit",
+                "apply_patch",
+                "exec",
+                "process",
+                "sessions_yield",
+                "tool_call",
+                "tool_describe",
+                "tool_search",
+            ],
+            "toolSearch": False,
+            "codeMode": False,
+            "fs": {"workspaceOnly": True},
+        },
+    }
+    path.write_text(
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _pi_blockers(executable: Path) -> tuple[str, ...]:
     blockers: list[str] = []
     if not executable.is_file():
@@ -579,8 +928,23 @@ def _pi_blockers(executable: Path) -> tuple[str, ...]:
     return tuple(blockers)
 
 
+def _openclaw_blockers(executable: Path) -> tuple[str, ...]:
+    blockers: list[str] = []
+    if not executable.is_file():
+        blockers.append("OpenClaw executable was not supplied or does not exist")
+    if platform.system() != "Darwin" or shutil.which("sandbox-exec") is None:
+        blockers.append("this baseline requires the macOS sandbox-exec isolation wrapper")
+    if shutil.which("node") is None:
+        blockers.append("OpenClaw requires Node.js but no node executable is available")
+    if executable.is_file() and not _openclaw_agent_exec_available(executable):
+        blockers.append(
+            "installed OpenClaw release lacks the isolated agent exec batch interface"
+        )
+    return tuple(blockers)
+
+
 def _macos_profile(*, run_root: Path, executable: Path, model_port: int) -> str:
-    install_root = _pi_install_root(executable)
+    install_root = _node_package_root(executable)
     allowed = [run_root.resolve(), install_root.resolve()]
     node = shutil.which("node")
     if node:
@@ -609,7 +973,7 @@ def _macos_profile(*, run_root: Path, executable: Path, model_port: int) -> str:
 """
 
 
-def _pi_install_root(executable: Path) -> Path:
+def _node_package_root(executable: Path) -> Path:
     resolved = executable.resolve()
     for parent in resolved.parents:
         if parent.name == "node_modules":
@@ -726,14 +1090,44 @@ def _read_jsonl(path: Path) -> tuple[list[dict[str, Any]], int]:
     return events, errors
 
 
-def _sanitize_log(path: Path, roots: tuple[Path, ...]) -> None:
-    text = path.read_text(encoding="utf-8", errors="replace")
-    for root in sorted({str(item.resolve()) for item in roots}, key=len, reverse=True):
-        text = text.replace(root, "<ISOLATED_ROOT>")
+def _read_json_object(path: Path) -> tuple[dict[str, Any] | None, str | None]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return None, f"invalid JSON response: {type(exc).__name__}: {exc}"
+    if not isinstance(value, dict):
+        return None, "invalid JSON response: expected an object"
+    return value, None
+
+
+def _sanitize_log(
+    path: Path,
+    roots: tuple[Path, ...],
+    *,
+    replacements: dict[str, str] | None = None,
+) -> None:
+    text = _sanitize_text(
+        path.read_text(encoding="utf-8", errors="replace"),
+        roots,
+        replacements=replacements,
+    )
     path.write_text(text, encoding="utf-8")
 
 
-def _openclaw_agent_exec_available(executable: str) -> bool:
+def _sanitize_text(
+    text: str,
+    roots: tuple[Path, ...],
+    *,
+    replacements: dict[str, str] | None = None,
+) -> str:
+    for root in sorted({str(item.resolve()) for item in roots}, key=len, reverse=True):
+        text = text.replace(root, "<ISOLATED_ROOT>")
+    for source, replacement in (replacements or {}).items():
+        text = text.replace(source, replacement)
+    return text
+
+
+def _openclaw_agent_exec_available(executable: str | Path) -> bool:
     try:
         result = subprocess.run(
             [executable, "agent", "exec", "--help"],
@@ -770,8 +1164,9 @@ __all__ = [
     "COMPARATIVE_CASE_ID",
     "COMPARATIVE_PROMPT",
     "COMPARATIVE_SCOPE",
-    "blocked_external_receipts",
+    "blocked_zcode_receipt",
     "comparative_manifest",
+    "run_openclaw_cell",
     "run_pi_cell",
     "run_taiyi_cell",
     "workspace_snapshot",

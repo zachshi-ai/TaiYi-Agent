@@ -45,13 +45,15 @@ def tool_names() -> list[str]:
     return [t.id for t in BUILTIN_TOOLS]
 
 
-def tool_hint_block() -> str:
+def tool_hint_block(allowed_ids: list[str] | None = None) -> str:
     """A self-contained description block for the system prompt.
 
     Teaches the model BOTH the call syntax (``tool: <id> <args…>``) and the
     available tools with examples, so it emits the exact ids governance and the
     executor expect.
     """
+    allowed = set(allowed_ids) if allowed_ids is not None else None
+    selected = [tool for tool in BUILTIN_TOOLS if allowed is None or tool.id in allowed]
     lines = [
         "## Tools",
         "To call a tool, reply with a SINGLE line in this exact form and stop:",
@@ -62,7 +64,7 @@ def tool_hint_block() -> str:
         "",
         "Available tools:",
     ]
-    for t in BUILTIN_TOOLS:
+    for t in selected:
         ex = f"  (e.g. `{t.example}`)" if t.example else ""
         lines.append(f"- `{t.id}` — {t.description}{ex}")
     return "\n".join(lines)

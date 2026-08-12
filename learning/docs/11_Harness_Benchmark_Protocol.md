@@ -79,8 +79,10 @@ Run the benchmark with:
 
 ```bash
 taiyi benchmark protocol --output research/benchmark/results/protocol-v1
-taiyi benchmark comparative --pi-executable /path/to/pinned/pi \
-  --output research/benchmark/results/comparative-smoke-v1
+taiyi benchmark comparative \
+  --pi-executable /path/to/pinned/pi \
+  --openclaw-executable /path/to/pinned/openclaw \
+  --output research/benchmark/results/comparative-smoke-v2
 taiyi benchmark probe --output /tmp/taiyi-harness-probes
 ```
 

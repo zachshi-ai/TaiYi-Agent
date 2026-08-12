@@ -10,8 +10,9 @@ from typing import Any, Iterable
 
 from taiyi.benchmark.adapters import probe_external_harnesses, probe_set_digest
 from taiyi.benchmark.comparative import (
-    blocked_external_receipts,
+    blocked_zcode_receipt,
     comparative_manifest,
+    run_openclaw_cell,
     run_pi_cell,
     run_taiyi_cell,
 )
@@ -85,12 +86,13 @@ def run_comparative_smoke(
     output_dir: str | Path,
     *,
     pi_executable: str | Path | None = None,
+    openclaw_executable: str | Path | None = None,
 ) -> dict[str, Any]:
     """Run same-endpoint transport/tool cells without claiming model quality."""
 
     destination = Path(output_dir)
     destination.mkdir(parents=True, exist_ok=True)
-    for harness_id in ("taiyi", "pi"):
+    for harness_id in ("taiyi", "pi", "openclaw"):
         for log_name in ("stdout.log", "stderr.log"):
             (destination / "raw" / harness_id / log_name).unlink(missing_ok=True)
     with ControlledModelServer() as server:
@@ -118,7 +120,21 @@ def run_comparative_smoke(
                 run_root=scratch / "pi",
                 artifact_dir=destination / "raw" / "pi",
             ))
-            receipts.extend(blocked_external_receipts(manifest, scratch))
+            discovered_openclaw = (
+                str(openclaw_executable)
+                if openclaw_executable
+                else shutil.which("openclaw")
+            )
+            receipts.append(run_openclaw_cell(
+                openclaw_executable=(
+                    discovered_openclaw or scratch / "missing-openclaw"
+                ),
+                server=server,
+                manifest=manifest,
+                run_root=scratch / "openclaw",
+                artifact_dir=destination / "raw" / "openclaw",
+            ))
+            receipts.append(blocked_zcode_receipt(manifest, scratch))
 
         for receipt in receipts:
             write_artifact(

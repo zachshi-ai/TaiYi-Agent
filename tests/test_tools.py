@@ -16,6 +16,7 @@ from taiyi.governance import GovernanceEngine, LocalPermitClient
 from taiyi.runtime import TaskRuntime, TaskState
 from taiyi.scheduler import PlanStep, SchedulerEngine
 from taiyi.tools import SandboxExecutor, SSRFError, SSRFGuard, safe_environment
+from taiyi.tools.registry import tool_hint_block
 
 HAS_GIT = shutil.which("git") is not None
 
@@ -92,6 +93,28 @@ def test_file_write_then_read_in_sandbox(tmp_path):
     ex = SandboxExecutor(tmp_path)
     assert ex.execute(PlanStep("file:write", ["note.txt", "hello"])).ok
     assert ex.execute(PlanStep("file:read", ["note.txt"])).output == "hello"
+
+
+def test_executor_capability_allowlist_denies_unlisted_tools(tmp_path):
+    ex = SandboxExecutor(
+        tmp_path,
+        allowed_tools=("file:read", "file:write"),
+    )
+
+    assert ex.execute(PlanStep("file:write", ["note.txt", "hello"])).ok
+    denied = ex.execute(PlanStep("shell:echo", ["unsafe expansion"]))
+    assert not denied.ok
+    assert "capability policy" in denied.output
+    assert not ex.supports_jobs(PlanStep("shell:echo", []))
+
+
+def test_tool_hint_can_be_restricted_to_frozen_capabilities():
+    hint = tool_hint_block(["file:read", "file:write"])
+
+    assert "`file:read`" in hint
+    assert "`file:write`" in hint
+    assert "`shell:<command>`" not in hint
+    assert "`http:get`" not in hint
 
 
 def test_path_traversal_is_blocked(tmp_path):

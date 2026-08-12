@@ -15,7 +15,7 @@ productivity ranking.
 
 ## Frozen comparison contract
 
-The `comparative-smoke-v1` manifest freezes:
+The `comparative-smoke-v2` manifest freezes:
 
 - one prompt: create `result.txt` containing exactly `verified`;
 - one initial workspace fixture and digest;
@@ -60,7 +60,11 @@ controller replaces private filesystem roots and copies the sanitized logs into
 the result artifact. Native clipboard loading is disabled in this non-interactive
 cell so a transport benchmark cannot read the real macOS preference domain.
 
-## What the first baseline found
+## What the baselines found
+
+The first v1 baseline established the TaiYi/Pi path and correctly excluded the
+locally installed OpenClaw 2026.7.1-2 because that stable release did not expose
+the required batch contract:
 
 | Harness | Version observed | Status | Requests | Tool calls | Independent acceptance |
 | --- | --- | --- | ---: | ---: | --- |
@@ -84,30 +88,48 @@ sanitized stderr. This is the same observability principle TaiYi needs for the
 reported OpenClaw `exec error` / `llm request timeout` problem: classify by the
 active phase and retain enough evidence to prove the classification.
 
-OpenClaw's current main-branch documentation describes a headless
+OpenClaw's main-branch documentation describes a headless
 [`openclaw agent exec`](https://github.com/openclaw/openclaw/blob/main/docs/cli/agent.md)
-interface with temporary state, isolated configuration, and stable JSON, plus a
-separate [sandbox model](https://github.com/openclaw/openclaw/blob/main/docs/gateway/sandboxing.md).
-The locally observed 2026.7.1-2 release does not expose that subcommand, so this
-baseline records a versioned blocker instead of silently running its host-enabled
-agent command. ZCode documents interactive commands including `/goal` and
-`/compact`, but its [command documentation](https://zcode.z.ai/en/docs/commands)
-does not provide an authoritative non-interactive evidence stream; it therefore
-remains an explicit black-box cell.
+interface with isolated configuration/state, phase-aware timeout exits, and
+stable JSON. That contract is published in OpenClaw 2026.8.1-beta.1, so v2 pins
+that exact package outside the repository and adds a normalized adapter. The
+locally installed stable 2026.7.1-2 remains incompatible; TaiYi never silently
+substitutes the older host-enabled agent command.
+
+| Harness | Version observed | Status | Requests | Tool calls | Tool surface | Independent acceptance |
+| --- | --- | --- | ---: | ---: | --- | --- |
+| TaiYi | 0.1.0 | `MEASURED` | 2 | 1 | exact read/write capability policy | pass |
+| Pi | 0.84.1 | `MEASURED` | 2 | 1 | observed `read`, `write` | pass |
+| OpenClaw | 2026.8.1-beta.1 | `MEASURED` | 2 | 1 | observed `read`, `write` | pass |
+| ZCode | desktop application | `NOT_COMPARABLE` | 0 | 0 | unknown | not run |
+
+The v2 baseline and repeated verification runs each produced three comparable
+cells, all passed, with zero false completions. Tool equality is a hard gate, not
+a configuration claim: Pi/OpenClaw tool names are read from the actual model
+requests, while TaiYi constrains both its model hint and executor. A missing or
+extra capability makes the cell non-comparable even if it creates the file.
+
+ZCode documents interactive commands including `/goal` and `/compact`, but its
+[command documentation](https://zcode.z.ai/en/docs/commands) does not provide an
+authoritative non-interactive evidence stream; it therefore remains an explicit
+black-box cell.
 
 ## Run and inspect
 
-Install a pinned Pi executable outside the repository, then pass its exact path:
+Install pinned Pi and OpenClaw executables outside the repository, then pass
+their exact paths:
 
 ```bash
 taiyi benchmark comparative \
   --pi-executable /path/to/pinned/pi \
-  --output research/benchmark/results/comparative-smoke-v1
+  --openclaw-executable /path/to/pinned/openclaw \
+  --output research/benchmark/results/comparative-smoke-v2
 ```
 
 The output contains the frozen manifest, one signed receipt per harness, the
-aggregate report, and sanitized Pi stdout/stderr. `NOT_COMPARABLE` is a valid and
-important outcome: unavailable evidence is never converted into a score.
+aggregate report, and sanitized stdout/stderr. `NOT_COMPARABLE` is a valid and
+important outcome: unavailable or mismatched evidence is never converted into a
+score.
 
 ## Next comparison layer
 

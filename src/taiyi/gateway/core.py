@@ -315,6 +315,7 @@ def build_gateway(
     repository_index_enabled: bool = True,
     repository_index_max_files: int = 50_000,
     repository_file_max_bytes: int = 524_288,
+    tool_names: list[str] | None = None,
     llm_sleep=time.sleep,
     llm_clock=time.time,
 ) -> Gateway:
@@ -416,6 +417,7 @@ def build_gateway(
             run_store=run_store,
             context_engine=context_engine,
             effect_manager=effect_manager,
+            tool_names=tool_names,
             llm_sleep=llm_sleep,
             llm_clock=llm_clock,
         )

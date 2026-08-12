@@ -21,11 +21,14 @@ def main(argv: list[str] | None = None) -> int:
     run_root = Path(args.run_root).resolve()
     workspace = run_root / "workspace"
     result_path = run_root / "worker-result.json"
+    allowed_tools = ("file:read", "file:write")
     payload: dict[str, object] = {
         "reported_state": "HARNESS_ERROR",
         "tool_calls": 0,
         "execution_environment": "workspace",
         "effect_statuses": [],
+        "model_visible_tools": list(allowed_tools),
+        "executor_allowed_tools": list(allowed_tools),
         "error": None,
     }
     try:
@@ -39,7 +42,11 @@ def main(argv: list[str] | None = None) -> int:
             stream_idle_timeout=5,
             hard_timeout=20,
         )
-        executor = SandboxExecutor(workspace, backend="local")
+        executor = SandboxExecutor(
+            workspace,
+            backend="local",
+            allowed_tools=allowed_tools,
+        )
         gateway = build_gateway(
             base_dir=run_root / "state",
             mode="agent",
@@ -47,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
             executor=executor,
             provider=provider,
             validator=False,
+            tool_names=list(allowed_tools),
             llm_sleep=lambda _delay: None,
         )
         ctx = gateway.submit(args.prompt, operating_mode="balanced")
