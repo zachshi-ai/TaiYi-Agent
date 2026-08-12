@@ -1,0 +1,126 @@
+{
+  "digest": "sha256:4018466593f806ae80231b52c34f97205b412770a9a3dafc04cf2b524bb66cb9",
+  "payload": {
+    "adapter": "taiyi-live-openai-production-runtime",
+    "blockers": [],
+    "budget_passed": true,
+    "case_id": "model_stream_idle_timeout",
+    "claimed_complete": false,
+    "comparability_signature": "sha256:a57e708fc115e03e223355833e10c822378faf4087b92651dd122752da6fece7",
+    "comparable": true,
+    "duration_seconds": 3.351953375036828,
+    "error": null,
+    "evidence": {
+      "acceptance_observed_digest": null,
+      "attribution_matches": true,
+      "effect_statuses": [],
+      "execution_environment": "workspace",
+      "executor_allowed_tools": [
+        "file:read",
+        "file:write"
+      ],
+      "final_workspace": {
+        "file_count": 1,
+        "tree_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb"
+      },
+      "initial_workspace": {
+        "file_count": 1,
+        "tree_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb"
+      },
+      "isolation": {
+        "isolated_home": true,
+        "kernel_sandbox": false,
+        "minimal_environment": true,
+        "separate_process": true,
+        "tool_workspace_confined": true
+      },
+      "model_requests": [
+        {
+          "client_disconnected": false,
+          "injected_fault": "stream_idle_stall",
+          "message_count": 6,
+          "model": "taiyi-controlled-model-v1",
+          "request_digest": "sha256:e74ab4b584258271f91255fb6bd750a55b95cd035e6040a9aeaa03aba232d34b",
+          "request_started_after_seconds": 0.27136766602052376,
+          "response_completed": false,
+          "response_started": true,
+          "roles": [
+            "system",
+            "system",
+            "system",
+            "system",
+            "user",
+            "system"
+          ],
+          "stream": true,
+          "tool_names": []
+        },
+        {
+          "client_disconnected": false,
+          "injected_fault": "stream_idle_stall",
+          "message_count": 6,
+          "model": "taiyi-controlled-model-v1",
+          "request_digest": "sha256:e74ab4b584258271f91255fb6bd750a55b95cd035e6040a9aeaa03aba232d34b",
+          "request_started_after_seconds": 1.2809587910305709,
+          "response_completed": false,
+          "response_started": true,
+          "roles": [
+            "system",
+            "system",
+            "system",
+            "system",
+            "user",
+            "system"
+          ],
+          "stream": true,
+          "tool_names": []
+        },
+        {
+          "client_disconnected": false,
+          "injected_fault": "stream_idle_stall",
+          "message_count": 6,
+          "model": "taiyi-controlled-model-v1",
+          "request_digest": "sha256:e74ab4b584258271f91255fb6bd750a55b95cd035e6040a9aeaa03aba232d34b",
+          "request_started_after_seconds": 2.289034374989569,
+          "response_completed": false,
+          "response_started": true,
+          "roles": [
+            "system",
+            "system",
+            "system",
+            "system",
+            "user",
+            "system"
+          ],
+          "stream": true,
+          "tool_names": []
+        }
+      ],
+      "model_visible_tools": [
+        "file:read",
+        "file:write"
+      ],
+      "secret_env_names": [],
+      "stderr_log": "raw/taiyi/stderr.log",
+      "stdout_log": "raw/taiyi/stdout.log",
+      "tool_surface_matches": true
+    },
+    "exit_code": 0,
+    "failure_kind": "LLM_STREAM_IDLE_TIMEOUT",
+    "failure_phase": "LLM_STREAM_IDLE",
+    "false_completion": false,
+    "final_workspace_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb",
+    "harness_id": "taiyi",
+    "harness_version": "0.1.0",
+    "initial_workspace_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb",
+    "measurement_status": "MEASURED",
+    "model_id": "taiyi-controlled-model-v1",
+    "model_requests": 3,
+    "reported_state": "FAILED",
+    "run_id": "taiyi-a09a35880fa7",
+    "task_passed": false,
+    "timed_out": false,
+    "tool_calls": 0
+  },
+  "schema_version": "taiyi.harness-comparative-fault-receipt/v1"
+}

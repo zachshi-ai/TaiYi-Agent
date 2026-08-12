@@ -5,22 +5,30 @@ import shutil
 import statistics
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Iterable
 
 from taiyi.benchmark.adapters import probe_external_harnesses, probe_set_digest
 from taiyi.benchmark.comparative import (
+    COMPARATIVE_FAULT_CASES,
+    COMPARATIVE_FAULT_SCOPE,
     blocked_zcode_receipt,
     comparative_manifest,
     run_openclaw_cell,
     run_pi_cell,
     run_taiyi_cell,
 )
-from taiyi.benchmark.model_fixture import ControlledModelServer
+from taiyi.benchmark.model_fixture import (
+    ControlledModelServer,
+    controlled_model_policy_digest,
+)
 from taiyi.benchmark.protocol import TaiYiProtocolAdapter, cases_manifest, protocol_cases
 from taiyi.benchmark.schema import (
     BENCHMARK_SCHEMA,
     COMPARATIVE_MANIFEST_SCHEMA,
+    COMPARATIVE_FAULT_REPORT_SCHEMA,
+    COMPARATIVE_FAULT_RECEIPT_SCHEMA,
     COMPARATIVE_RECEIPT_SCHEMA,
     COMPARATIVE_REPORT_SCHEMA,
     REPORT_SCHEMA,
@@ -34,6 +42,9 @@ from taiyi.benchmark.schema import (
 
 
 OPERATING_MODES = ("quality", "balanced", "efficiency")
+FAULT_MATRIX_WALL_TIMEOUT_SECONDS = 18.0
+FAULT_MATRIX_PHASE_TIMEOUT_SECONDS = 1.0
+FAULT_MATRIX_STALL_SECONDS = 25.0
 
 
 def write_probe_report(output_dir: str | Path) -> dict[str, Any]:
@@ -152,6 +163,240 @@ def run_comparative_smoke(
             render_comparative_markdown(report), encoding="utf-8"
         )
         return report
+
+
+def run_comparative_fault_matrix(
+    output_dir: str | Path,
+    *,
+    pi_executable: str | Path | None = None,
+    openclaw_executable: str | Path | None = None,
+) -> dict[str, Any]:
+    """Inject model stalls and normalize the owning failure phase per harness."""
+
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    discovered_pi = str(pi_executable) if pi_executable else shutil.which("pi")
+    discovered_openclaw = (
+        str(openclaw_executable)
+        if openclaw_executable
+        else shutil.which("openclaw")
+    )
+    receipts: list[ComparativeReceipt] = []
+    manifests: dict[str, dict[str, Any]] = {}
+    with tempfile.TemporaryDirectory(prefix="taiyi-comparative-faults-") as temporary:
+        scratch = Path(temporary)
+        for spec in COMPARATIVE_FAULT_CASES:
+            case_id = str(spec["case_id"])
+            fault = str(spec["fault"])
+            manifest = comparative_manifest(
+                controlled_model_policy_digest(
+                    fault=fault,
+                    fault_delay_seconds=FAULT_MATRIX_STALL_SECONDS,
+                ),
+                case_id=case_id,
+                injected_fault=fault,
+                expected_failure_phase=str(spec["expected_failure_phase"]),
+                expected_failure_kind=str(spec["expected_failure_kind"]),
+                wall_timeout_seconds=FAULT_MATRIX_WALL_TIMEOUT_SECONDS,
+                phase_timeout_seconds=FAULT_MATRIX_PHASE_TIMEOUT_SECONDS,
+                max_model_requests=3,
+            )
+            manifests[case_id] = manifest
+            write_artifact(
+                destination / "manifests" / f"{case_id}.json",
+                COMPARATIVE_MANIFEST_SCHEMA,
+                manifest,
+            )
+
+            def run_cell(
+                harness_id: str,
+                *,
+                cell_fault: str = fault,
+                cell_manifest: dict[str, Any] = manifest,
+                cell_case_id: str = case_id,
+            ) -> ComparativeReceipt:
+                with ControlledModelServer(
+                    fault=cell_fault,
+                    fault_delay_seconds=FAULT_MATRIX_STALL_SECONDS,
+                ) as server:
+                    if server.policy_digest != cell_manifest["model_policy_digest"]:
+                        raise RuntimeError("fault-cell comparability signatures drifted")
+                    run_root = scratch / cell_case_id / harness_id
+                    artifact_dir = destination / "raw" / cell_case_id / harness_id
+                    if harness_id == "taiyi":
+                        return run_taiyi_cell(
+                            server=server,
+                            manifest=cell_manifest,
+                            run_root=run_root,
+                            artifact_dir=artifact_dir,
+                        )
+                    if harness_id == "pi":
+                        return run_pi_cell(
+                            pi_executable=(
+                                discovered_pi or scratch / "missing-pi"
+                            ),
+                            server=server,
+                            manifest=cell_manifest,
+                            run_root=run_root,
+                            artifact_dir=artifact_dir,
+                        )
+                    return run_openclaw_cell(
+                        openclaw_executable=(
+                            discovered_openclaw or scratch / "missing-openclaw"
+                        ),
+                        server=server,
+                        manifest=cell_manifest,
+                        run_root=run_root,
+                        artifact_dir=artifact_dir,
+                    )
+
+            harness_ids = ("taiyi", "pi", "openclaw")
+            with ThreadPoolExecutor(max_workers=len(harness_ids)) as pool:
+                futures = [pool.submit(run_cell, harness_id) for harness_id in harness_ids]
+                receipts.extend(future.result() for future in futures)
+            receipts.append(blocked_zcode_receipt(manifest, scratch / case_id))
+
+    for receipt in receipts:
+        write_artifact(
+            destination / "runs" / f"{receipt.case_id}--{receipt.harness_id}.json",
+            COMPARATIVE_FAULT_RECEIPT_SCHEMA,
+            receipt.to_dict(),
+        )
+    report = build_comparative_fault_report(receipts, manifests)
+    write_artifact(
+        destination / "report.json",
+        COMPARATIVE_FAULT_REPORT_SCHEMA,
+        report,
+    )
+    (destination / "REPORT.md").write_text(
+        render_comparative_fault_markdown(report),
+        encoding="utf-8",
+    )
+    return report
+
+
+def build_comparative_fault_report(
+    receipts: Iterable[ComparativeReceipt],
+    manifests: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    values = list(receipts)
+    comparable = [
+        item for item in values
+        if item.comparable and item.measurement_status is MeasurementStatus.MEASURED
+    ]
+    expected_cells = len(manifests) * 3
+    attributed = [
+        item for item in comparable
+        if item.failure_phase == manifests[item.case_id]["expected_failure_phase"]
+        and item.failure_kind == manifests[item.case_id]["expected_failure_kind"]
+    ]
+    safe = [
+        item for item in attributed
+        if (
+            not item.claimed_complete
+            and not item.task_passed
+            and not item.false_completion
+            and item.budget_passed
+        )
+    ]
+    startup_latency_by_harness: dict[str, dict[str, float | int]] = {}
+    for harness_id in sorted({item.harness_id for item in comparable}):
+        delays = [
+            delay
+            for item in comparable
+            if item.harness_id == harness_id
+            for delay in [_first_model_request_delay(item)]
+            if delay is not None
+        ]
+        if delays:
+            startup_latency_by_harness[harness_id] = {
+                "samples": len(delays),
+                "mean_seconds": statistics.fmean(delays),
+                "max_seconds": max(delays),
+            }
+    return {
+        "measurement_scope": COMPARATIVE_FAULT_SCOPE,
+        "generated_at": time.time(),
+        "case_count": len(manifests),
+        "cell_count": len(values),
+        "expected_comparable_cell_count": expected_cells,
+        "comparable_cell_count": len(comparable),
+        "attributed_cell_count": len(attributed),
+        "safe_failure_cell_count": len(safe),
+        "complete_matrix": len(comparable) == expected_cells,
+        "all_comparable_failures_attributed": (
+            bool(comparable) and len(attributed) == len(comparable)
+        ),
+        "all_attributed_failures_safe": (
+            bool(attributed) and len(safe) == len(attributed)
+        ),
+        "false_completions": sum(item.false_completion for item in values),
+        "startup_latency_by_harness": startup_latency_by_harness,
+        "ranking_eligible": False,
+        "manifests": manifests,
+        "cells": [item.to_dict() for item in values],
+        "claim_boundary": [
+            "This matrix measures failure attribution and safe termination, not model quality.",
+            "The controlled stalls are deterministic substitutes for provider failures.",
+            "Real large-repository ranking still requires one frozen provider/model and repository image.",
+        ],
+    }
+
+
+def render_comparative_fault_markdown(report: dict[str, Any]) -> str:
+    lines = [
+        "# TaiYi Controlled Cross-Harness Fault Matrix",
+        "",
+        f"- Cases: {report['case_count']}",
+        f"- Comparable cells: {report['comparable_cell_count']} / {report['expected_comparable_cell_count']}",
+        f"- Attributed failures: {report['attributed_cell_count']}",
+        f"- Safe failures: {report['safe_failure_cell_count']}",
+        f"- False completions: {report['false_completions']}",
+        f"- Complete matrix: {'YES' if report['complete_matrix'] else 'NO'}",
+        f"- Ranking eligible: {'YES' if report['ranking_eligible'] else 'NO'}",
+        "",
+        "| Case | Harness | Status | Comparable | First request (s) | Failure phase | Failure kind | Safe | Observed error / blocker |",
+        "| --- | --- | --- | ---: | ---: | --- | --- | ---: | --- |",
+    ]
+    manifests = report["manifests"]
+    for cell in report["cells"]:
+        safe = (
+            cell.get("failure_phase")
+            == manifests[cell["case_id"]]["expected_failure_phase"]
+            and cell.get("failure_kind")
+            == manifests[cell["case_id"]]["expected_failure_kind"]
+            and not cell["claimed_complete"]
+            and not cell["task_passed"]
+            and cell["budget_passed"]
+        )
+        blocker = "; ".join(cell["blockers"]) or cell.get("error") or "-"
+        request_delays = [
+            request.get("request_started_after_seconds")
+            for request in cell.get("evidence", {}).get("model_requests", [])
+            if request.get("request_started_after_seconds") is not None
+        ]
+        first_request = min(request_delays) if request_delays else None
+        first_request_text = f"{first_request:.3f}" if first_request is not None else "-"
+        lines.append(
+            f"| {cell['case_id']} | {cell['harness_id']} | "
+            f"{cell['measurement_status']} | {'yes' if cell['comparable'] else 'no'} | "
+            f"{first_request_text} | "
+            f"{cell.get('failure_phase') or '-'} | {cell.get('failure_kind') or '-'} | "
+            f"{'yes' if safe else 'no'} | {blocker} |"
+        )
+    lines.extend(["", "## Claim boundary", ""])
+    lines.extend(f"- {item}" for item in report["claim_boundary"])
+    lines.append("")
+    return "\n".join(lines)
+
+
+def _first_model_request_delay(receipt: ComparativeReceipt) -> float | None:
+    delays = [
+        request.get("request_started_after_seconds")
+        for request in receipt.evidence.get("model_requests", [])
+        if request.get("request_started_after_seconds") is not None
+    ]
+    return min(float(delay) for delay in delays) if delays else None
 
 
 def build_comparative_report(
@@ -338,7 +583,10 @@ def _percent(value: float | None) -> str:
 __all__ = [
     "OPERATING_MODES",
     "build_report",
+    "build_comparative_fault_report",
+    "render_comparative_fault_markdown",
     "render_markdown_report",
+    "run_comparative_fault_matrix",
     "run_comparative_smoke",
     "run_protocol_matrix",
     "write_probe_report",

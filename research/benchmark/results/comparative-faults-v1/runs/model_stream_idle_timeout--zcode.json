@@ -1,0 +1,37 @@
+{
+  "digest": "sha256:6630afc909f8e621fa2d64759e48296f165cf8a4ea7d4a9857e6815ec89271fb",
+  "payload": {
+    "adapter": "zcode-desktop",
+    "blockers": [
+      "ZCode desktop is installed but has no documented non-interactive batch interface"
+    ],
+    "budget_passed": false,
+    "case_id": "model_stream_idle_timeout",
+    "claimed_complete": false,
+    "comparability_signature": "sha256:a57e708fc115e03e223355833e10c822378faf4087b92651dd122752da6fece7",
+    "comparable": false,
+    "duration_seconds": 0.0,
+    "error": null,
+    "evidence": {
+      "workspace": {
+        "file_count": 1,
+        "tree_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb"
+      }
+    },
+    "exit_code": null,
+    "false_completion": false,
+    "final_workspace_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb",
+    "harness_id": "zcode",
+    "harness_version": null,
+    "initial_workspace_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb",
+    "measurement_status": "NOT_COMPARABLE",
+    "model_id": "taiyi-controlled-model-v1",
+    "model_requests": 0,
+    "reported_state": "NOT_RUN",
+    "run_id": "zcode-fe1b809cece2",
+    "task_passed": false,
+    "timed_out": false,
+    "tool_calls": 0
+  },
+  "schema_version": "taiyi.harness-comparative-fault-receipt/v1"
+}

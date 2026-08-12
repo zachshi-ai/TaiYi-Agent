@@ -83,8 +83,11 @@ confined write, emit a terminal receipt, and pass an independent artifact check.
 It also proves that unavailable ZCode automation stays unranked.
 
 V2 does not prove coding quality, production speed, large-repository stability,
-or superiority over another harness. Those require Phase 7B2: the same real
-provider/model revision, repository image, context/token budgets, fault schedule,
-tool permissions, and evaluator across every ranked cell. The first matrix
-should target context overflow, first-token/idle/hard timeouts, large output,
-process-tree cancellation, restart continuation, and ambiguous side effects.
+or superiority over another harness. Phase 7B2.1 now covers controlled
+first-token and stream-idle timeout attribution; see
+[`14_Cross_Harness_Fault_Attribution.md`](./14_Cross_Harness_Fault_Attribution.md).
+The remaining Phase 7B2 work still requires the same real provider/model
+revision, repository image, context/token budgets, fault schedule, tool
+permissions, and evaluator across every ranked cell. It should next target
+context overflow, tool-process timeout, large output, process-tree cancellation,
+restart continuation, and ambiguous side effects.

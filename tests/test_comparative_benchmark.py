@@ -1,16 +1,35 @@
 import json
 from dataclasses import replace
+from pathlib import Path
+
+import pytest
 
 from taiyi.benchmark.comparative import (
     COMPARATIVE_PROMPT,
+    FAILURE_KIND_FIRST_TOKEN_TIMEOUT,
+    FAILURE_KIND_HARNESS_STARTUP_TIMEOUT,
+    FAILURE_KIND_STREAM_IDLE_TIMEOUT,
+    FAILURE_PHASE_FIRST_TOKEN,
+    FAILURE_PHASE_PROCESS_START,
+    FAILURE_PHASE_STREAM_IDLE,
+    _classify_controlled_failure,
     _read_json_object,
     _requests_match_tool_surface,
     _write_openclaw_config,
     comparative_manifest,
     run_taiyi_cell,
 )
-from taiyi.benchmark.model_fixture import CONTROLLED_MODEL_ID, ControlledModelServer
-from taiyi.benchmark.runner import build_comparative_report, run_comparative_smoke
+from taiyi.benchmark.model_fixture import (
+    CONTROLLED_MODEL_ID,
+    FAULT_FIRST_TOKEN_STALL,
+    FAULT_STREAM_IDLE_STALL,
+    ControlledModelServer,
+)
+from taiyi.benchmark.runner import (
+    build_comparative_fault_report,
+    build_comparative_report,
+    run_comparative_smoke,
+)
 from taiyi.benchmark.schema import (
     COMPARATIVE_MANIFEST_SCHEMA,
     COMPARATIVE_RECEIPT_SCHEMA,
@@ -18,7 +37,7 @@ from taiyi.benchmark.schema import (
     MeasurementStatus,
     verify_artifact,
 )
-from taiyi.llm import LLMMessage, OpenAICompatProvider
+from taiyi.llm import LLMErrorKind, LLMMessage, LLMRequestError, OpenAICompatProvider
 
 
 def test_controlled_model_endpoint_has_a_fixed_two_turn_policy():
@@ -52,6 +71,15 @@ def test_comparability_signature_does_not_depend_on_ephemeral_port():
     assert one == two
     assert "127.0.0.1" not in json.dumps(one)
     assert one["ranking_eligible"] is False
+    baseline_path = (
+        Path(__file__).parents[1]
+        / "research/benchmark/results/comparative-smoke-v2/manifest.json"
+    )
+    baseline = verify_artifact(
+        json.loads(baseline_path.read_text()),
+        schema_version=COMPARATIVE_MANIFEST_SCHEMA,
+    )
+    assert one == baseline
 
 
 def test_openclaw_config_pins_only_the_controlled_provider(tmp_path):
@@ -100,6 +128,103 @@ def test_every_model_request_must_have_the_frozen_tool_surface():
     assert not _requests_match_tool_surface([], expected)
 
 
+@pytest.mark.parametrize(
+    ("fault", "expected_kind", "response_started"),
+    [
+        (FAULT_FIRST_TOKEN_STALL, LLMErrorKind.LLM_FIRST_TOKEN_TIMEOUT, False),
+        (FAULT_STREAM_IDLE_STALL, LLMErrorKind.LLM_STREAM_IDLE_TIMEOUT, True),
+    ],
+)
+def test_controlled_fault_endpoint_records_the_timeout_boundary(
+    fault,
+    expected_kind,
+    response_started,
+):
+    with ControlledModelServer(
+        fault=fault,
+        fault_delay_seconds=0.2,
+    ) as server:
+        provider = OpenAICompatProvider(
+            server.base_url,
+            model=CONTROLLED_MODEL_ID,
+            connect_timeout=0.1,
+            first_token_timeout=0.05,
+            stream_idle_timeout=0.05,
+            hard_timeout=0.5,
+        )
+        with pytest.raises(LLMRequestError) as failure:
+            provider.complete([LLMMessage("user", COMPARATIVE_PROMPT)])
+        requests = server.request_summaries()
+
+    assert failure.value.kind is expected_kind
+    assert len(requests) == 1
+    assert requests[0]["response_started"] is response_started
+    assert requests[0]["response_completed"] is False
+
+
+@pytest.mark.parametrize(
+    ("fault", "phase", "kind", "observed_request"),
+    [
+        (
+            FAULT_FIRST_TOKEN_STALL,
+            FAILURE_PHASE_FIRST_TOKEN,
+            FAILURE_KIND_FIRST_TOKEN_TIMEOUT,
+            {"response_started": False, "response_completed": False},
+        ),
+        (
+            FAULT_STREAM_IDLE_STALL,
+            FAILURE_PHASE_STREAM_IDLE,
+            FAILURE_KIND_STREAM_IDLE_TIMEOUT,
+            {"response_started": True, "response_completed": False},
+        ),
+    ],
+)
+def test_controlled_failure_classification_requires_delivery_evidence(
+    fault,
+    phase,
+    kind,
+    observed_request,
+):
+    manifest = comparative_manifest(
+        "sha256:model-policy",
+        injected_fault=fault,
+        expected_failure_phase=phase,
+        expected_failure_kind=kind,
+    )
+
+    assert _classify_controlled_failure(
+        manifest,
+        [observed_request],
+        task_passed=False,
+        claimed_complete=False,
+        timed_out=True,
+    ) == (phase, kind)
+    assert _classify_controlled_failure(
+        manifest,
+        [observed_request],
+        task_passed=True,
+        claimed_complete=True,
+        timed_out=False,
+    ) == (None, None)
+
+
+def test_no_model_request_is_a_harness_startup_timeout_not_an_llm_timeout():
+    manifest = comparative_manifest(
+        "sha256:model-policy",
+        injected_fault=FAULT_FIRST_TOKEN_STALL,
+        expected_failure_phase=FAILURE_PHASE_FIRST_TOKEN,
+        expected_failure_kind=FAILURE_KIND_FIRST_TOKEN_TIMEOUT,
+    )
+
+    assert _classify_controlled_failure(
+        manifest,
+        [],
+        task_passed=False,
+        claimed_complete=False,
+        timed_out=True,
+    ) == (FAILURE_PHASE_PROCESS_START, FAILURE_KIND_HARNESS_STARTUP_TIMEOUT)
+
+
 def test_taiyi_comparative_cell_uses_live_http_and_independent_acceptance(tmp_path):
     with ControlledModelServer() as server:
         manifest = comparative_manifest(server.policy_digest)
@@ -124,6 +249,8 @@ def test_taiyi_comparative_cell_uses_live_http_and_independent_acceptance(tmp_pa
         "file:write",
     ]
     assert receipt.evidence["tool_surface_matches"] is True
+    assert "failure_phase" not in receipt.to_dict()
+    assert "failure_kind" not in receipt.to_dict()
     assert receipt.evidence["isolation"] == {
         "separate_process": True,
         "isolated_home": True,
@@ -131,6 +258,49 @@ def test_taiyi_comparative_cell_uses_live_http_and_independent_acceptance(tmp_pa
         "tool_workspace_confined": True,
         "kernel_sandbox": False,
     }
+
+
+def test_taiyi_fault_cell_is_measured_as_a_safe_attributed_failure(tmp_path):
+    with ControlledModelServer(
+        fault=FAULT_FIRST_TOKEN_STALL,
+        fault_delay_seconds=0.5,
+    ) as server:
+        manifest = comparative_manifest(
+            server.policy_digest,
+            case_id="model_first_token_timeout",
+            injected_fault=FAULT_FIRST_TOKEN_STALL,
+            expected_failure_phase=FAILURE_PHASE_FIRST_TOKEN,
+            expected_failure_kind=FAILURE_KIND_FIRST_TOKEN_TIMEOUT,
+            wall_timeout_seconds=2.0,
+            phase_timeout_seconds=0.05,
+            max_model_requests=3,
+        )
+        receipt = run_taiyi_cell(
+            server=server,
+            manifest=manifest,
+            run_root=tmp_path,
+        )
+
+    assert receipt.measurement_status is MeasurementStatus.MEASURED
+    assert receipt.comparable is True
+    assert receipt.failure_phase == FAILURE_PHASE_FIRST_TOKEN
+    assert receipt.failure_kind == FAILURE_KIND_FIRST_TOKEN_TIMEOUT
+    assert receipt.claimed_complete is False
+    assert receipt.task_passed is False
+    assert receipt.false_completion is False
+    assert receipt.budget_passed is True
+    assert receipt.evidence["attribution_matches"] is True
+    assert receipt.to_dict()["failure_phase"] == FAILURE_PHASE_FIRST_TOKEN
+    assert receipt.to_dict()["failure_kind"] == FAILURE_KIND_FIRST_TOKEN_TIMEOUT
+
+    report = build_comparative_fault_report(
+        [receipt],
+        {manifest["case_id"]: manifest},
+    )
+    assert report["complete_matrix"] is False
+    assert report["all_comparable_failures_attributed"] is True
+    assert report["all_attributed_failures_safe"] is True
+    assert report["startup_latency_by_harness"]["taiyi"]["samples"] == 1
 
 
 def test_comparative_aggregate_requires_delivery_and_completion(tmp_path):

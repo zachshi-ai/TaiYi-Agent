@@ -1,0 +1,8 @@
+{"type":"session","version":3,"id":"019ff71c-7391-7b05-a5c5-ea96417c02c6","timestamp":"2026-08-12T17:54:24.785Z","cwd":"<ISOLATED_ROOT>"}
+{"type":"agent_start"}
+{"type":"turn_start"}
+{"type":"message_start","message":{"role":"user","content":[{"type":"text","text":"Create result.txt in the current workspace with the exact content verified. Use the available write tool, then finish."}],"timestamp":1786557264831}}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"Create result.txt in the current workspace with the exact content verified. Use the available write tool, then finish."}],"timestamp":1786557264831}}
+{"type":"message_start","message":{"role":"assistant","content":[{"type":"toolCall","id":"call_taiyi_controlled_1","name":"write","arguments":{"path":"result.txt","content":"verified"},"partialArgs":"{\"path\":\"result.txt\",\"content\":\"verified\"}","streamIndex":0}],"api":"openai-completions","provider":"taiyi-benchmark","model":"taiyi-controlled-model-v1","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"pending","timestamp":1786557264865,"responseId":"chatcmpl-taiyi-controlled"}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_start","contentIndex":0}}
+{"type":"message_update","assistantMessageEvent":{"type":"toolcall_delta","contentIndex":0,"delta":"{\"path\":\"result.txt\",\"content\":\"verified\"}"}}

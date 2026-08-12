@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
@@ -18,15 +19,44 @@ from taiyi.benchmark.schema import canonical_digest
 
 CONTROLLED_MODEL_ID = "taiyi-controlled-model-v1"
 CONTROLLED_MODEL_POLICY = "taiyi.controlled-openai-tool-policy/v1"
+FAULT_NONE = "none"
+FAULT_FIRST_TOKEN_STALL = "first_token_stall"
+FAULT_STREAM_IDLE_STALL = "stream_idle_stall"
+CONTROLLED_FAULTS = {
+    FAULT_NONE,
+    FAULT_FIRST_TOKEN_STALL,
+    FAULT_STREAM_IDLE_STALL,
+}
+
+
+@dataclass(frozen=True)
+class _ResponsePlan:
+    request_index: int
+    payload: bytes
+    chunks: tuple[bytes, ...]
+    delay_before_first: float = 0.0
+    delay_after_first: float = 0.0
 
 
 class ControlledModelServer:
     """Serve deterministic streamed Chat Completions on loopback only."""
 
-    def __init__(self):
+    def __init__(
+        self,
+        *,
+        fault: str = FAULT_NONE,
+        fault_delay_seconds: float = 0.0,
+    ):
+        if fault not in CONTROLLED_FAULTS:
+            raise ValueError(f"unsupported controlled-model fault: {fault}")
+        if fault != FAULT_NONE and fault_delay_seconds <= 0:
+            raise ValueError("fault_delay_seconds must be positive for a faulted server")
+        self.fault = fault
+        self.fault_delay_seconds = float(fault_delay_seconds)
         self._requests: list[dict[str, Any]] = []
         self._lock = threading.Lock()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+        self._server.daemon_threads = True
         self._server.controller = self  # type: ignore[attr-defined]
         self._thread = threading.Thread(
             target=self._server.serve_forever,
@@ -44,12 +74,10 @@ class ControlledModelServer:
 
     @property
     def policy_digest(self) -> str:
-        return canonical_digest({
-            "policy": CONTROLLED_MODEL_POLICY,
-            "model": CONTROLLED_MODEL_ID,
-            "first_turn": "write exact result artifact through advertised tool",
-            "after_tool": "return a fixed final answer",
-        })
+        return controlled_model_policy_digest(
+            fault=self.fault,
+            fault_delay_seconds=self.fault_delay_seconds,
+        )
 
     def start(self) -> "ControlledModelServer":
         self._thread.start()
@@ -66,16 +94,34 @@ class ControlledModelServer:
     def __exit__(self, exc_type, exc, traceback) -> None:
         self.close()
 
-    def request_summaries(self, *, since: int = 0) -> list[dict[str, Any]]:
+    def request_summaries(
+        self,
+        *,
+        since: int = 0,
+        relative_to: float | None = None,
+    ) -> list[dict[str, Any]]:
         with self._lock:
-            return [dict(item) for item in self._requests[since:]]
+            values = []
+            for item in self._requests[since:]:
+                value = {
+                    key: content
+                    for key, content in item.items()
+                    if key != "_accepted_monotonic"
+                }
+                if relative_to is not None:
+                    value["request_started_after_seconds"] = max(
+                        0.0,
+                        float(item["_accepted_monotonic"]) - relative_to,
+                    )
+                values.append(value)
+            return values
 
     @property
     def request_count(self) -> int:
         with self._lock:
             return len(self._requests)
 
-    def respond(self, body: dict[str, Any]) -> bytes:
+    def respond(self, body: dict[str, Any]) -> _ResponsePlan:
         messages = body.get("messages") if isinstance(body.get("messages"), list) else []
         tools = body.get("tools") if isinstance(body.get("tools"), list) else []
         tool_names = _tool_names(tools)
@@ -84,22 +130,62 @@ class ControlledModelServer:
             for message in messages
             if isinstance(message, dict)
         ]
-        summary = {
+        summary: dict[str, Any] = {
             "request_digest": canonical_digest(body),
             "model": str(body.get("model") or ""),
             "stream": body.get("stream") is True,
             "message_count": len(messages),
             "roles": roles,
             "tool_names": tool_names,
+            "injected_fault": self.fault,
+            "response_started": False,
+            "response_completed": False,
+            "client_disconnected": False,
+            "_accepted_monotonic": time.monotonic(),
         }
         with self._lock:
+            request_index = len(self._requests)
             self._requests.append(summary)
 
         if "tool" in roles or _has_tool_observation(messages):
-            return _sse_text("delivery prepared for independent verification")
-        if "write" in tool_names:
-            return _sse_tool("write", {"path": "result.txt", "content": "verified"})
-        return _sse_text("tool: file:write result.txt verified")
+            payload = _sse_text("delivery prepared for independent verification")
+        elif "write" in tool_names:
+            payload = _sse_tool("write", {"path": "result.txt", "content": "verified"})
+        else:
+            payload = _sse_text("tool: file:write result.txt verified")
+
+        chunks = (payload,)
+        delay_before_first = 0.0
+        delay_after_first = 0.0
+        if self.fault == FAULT_FIRST_TOKEN_STALL:
+            delay_before_first = self.fault_delay_seconds
+        elif self.fault == FAULT_STREAM_IDLE_STALL:
+            chunks = _split_after_first_event(payload)
+            delay_after_first = self.fault_delay_seconds
+        return _ResponsePlan(
+            request_index=request_index,
+            payload=payload,
+            chunks=chunks,
+            delay_before_first=delay_before_first,
+            delay_after_first=delay_after_first,
+        )
+
+    def mark_delivery(
+        self,
+        request_index: int,
+        *,
+        started: bool = False,
+        completed: bool = False,
+        disconnected: bool = False,
+    ) -> None:
+        with self._lock:
+            summary = self._requests[request_index]
+            if started:
+                summary["response_started"] = True
+            if completed:
+                summary["response_completed"] = True
+            if disconnected:
+                summary["client_disconnected"] = True
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -126,14 +212,27 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_error(400)
             return
         controller: ControlledModelServer = self.server.controller  # type: ignore[attr-defined]
-        payload = controller.respond(body)
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
-        self.send_header("Content-Length", str(len(payload)))
-        self.send_header("Connection", "close")
-        self.end_headers()
-        self.wfile.write(payload)
+        plan = controller.respond(body)
+        try:
+            if plan.delay_before_first:
+                time.sleep(plan.delay_before_first)
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Length", str(len(plan.payload)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(plan.chunks[0])
+            self.wfile.flush()
+            controller.mark_delivery(plan.request_index, started=True)
+            if plan.delay_after_first:
+                time.sleep(plan.delay_after_first)
+            for chunk in plan.chunks[1:]:
+                self.wfile.write(chunk)
+                self.wfile.flush()
+            controller.mark_delivery(plan.request_index, completed=True)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            controller.mark_delivery(plan.request_index, disconnected=True)
 
     def log_message(self, format: str, *args: object) -> None:
         return
@@ -239,8 +338,36 @@ def _encode_sse(chunks: list[dict[str, Any]]) -> bytes:
     return ("\n\n".join(lines) + "\n\n").encode("utf-8")
 
 
+def _split_after_first_event(payload: bytes) -> tuple[bytes, ...]:
+    boundary = payload.find(b"\n\n")
+    if boundary < 0 or boundary + 2 >= len(payload):
+        return (payload,)
+    return payload[:boundary + 2], payload[boundary + 2:]
+
+
+def controlled_model_policy_digest(
+    *,
+    fault: str = FAULT_NONE,
+    fault_delay_seconds: float = 0.0,
+) -> str:
+    policy: dict[str, Any] = {
+        "policy": CONTROLLED_MODEL_POLICY,
+        "model": CONTROLLED_MODEL_ID,
+        "first_turn": "write exact result artifact through advertised tool",
+        "after_tool": "return a fixed final answer",
+    }
+    if fault != FAULT_NONE:
+        policy["fault"] = fault
+        policy["fault_delay_seconds"] = float(fault_delay_seconds)
+    return canonical_digest(policy)
+
+
 __all__ = [
     "CONTROLLED_MODEL_ID",
     "CONTROLLED_MODEL_POLICY",
+    "FAULT_FIRST_TOKEN_STALL",
+    "FAULT_NONE",
+    "FAULT_STREAM_IDLE_STALL",
     "ControlledModelServer",
+    "controlled_model_policy_digest",
 ]
