@@ -70,6 +70,10 @@ class TaskPolicy:
     llm_retry_budget_seconds: float
     llm_retry_backoff_seconds: float
     llm_retry_max_backoff_seconds: float
+    repository_context_tokens: int
+    repository_context_chunks: int
+    context_keep_recent_tokens: int
+    max_context_recovery_attempts: int
     completion_rule: str
 
     @property
@@ -123,6 +127,10 @@ class TaskPolicy:
             "llm_retry_budget_seconds": self.llm_retry_budget_seconds,
             "llm_retry_backoff_seconds": self.llm_retry_backoff_seconds,
             "llm_retry_max_backoff_seconds": self.llm_retry_max_backoff_seconds,
+            "repository_context_tokens": self.repository_context_tokens,
+            "repository_context_chunks": self.repository_context_chunks,
+            "context_keep_recent_tokens": self.context_keep_recent_tokens,
+            "max_context_recovery_attempts": self.max_context_recovery_attempts,
             "completion_rule": self.completion_rule,
         }
 
@@ -143,6 +151,10 @@ _PROFILES: dict[OperatingMode, TaskPolicy] = {
         llm_retry_budget_seconds=180.0,
         llm_retry_backoff_seconds=1.0,
         llm_retry_max_backoff_seconds=30.0,
+        repository_context_tokens=16_000,
+        repository_context_chunks=24,
+        context_keep_recent_tokens=24_000,
+        max_context_recovery_attempts=2,
         completion_rule="every required acceptance criterion has passing evidence",
     ),
     OperatingMode.BALANCED: TaskPolicy(
@@ -160,6 +172,10 @@ _PROFILES: dict[OperatingMode, TaskPolicy] = {
         llm_retry_budget_seconds=60.0,
         llm_retry_backoff_seconds=0.5,
         llm_retry_max_backoff_seconds=10.0,
+        repository_context_tokens=8_000,
+        repository_context_chunks=12,
+        context_keep_recent_tokens=12_000,
+        max_context_recovery_attempts=1,
         completion_rule="critical criteria pass and material gaps are resolved",
     ),
     OperatingMode.EFFICIENCY: TaskPolicy(
@@ -177,6 +193,10 @@ _PROFILES: dict[OperatingMode, TaskPolicy] = {
         llm_retry_budget_seconds=15.0,
         llm_retry_backoff_seconds=0.1,
         llm_retry_max_backoff_seconds=2.0,
+        repository_context_tokens=4_000,
+        repository_context_chunks=6,
+        context_keep_recent_tokens=8_000,
+        max_context_recovery_attempts=1,
         completion_rule="a usable deliverable exists and every critical criterion passes",
     ),
 }

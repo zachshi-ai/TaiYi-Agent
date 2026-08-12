@@ -16,6 +16,7 @@ import time
 import uuid
 from pathlib import Path
 
+from taiyi.context import ContextEngine, RepositoryContextIndex
 from taiyi.core.audit import AuditLog
 from taiyi.governance import GovernanceEngine, LocalPermitClient
 from taiyi.approvals import ApprovalStore
@@ -165,6 +166,8 @@ class Gateway:
                 "failure_kind": context.get("failure_kind"),
                 "validation_summary": context.get("validation_summary"),
                 "provider_route": context.get("provider_route"),
+                "repository_context": context.get("repository_context"),
+                "context_state": context.get("context_state"),
                 "contract": context.get("contract"),
                 "evidence": context.get("evidence"),
                 "steps": context.get("step_results", []),
@@ -280,12 +283,36 @@ def build_gateway(
     extra_rules_dirs: tuple[str, ...] = (),
     extra_scenarios_dirs: tuple[str, ...] = (),
     extra_skills_dirs: tuple[str, ...] = (),
+    context_engine: ContextEngine | None = None,
+    context_window_tokens: int = 128_000,
+    context_response_reserve_tokens: int = 16_384,
+    context_tool_result_max_tokens: int = 4_000,
+    repository_index_enabled: bool = True,
+    repository_index_max_files: int = 50_000,
+    repository_file_max_bytes: int = 524_288,
     llm_sleep=time.sleep,
     llm_clock=time.time,
 ) -> Gateway:
     base = Path(base_dir) if base_dir else None
     audit = AuditLog(base / "audit.jsonl") if base else AuditLog()
     run_store = RunStore(base)
+    if context_engine is None:
+        repository = None
+        repository_root = getattr(executor, "sandbox", None)
+        if repository_index_enabled and repository_root is not None:
+            repository = RepositoryContextIndex(
+                repository_root,
+                db_path=(base / "context" / "repositories.sqlite3" if base else None),
+                max_files=repository_index_max_files,
+                max_file_bytes=repository_file_max_bytes,
+            )
+        context_engine = ContextEngine(
+            repository=repository,
+            base_dir=base,
+            context_window_tokens=context_window_tokens,
+            response_reserve_tokens=context_response_reserve_tokens,
+            tool_result_max_tokens=context_tool_result_max_tokens,
+        )
 
     # OODA outer loop: trajectories + the human-review queue persist under base/.
     # Approved suggestions land in base/rules/auto and base/skills/auto, which we
@@ -346,6 +373,7 @@ def build_gateway(
             committee=committee,
             default_operating_mode=operating_mode,
             run_store=run_store,
+            context_engine=context_engine,
             llm_sleep=llm_sleep,
             llm_clock=llm_clock,
         )
@@ -368,6 +396,7 @@ def build_gateway(
             default_operating_mode=operating_mode,
             provider_router=workflow_router,
             run_store=run_store,
+            context_engine=context_engine,
             llm_sleep=llm_sleep,
             llm_clock=llm_clock,
         )
@@ -453,4 +482,10 @@ def build_gateway_from_config(config) -> Gateway:
         extra_rules_dirs=tuple(config.rules_dirs),
         extra_scenarios_dirs=tuple(config.scenarios_dirs),
         extra_skills_dirs=tuple(config.skills_dirs),
+        context_window_tokens=config.context_window_tokens,
+        context_response_reserve_tokens=config.context_response_reserve_tokens,
+        context_tool_result_max_tokens=config.context_tool_result_max_tokens,
+        repository_index_enabled=config.repository_index_enabled,
+        repository_index_max_files=config.repository_index_max_files,
+        repository_file_max_bytes=config.repository_file_max_bytes,
     )

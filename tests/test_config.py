@@ -77,6 +77,12 @@ def test_operating_mode_env_override(tmp_path, monkeypatch):
     monkeypatch.setenv("TAIYI_LLM_FIRST_TOKEN_TIMEOUT", "40")
     monkeypatch.setenv("TAIYI_LLM_STREAM_IDLE_TIMEOUT", "20")
     monkeypatch.setenv("TAIYI_LLM_HARD_TIMEOUT", "120")
+    monkeypatch.setenv("TAIYI_CONTEXT_WINDOW_TOKENS", "64000")
+    monkeypatch.setenv("TAIYI_CONTEXT_RESPONSE_RESERVE_TOKENS", "8000")
+    monkeypatch.setenv("TAIYI_CONTEXT_TOOL_RESULT_MAX_TOKENS", "2000")
+    monkeypatch.setenv("TAIYI_REPOSITORY_INDEX_ENABLED", "false")
+    monkeypatch.setenv("TAIYI_REPOSITORY_INDEX_MAX_FILES", "1234")
+    monkeypatch.setenv("TAIYI_REPOSITORY_FILE_MAX_BYTES", "65536")
     cfg = load_config(p)
     assert cfg.runtime_mode == "agent"
     assert cfg.operating_mode == "efficiency"
@@ -94,6 +100,12 @@ def test_operating_mode_env_override(tmp_path, monkeypatch):
     assert cfg.llm_first_token_timeout == 40
     assert cfg.llm_stream_idle_timeout == 20
     assert cfg.llm_hard_timeout == 120
+    assert cfg.context_window_tokens == 64000
+    assert cfg.context_response_reserve_tokens == 8000
+    assert cfg.context_tool_result_max_tokens == 2000
+    assert cfg.repository_index_enabled is False
+    assert cfg.repository_index_max_files == 1234
+    assert cfg.repository_file_max_bytes == 65536
 
 
 def test_configured_mode_models_build_explicit_routes_with_default_fallback():
@@ -152,6 +164,11 @@ def test_sandbox_job_settings_are_wired_from_config(tmp_path):
         tool_idle_timeout=17,
         job_heartbeat_interval=0.25,
         tool_output_limit=4096,
+        context_window_tokens=64_000,
+        context_response_reserve_tokens=8_000,
+        context_tool_result_max_tokens=2_000,
+        repository_index_max_files=1234,
+        repository_file_max_bytes=65_536,
     )
     gw = build_gateway_from_config(cfg)
     executor = gw.runtime.executor
@@ -161,6 +178,12 @@ def test_sandbox_job_settings_are_wired_from_config(tmp_path):
     assert executor.heartbeat_interval == 0.25
     assert executor.output_limit == 4096
     assert executor.jobs.root == (tmp_path / "state" / "jobs").resolve()
+    context_engine = gw.runtime.context_engine
+    assert context_engine.context_window_tokens == 64_000
+    assert context_engine.response_reserve_tokens == 8_000
+    assert context_engine.tool_result_max_tokens == 2_000
+    assert context_engine.repository.max_files == 1234
+    assert context_engine.repository.max_file_bytes == 65_536
 
 
 def test_gateway_honors_extra_rules_dir(tmp_path):

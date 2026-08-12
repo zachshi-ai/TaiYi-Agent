@@ -233,6 +233,14 @@ efficiency_model: {y(cfg['efficiency_model'])}
 api_key: {y(cfg['api_key'])}
 api_key_env: {y(cfg['api_key_env'])}
 
+# Context admission and source-backed repository retrieval.
+context_window_tokens: {cfg['context_window_tokens']}
+context_response_reserve_tokens: {cfg['context_response_reserve_tokens']}
+context_tool_result_max_tokens: {cfg['context_tool_result_max_tokens']}
+repository_index_enabled: {str(cfg['repository_index_enabled']).lower()}
+repository_index_max_files: {cfg['repository_index_max_files']}
+repository_file_max_bytes: {cfg['repository_file_max_bytes']}
+
 # Custom rules/scenarios/skills, merged with the built-ins (same id/name overrides).
 rules_dirs: []
 scenarios_dirs: []
@@ -262,6 +270,9 @@ def _init(args) -> int:
         "provider": "offline", "base_url": None, "model": None,
         "quality_model": None, "balanced_model": None, "efficiency_model": None,
         "api_key": None, "api_key_env": None, "log_level": "info",
+        "context_window_tokens": 128000, "context_response_reserve_tokens": 16384,
+        "context_tool_result_max_tokens": 4000, "repository_index_enabled": True,
+        "repository_index_max_files": 50000, "repository_file_max_bytes": 524288,
     }
 
     interactive = not args.yes and sys.stdin.isatty()

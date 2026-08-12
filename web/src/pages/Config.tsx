@@ -19,6 +19,12 @@ export default function Config() {
   const [firstTokenTimeout, setFirstTokenTimeout] = useState(60);
   const [streamIdleTimeout, setStreamIdleTimeout] = useState(30);
   const [hardTimeout, setHardTimeout] = useState(180);
+  const [contextWindow, setContextWindow] = useState(128000);
+  const [responseReserve, setResponseReserve] = useState(16384);
+  const [toolResultTokens, setToolResultTokens] = useState(4000);
+  const [repositoryIndex, setRepositoryIndex] = useState(true);
+  const [repositoryMaxFiles, setRepositoryMaxFiles] = useState(50000);
+  const [repositoryMaxBytes, setRepositoryMaxBytes] = useState(524288);
   const [token, setTokenInput] = useState(getToken());
   const [saved, setSaved] = useState("");
   const [error, setError] = useState("");
@@ -41,6 +47,12 @@ export default function Config() {
       setFirstTokenTimeout(c.llm_first_token_timeout ?? 60);
       setStreamIdleTimeout(c.llm_stream_idle_timeout ?? 30);
       setHardTimeout(c.llm_hard_timeout ?? 180);
+      setContextWindow(c.context_window_tokens ?? 128000);
+      setResponseReserve(c.context_response_reserve_tokens ?? 16384);
+      setToolResultTokens(c.context_tool_result_max_tokens ?? 4000);
+      setRepositoryIndex(c.repository_index_enabled ?? true);
+      setRepositoryMaxFiles(c.repository_index_max_files ?? 50000);
+      setRepositoryMaxBytes(c.repository_file_max_bytes ?? 524288);
       setApiKey(""); // never echo the stored value; user re-types to change
       setError("");
     } catch (e: any) {
@@ -66,6 +78,12 @@ export default function Config() {
       llm_first_token_timeout: firstTokenTimeout,
       llm_stream_idle_timeout: streamIdleTimeout,
       llm_hard_timeout: hardTimeout,
+      context_window_tokens: contextWindow,
+      context_response_reserve_tokens: responseReserve,
+      context_tool_result_max_tokens: toolResultTokens,
+      repository_index_enabled: repositoryIndex,
+      repository_index_max_files: repositoryMaxFiles,
+      repository_file_max_bytes: repositoryMaxBytes,
     };
     if (model) updates.model = model;
     if (baseUrl) updates.base_url = baseUrl;
@@ -272,6 +290,35 @@ export default function Config() {
             )}
           </>
         )}
+
+        <div style={{ margin: "14px 0 10px" }}>
+          <p className="muted" style={{ fontSize: 12, margin: "0 0 6px" }}>
+            上下文准入：为模型回复预留空间；仓库片段按当前模式预算检索，完整工具输出保留为 artifact
+          </p>
+          <div className="row" style={{ marginBottom: 8 }}>
+            <label>窗口 token</label>
+            <input type="number" min="4096" step="1024" value={contextWindow}
+              onChange={(e) => setContextWindow(Number(e.target.value))} />
+            <label>回复预留</label>
+            <input type="number" min="256" step="256" value={responseReserve}
+              onChange={(e) => setResponseReserve(Number(e.target.value))} />
+            <label>单个工具结果</label>
+            <input type="number" min="256" step="256" value={toolResultTokens}
+              onChange={(e) => setToolResultTokens(Number(e.target.value))} />
+          </div>
+          <div className="row">
+            <label>
+              <input type="checkbox" checked={repositoryIndex}
+                onChange={(e) => setRepositoryIndex(e.target.checked)} /> 仓库增量索引
+            </label>
+            <label>最多文件</label>
+            <input type="number" min="1" step="1000" value={repositoryMaxFiles}
+              onChange={(e) => setRepositoryMaxFiles(Number(e.target.value))} />
+            <label>单文件字节</label>
+            <input type="number" min="1024" step="1024" value={repositoryMaxBytes}
+              onChange={(e) => setRepositoryMaxBytes(Number(e.target.value))} />
+          </div>
+        </div>
 
         <div className="muted" style={{ marginBottom: 10, fontSize: 12 }}>
           可写字段: {writable.join(", ")}

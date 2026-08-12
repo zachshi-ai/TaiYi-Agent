@@ -26,6 +26,9 @@ class StepResult:
     matched_rule_id: str | None = None
     output: str | None = None     # set only when the step was cleared and executed
     executed: bool = False
+    stdout_artifact: str | None = None
+    stderr_artifact: str | None = None
+    output_truncated: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -36,6 +39,9 @@ class StepResult:
             "matched_rule_id": self.matched_rule_id,
             "executed": self.executed,
             "output": self.output,
+            "stdout_artifact": self.stdout_artifact,
+            "stderr_artifact": self.stderr_artifact,
+            "output_truncated": self.output_truncated,
         }
 
 
@@ -69,6 +75,8 @@ class TaskContext:
     skill_instructions: str | None = field(default=None, repr=False)
     policy: TaskPolicy | None = None
     provider_route: dict | None = None
+    repository_context: dict | None = None
+    context_state: dict | None = None
     contract: TaskContract | None = None
     validation_checklist: object | None = field(default=None, repr=False)
     evidence: EvidenceLedger = field(default_factory=EvidenceLedger)
@@ -117,6 +125,8 @@ class TaskContext:
             "selected_skill": self.selected_skill,
             "policy": self.policy.to_dict() if self.policy else None,
             "provider_route": self.provider_route,
+            "repository_context": self.repository_context,
+            "context_state": self.context_state,
             "contract": self.contract.to_dict() if self.contract else None,
             "evidence": self.evidence.to_dict(),
             "goal": self.goal.to_dict() if self.goal else None,

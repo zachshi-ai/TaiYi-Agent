@@ -167,9 +167,12 @@ class, idempotency contract, and authority-specific post-crash verification.
 1. Add side-effect classes, idempotency policies, and post-crash
    external verification before any retry.
 2. Add SSE progress streaming on top of the persisted event cursor.
-3. Add proactive structured compaction and large-repository indexing keyed by
-   Git SHA.
-4. Turn context overflow into a compaction-and-retry protocol rather than a
-   provider failover.
-5. Exercise real-provider network loss, duplicate effects, and huge-output
+3. Move the now-delivered synchronous repository refresh onto the durable job
+   scheduler for very large monorepos.
+4. Exercise real-provider network loss, duplicate effects, context overflow, and huge-output
    faults in the harness benchmark.
+
+Structured compaction, Git-HEAD/content-addressed repository snapshots, bounded
+hierarchical retrieval, exact prompt freezing, and context-overflow recovery are
+now delivered in Phase 5. See
+[`09_Large_Repository_Context_Protocol.md`](./09_Large_Repository_Context_Protocol.md).

@@ -53,6 +53,8 @@ def to_openai_response(ctx: TaskContext, model: str) -> dict:
             "execution_environment": ctx.execution_environment,
             "policy": ctx.policy.to_dict() if ctx.policy else None,
             "provider_route": ctx.provider_route,
+            "repository_context": ctx.repository_context,
+            "context_state": ctx.context_state,
             "contract": ctx.contract.to_dict() if ctx.contract else None,
             "evidence": ctx.evidence.to_dict(),
         },

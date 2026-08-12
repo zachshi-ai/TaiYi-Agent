@@ -19,8 +19,8 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 | Path | What |
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
-| `src/taiyi/` | **Production code** — 17 modules, built module by module |
-| `tests/` | 308 tests covering governance, operating modes, durable jobs/recovery, LLM faults, and executable Skill gates |
+| `src/taiyi/` | **Production code** — reliable runtime, context, governance, execution, and validation modules |
+| `tests/` | 326 tests covering governance, operating modes, durable jobs/recovery, repository context, LLM faults, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -126,14 +126,36 @@ an ambiguous non-durable external effect. See
 Model requests use a separate resilience protocol. OpenAI-compatible responses
 are streamed under distinct connect, first-token, stream-idle, and hard
 deadlines. Typed 429/5xx/network/timeouts may retry or move through a
-mode-prioritized provider pool; auth failures, invalid requests, and context
-overflow stop immediately. Every failure, backoff, failover, and successful
+mode-prioritized provider pool; auth failures and invalid requests stop
+immediately. Context overflow never triggers provider failover: it enters the
+separate structured compaction protocol described below. Every failure, backoff, failover, and successful
 recovery is persisted. A process restart honors the remaining backoff and frozen
 message/plan, while the retry boundary ends before any model response can trigger
 a tool, so a model retry cannot replay an external side effect. Quality uses the
 largest retry budget and tries its strongest route twice; balanced switches
 after one failure; efficiency has the shortest two-attempt budget. See
 [`learning/docs/08_LLM_Request_Resilience.md`](./learning/docs/08_LLM_Request_Resilience.md).
+
+### Large-repository context protocol
+
+With a sandbox workspace, TaiYi builds a persistent incremental repository
+snapshot keyed by Git HEAD and file-content digests. It indexes directory
+structure, Python symbols, and bounded line chunks; retrieval gives the model
+only mode-budgeted snippets carrying snapshot id, path, exact line span, and
+content digest. Repository text is explicitly untrusted data, never a system
+instruction.
+
+Before every Agent or model-backed Workflow request, the context engine reserves
+response space, bounds large tool-result projections, and compacts old history
+when necessary. Compaction is a deterministic, atomic JSON artifact containing
+the complete canonical source transcript plus a structured step/evidence ledger;
+tool calls are never separated from their results. The exact provider projection
+is frozen in the checkpoint, so restart replays the same repository evidence even
+if files changed after the crash. A typed provider `CONTEXT_OVERFLOW` can only
+take a bounded compact-and-retry path; it cannot silently switch models or replay
+a prior tool effect. Quality, balanced, and efficiency change retrieval/recent-
+history budgets, not contracts or recovery truth. See
+[`learning/docs/09_Large_Repository_Context_Protocol.md`](./learning/docs/09_Large_Repository_Context_Protocol.md).
 
 With `executor: sandbox`, Taiyi can also enable a read-only Git authority. It
 snapshots HEAD and repository-local identity before execution, then independently

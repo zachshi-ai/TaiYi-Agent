@@ -108,6 +108,8 @@ def serialize_context(ctx: TaskContext) -> dict[str, Any]:
         "scenario_definition": ctx.scenario_definition,
         "skill_instructions": ctx.skill_instructions,
         "provider_route": ctx.provider_route,
+        "repository_context": ctx.repository_context,
+        "context_state": ctx.context_state,
         "contract": ctx.contract.to_dict() if ctx.contract else None,
         "evidence": ctx.evidence.to_dict(),
         "created_at": ctx.created_at,
@@ -152,6 +154,9 @@ def restore_context(snapshot: dict[str, Any], *, validator=None, value_stream=No
             matched_rule_id=item.get("matched_rule_id"),
             output=item.get("output"),
             executed=bool(item.get("executed", False)),
+            stdout_artifact=item.get("stdout_artifact"),
+            stderr_artifact=item.get("stderr_artifact"),
+            output_truncated=bool(item.get("output_truncated", False)),
         )
         for item in snapshot.get("step_results", [])
     ]
@@ -187,6 +192,8 @@ def restore_context(snapshot: dict[str, Any], *, validator=None, value_stream=No
         skill_instructions=snapshot.get("skill_instructions"),
         policy=policy,
         provider_route=snapshot.get("provider_route"),
+        repository_context=snapshot.get("repository_context"),
+        context_state=snapshot.get("context_state"),
         contract=contract,
         validation_checklist=checklist,
         evidence=evidence,

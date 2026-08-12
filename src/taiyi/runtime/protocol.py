@@ -14,6 +14,7 @@ from enum import Enum
 class RunPhase(str, Enum):
     READY = "READY"
     PARSING = "PARSING"
+    INDEXING = "INDEXING"
     PLANNING = "PLANNING"
     LLM_WAITING = "LLM_WAITING"
     AWAITING_PERMIT = "AWAITING_PERMIT"

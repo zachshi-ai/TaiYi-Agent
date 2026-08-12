@@ -36,6 +36,8 @@ def task_summary(ctx: TaskContext) -> dict:
         "execution_environment": ctx.execution_environment,
         "policy": ctx.policy.to_dict() if ctx.policy else None,
         "provider_route": ctx.provider_route,
+        "repository_context": ctx.repository_context,
+        "context_state": ctx.context_state,
         "contract": ctx.contract.to_dict() if ctx.contract else None,
         "evidence": ctx.evidence.to_dict(),
         "steps": [s.to_dict() for s in ctx.step_results],
@@ -385,6 +387,7 @@ class GatewayApp:
         has_key = bool(getattr(prov, "api_key_set", False))
         provider_routes = router.configured_routes() if router else {}
         validator = getattr(self.gateway.runtime, "validator", None)
+        context_engine = getattr(self.gateway.runtime, "context_engine", None)
         validation_authorities = (
             validator.configured_authorities()
             if validator is not None and hasattr(validator, "configured_authorities")
@@ -429,6 +432,22 @@ class GatewayApp:
             "llm_first_token_timeout": getattr(prov, "_first_token_timeout", 60.0),
             "llm_stream_idle_timeout": getattr(prov, "_stream_idle_timeout", 30.0),
             "llm_hard_timeout": getattr(prov, "_hard_timeout", 180.0),
+            "context_window_tokens": getattr(context_engine, "context_window_tokens", None),
+            "context_response_reserve_tokens": getattr(
+                context_engine, "response_reserve_tokens", None
+            ),
+            "context_tool_result_max_tokens": getattr(
+                context_engine, "tool_result_max_tokens", None
+            ),
+            "repository_index_enabled": bool(
+                context_engine is not None and context_engine.repository is not None
+            ),
+            "repository_index_max_files": getattr(
+                getattr(context_engine, "repository", None), "max_files", None
+            ),
+            "repository_file_max_bytes": getattr(
+                getattr(context_engine, "repository", None), "max_file_bytes", None
+            ),
             "api_key_set": has_key,
             "base_dir": self.gateway.base_dir,
             "writable_fields": sorted(WRITABLE_FIELDS),
