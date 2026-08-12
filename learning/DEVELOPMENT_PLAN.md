@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 6 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7A delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 6 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 7A delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -484,12 +484,24 @@ proven non-application permits bounded same-key replay, and unknown outcomes
 suspend for auditable three-state human resolution. `NEVER` cannot be overridden
 into a replay. See `learning/docs/10_Side_Effect_Recovery_Protocol.md`.
 
+**Delivered in Phase 7A.** A versioned benchmark kernel now runs six controlled
+fault/scale cases across all three operating modes through the production
+Gateway, retry, repository-context, checkpoint, Effect Ledger, and completion
+paths. Self-verifying receipts separate artifact delivery from fail-closed
+protocol conformance and record false completion, fault recovery, duplicate
+effects, handoff, model calls, connector attempts, and latency. External Pi,
+OpenClaw, and ZCode cells are capability-probed but explicitly excluded when a
+common model, isolated workspace, or batch adapter cannot be proven. The first
+18-run baseline has 100% protocol conformance, zero false completions, and zero
+duplicate effects. See `learning/docs/11_Harness_Benchmark_Protocol.md` and
+`research/benchmark/results/protocol-v1/`.
+
 **Remaining before M18 is complete.** Connector-specific refund/notification
 authorities and compensation; SSE event streaming; durable/background index
 maintenance for very large monorepos; provider-specific tokenizers; distributed
-leases; and the controlled real-provider/OpenClaw/ZCode
-network/context/huge-output/duplicate-effect benchmark. Ambiguous effects remain
-human-owned until those connector proofs exist. See
+leases; and Phase 7B's isolated, same-model real-provider/Pi/OpenClaw/ZCode
+network/context/huge-output/process-tree/restart/duplicate-effect comparison.
+Ambiguous effects remain human-owned until those connector proofs exist. See
 `learning/docs/07_Durable_Runtime_Protocol.md`. **Depends on.** M3–M6, M17.
 
 ### M16 — Iterative agent loop ✅ Done

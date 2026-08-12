@@ -1,0 +1,93 @@
+{
+  "digest": "sha256:35aa570f4499ec6143999b6630c8f65792896497de62fd8c3b488c60e96ca863",
+  "payload": {
+    "cases": [
+      {
+        "acceptance_content": "verified\n",
+        "acceptance_path": "result.txt",
+        "case_id": "clean_delivery",
+        "description": "One governed fixed-content delivery with no injected fault.",
+        "fault": "none",
+        "repository_files": 0,
+        "tags": [
+          "delivery",
+          "control"
+        ]
+      },
+      {
+        "acceptance_content": "verified\n",
+        "acceptance_path": "result.txt",
+        "case_id": "llm_two_transient_failures",
+        "description": "Two typed transient model failures occur before the first usable response.",
+        "fault": "llm_two_transient_failures",
+        "repository_files": 0,
+        "tags": [
+          "llm",
+          "retry-budget"
+        ]
+      },
+      {
+        "acceptance_content": "verified\n",
+        "acceptance_path": "result.txt",
+        "case_id": "effect_two_preapply_failures",
+        "description": "Two connector failures are independently proven not applied before success.",
+        "fault": "effect_two_preapply_failures",
+        "repository_files": 0,
+        "tags": [
+          "effect",
+          "retry-budget",
+          "idempotency"
+        ]
+      },
+      {
+        "acceptance_content": "verified\n",
+        "acceptance_path": "result.txt",
+        "case_id": "effect_applied_receipt_timeout",
+        "description": "The target mutation is applied once but its connector receipt times out.",
+        "fault": "effect_applied_receipt_timeout",
+        "repository_files": 0,
+        "tags": [
+          "effect",
+          "authority",
+          "timeout"
+        ]
+      },
+      {
+        "acceptance_content": "verified\n",
+        "acceptance_path": "result.txt",
+        "case_id": "effect_ambiguous",
+        "description": "The target differs from both frozen pre-state and intended post-state.",
+        "fault": "effect_ambiguous",
+        "repository_files": 0,
+        "tags": [
+          "effect",
+          "human-handoff",
+          "false-completion"
+        ]
+      },
+      {
+        "acceptance_content": "verified\n",
+        "acceptance_path": "result.txt",
+        "case_id": "large_repository_context",
+        "description": "A 1,200-file workspace is indexed before the governed delivery.",
+        "fault": "none",
+        "repository_files": 1200,
+        "tags": [
+          "repository",
+          "context",
+          "scale"
+        ]
+      }
+    ],
+    "cases_digest": "sha256:0ac2f08ea0a8add0cda25bddbc04d2093c53ba8a664fb99e67b375b226ffedd6",
+    "measurement_scope": "harness_protocol_conformance",
+    "notes": [
+      "The scripted provider controls model behavior; this is not a model-quality score.",
+      "A task can fail its delivery objective while still passing fail-closed protocol conformance.",
+      "External harness scores require the same model, prompt, workspace, budget, and evaluator."
+    ],
+    "provider_id": "scripted-fault-provider/v1",
+    "schema_version": "taiyi.protocol-cases/v1"
+  },
+  "schema_version": "taiyi.harness-benchmark/v1"
+}

@@ -1,0 +1,73 @@
+{
+  "digest": "sha256:daba2ee37f6dcfe968c1182af70d81b23babb1173639d0f4ec111bc1d1fe49e1",
+  "payload": {
+    "adapter": "taiyi-in-process-production-runtime",
+    "applied_effects": 0,
+    "case_digest": "sha256:f2299ada6ac8e62453975f1a51960c04713fb4e096178ce66db0e3e1f951515f",
+    "case_id": "llm_two_transient_failures",
+    "claimed_complete": false,
+    "connector_attempts": 0,
+    "duplicate_effects": 0,
+    "duration_seconds": 0.027787917002569884,
+    "environment_digest": "sha256:b5b12eec04e8b998686dadf943fc7f4134de5bc6a015e86cb3bad05297522b3f",
+    "error": null,
+    "evidence": {
+      "effects": [],
+      "event_count": 9,
+      "event_types": [
+        "run_created",
+        "repository_index_started",
+        "repository_index_finished",
+        "llm_request_started",
+        "llm_attempt_failed",
+        "llm_retry_scheduled",
+        "llm_attempt_started",
+        "llm_attempt_failed",
+        "run_failed"
+      ],
+      "final_workspace": {
+        "file_count": 1,
+        "tree_digest": "sha256:2ac27cf8f43000690a629c56a9e46d28829625dd48f979bcf8333162cc384a39"
+      },
+      "initial_workspace": {
+        "file_count": 1,
+        "tree_digest": "sha256:2ac27cf8f43000690a629c56a9e46d28829625dd48f979bcf8333162cc384a39"
+      },
+      "observed_content_digest": null,
+      "repository_context": {
+        "changed_files": 1,
+        "chunk_count": 2,
+        "complete": true,
+        "file_count": 1,
+        "git_head": null,
+        "indexed_at": 1786551763.765462,
+        "needs_refresh": false,
+        "omitted_files": 0,
+        "removed_files": 0,
+        "repository_id": "sha256:96ee2dd63467ca3db1fd2134fe4e60a90e177348b028de882819fb7302afe4cd",
+        "reused_files": 0,
+        "skipped_files": 0,
+        "snapshot_id": "sha256:efd5a844f8ba9b261d47767f3409b20909c03116667f89f60f89ba3350bc08e2",
+        "status": "ready"
+      },
+      "repository_context_seen_by_provider": true
+    },
+    "expected_outcome": "BUDGET_EXHAUSTED",
+    "failure_kind": "LLM_SERVER_ERROR",
+    "false_completion": false,
+    "fault_injected": true,
+    "harness_id": "taiyi",
+    "harness_version": "0.1.0",
+    "human_handoffs": 0,
+    "llm_calls": 2,
+    "measurement_status": "MEASURED",
+    "model_id": "scripted-fault-provider/v1",
+    "operating_mode": "efficiency",
+    "protocol_passed": true,
+    "recovered": false,
+    "reported_state": "FAILED",
+    "run_id": "taiyi-llm_two_transient_failures-efficiency-c8374f1b8988",
+    "task_passed": false
+  },
+  "schema_version": "taiyi.harness-run-receipt/v1"
+}

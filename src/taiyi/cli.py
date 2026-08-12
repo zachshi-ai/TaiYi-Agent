@@ -176,6 +176,31 @@ def _verify_skills(args) -> int:
     return 0 if all(r.passes for r in reports) else 1
 
 
+def _benchmark(args) -> int:
+    """Run reproducible harness measurements or capability-only probes."""
+    import json
+
+    from taiyi.benchmark.runner import run_protocol_matrix, write_probe_report
+
+    if args.action == "protocol":
+        report = run_protocol_matrix(args.output)
+        summary = {
+            "measurement_scope": report["measurement_scope"],
+            "run_count": report["run_count"],
+            "all_protocol_passed": report["all_protocol_passed"],
+            "false_completions": report["false_completions"],
+            "duplicate_effects": report["duplicate_effects"],
+            "by_mode": report["by_mode"],
+            "output": str(args.output),
+        }
+        print(json.dumps(summary, ensure_ascii=False, indent=2))
+        return 0 if report["all_protocol_passed"] else 1
+
+    payload = write_probe_report(args.output)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    return 0
+
+
 def _prompt(question: str, default: str = "", *, choices=None) -> str:
     """Ask on stdin with a default shown in brackets. Empty input keeps default."""
     hint = f" [{default}]" if default else ""
@@ -370,6 +395,22 @@ def main(argv=None) -> int:
     )
     verify.add_argument("--json", action="store_true", help="emit a machine-readable report")
     verify.set_defaults(func=_verify_skills)
+
+    benchmark = sub.add_parser(
+        "benchmark",
+        help="measure harness protocol behavior or probe external adapters",
+    )
+    benchmark.add_argument(
+        "action",
+        choices=["protocol", "probe"],
+        help="protocol runs the TaiYi fault matrix; probe records external capability cells",
+    )
+    benchmark.add_argument(
+        "--output",
+        default="./research/benchmark/results/latest",
+        help="artifact directory (default: ./research/benchmark/results/latest)",
+    )
+    benchmark.set_defaults(func=_benchmark)
 
     init = sub.add_parser("init", help="interactively generate a taiyi.yaml")
     init.add_argument("-o", "--output", default="taiyi.yaml", help="path to write (default: taiyi.yaml)")

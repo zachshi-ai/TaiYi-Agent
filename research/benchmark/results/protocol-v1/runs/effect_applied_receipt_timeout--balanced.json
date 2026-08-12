@@ -1,0 +1,114 @@
+{
+  "digest": "sha256:8a60dfb01af4ca835937a70c5a900879554ce4d7472ed78febe42fac2c34f044",
+  "payload": {
+    "adapter": "taiyi-in-process-production-runtime",
+    "applied_effects": 1,
+    "case_digest": "sha256:71af8226b328a95e467c5f28f57507af63b7b4b0bf7113c096faf44c953a39d2",
+    "case_id": "effect_applied_receipt_timeout",
+    "claimed_complete": true,
+    "connector_attempts": 1,
+    "duplicate_effects": 0,
+    "duration_seconds": 0.053065207961481065,
+    "environment_digest": "sha256:4cd491965af00fa8d49c9cb9cb68c2a6973ba3c84840bf627b1db0c6a79d1d24",
+    "error": null,
+    "evidence": {
+      "effects": [
+        {
+          "attempt_count": 1,
+          "authority": "workspace-file-content",
+          "executor_failure_kind": "TOOL_TIMEOUT",
+          "human_note": null,
+          "human_resolution": null,
+          "idempotency_key": "taiyi:8a3420cbcf0676283fb457f24d732c42741687c6037b8f00082013f8cfeac51a",
+          "observations": [
+            {
+              "authority": "workspace-file-content",
+              "evidence": "result.txt has the frozen target content digest sha256:672eb8316fec83f94119a4193f9fc552513d56a147502f8be4830e017d817831",
+              "evidence_digest": "sha256:501d397451142c620186f79a57813da2efd3525e073ba67bbef9d575e251a1ba",
+              "observed_at": 1786551764.1990242,
+              "status": "APPLIED"
+            }
+          ],
+          "operation_id": "a_1786551764172_0:round:1:step:0",
+          "policy_digest": "sha256:d8cb2c3793cb74b93fba6af3c7299cee5e9e3e9a9419ce2b9eb8c189a2145e57",
+          "prepared_at": 1786551764.198068,
+          "recovery_attempts": 0,
+          "replay_policy": "VERIFY_THEN_RETRY",
+          "schema_version": "taiyi.effect/v1",
+          "side_effect_class": "IDEMPOTENT",
+          "spec_name": "fixed-file-write",
+          "status": "CONFIRMED_APPLIED",
+          "step_digest": "sha256:5731aa37e3ed65bbf972683241c0e4bcb67dfbb177788c77208d0746b78b3503",
+          "updated_at": 1786551764.199025,
+          "verification_snapshot": {
+            "before_digest": null,
+            "before_exists": false,
+            "path": "result.txt",
+            "target_digest": "sha256:672eb8316fec83f94119a4193f9fc552513d56a147502f8be4830e017d817831"
+          }
+        }
+      ],
+      "event_count": 15,
+      "event_types": [
+        "run_created",
+        "repository_index_started",
+        "repository_index_finished",
+        "llm_request_started",
+        "llm_attempt_succeeded",
+        "permit_requested",
+        "tool_started",
+        "effect_dispatching",
+        "effect_observed",
+        "tool_finished",
+        "repository_index_started",
+        "repository_index_finished",
+        "llm_request_started",
+        "llm_attempt_succeeded",
+        "run_settled"
+      ],
+      "final_workspace": {
+        "file_count": 2,
+        "tree_digest": "sha256:5a3913ebdb2f25c4ccfd86e7afe5f5c0e11ab3ac933e064424e5b0fd78dd6145"
+      },
+      "initial_workspace": {
+        "file_count": 1,
+        "tree_digest": "sha256:2ac27cf8f43000690a629c56a9e46d28829625dd48f979bcf8333162cc384a39"
+      },
+      "observed_content_digest": "sha256:d880ad940386a6ed6d063f55f4207832c095754a63b6377e0bc885e53c74f773",
+      "repository_context": {
+        "changed_files": 1,
+        "chunk_count": 3,
+        "complete": true,
+        "file_count": 2,
+        "git_head": null,
+        "indexed_at": 1786551764.211048,
+        "needs_refresh": false,
+        "omitted_files": 0,
+        "removed_files": 0,
+        "repository_id": "sha256:f7c9cb6470e8361143191fc25484125c579e35b3dfada81cb29f6e21348dc8f0",
+        "reused_files": 1,
+        "skipped_files": 0,
+        "snapshot_id": "sha256:5d853eeebbac8f47058c2ab7450ec93666dbbc7d182e8f887c032a085a49e991",
+        "status": "ready"
+      },
+      "repository_context_seen_by_provider": true
+    },
+    "expected_outcome": "DELIVER",
+    "failure_kind": null,
+    "false_completion": false,
+    "fault_injected": true,
+    "harness_id": "taiyi",
+    "harness_version": "0.1.0",
+    "human_handoffs": 0,
+    "llm_calls": 2,
+    "measurement_status": "MEASURED",
+    "model_id": "scripted-fault-provider/v1",
+    "operating_mode": "balanced",
+    "protocol_passed": true,
+    "recovered": true,
+    "reported_state": "COMPLETED",
+    "run_id": "taiyi-effect_applied_receipt_timeout-balanced-a5eca6c0bf3c",
+    "task_passed": true
+  },
+  "schema_version": "taiyi.harness-run-receipt/v1"
+}
