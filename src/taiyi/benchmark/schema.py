@@ -19,6 +19,8 @@ COMPARATIVE_MANIFEST_SCHEMA = "taiyi.harness-comparative-manifest/v1"
 COMPARATIVE_RECEIPT_SCHEMA = "taiyi.harness-comparative-receipt/v1"
 COMPARATIVE_REPORT_SCHEMA = "taiyi.harness-comparative-report/v1"
 COMPARATIVE_WORKER_SCHEMA = "taiyi.harness-comparative-worker/v1"
+COMPARATIVE_FAULT_REPORT_SCHEMA = "taiyi.harness-comparative-fault-report/v1"
+COMPARATIVE_FAULT_RECEIPT_SCHEMA = "taiyi.harness-comparative-fault-receipt/v1"
 
 
 class MeasurementStatus(str, Enum):
@@ -135,12 +137,18 @@ class ComparativeReceipt:
     comparability_signature: str
     evidence: Mapping[str, Any]
     error: str | None = None
+    failure_phase: str | None = None
+    failure_kind: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["measurement_status"] = self.measurement_status.value
         value["blockers"] = list(self.blockers)
         value["evidence"] = dict(self.evidence)
+        if self.failure_phase is None:
+            value.pop("failure_phase")
+        if self.failure_kind is None:
+            value.pop("failure_kind")
         return value
 
 
@@ -202,6 +210,8 @@ def write_artifact(path: str | Path, schema_version: str, payload: Mapping[str, 
 __all__ = [
     "BENCHMARK_SCHEMA",
     "COMPARATIVE_MANIFEST_SCHEMA",
+    "COMPARATIVE_FAULT_REPORT_SCHEMA",
+    "COMPARATIVE_FAULT_RECEIPT_SCHEMA",
     "COMPARATIVE_RECEIPT_SCHEMA",
     "COMPARATIVE_REPORT_SCHEMA",
     "COMPARATIVE_WORKER_SCHEMA",

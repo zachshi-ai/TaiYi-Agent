@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B1.1 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.1 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 7B1.1 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 7B2.1 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -513,11 +513,25 @@ not model intelligence or harness ranking. See
 `learning/docs/13_OpenClaw_Adapter_and_Failure_Model.md`, and
 `research/benchmark/results/comparative-smoke-v2/`.
 
+**Delivered in Phase 7B2.1.** The controlled endpoint can now inject a stall
+before the first response event or after the first stream event. Every request
+receipt records whether delivery started/completed and its delay from harness
+process start. TaiYi, Pi 0.84.1, and OpenClaw 2026.8.1-beta.1 ran both faults
+under the same model, prompt, read/write tool surface, isolation, and evaluator.
+All six comparable cells were correctly normalized as `LLM_FIRST_TOKEN_TIMEOUT`
+or `LLM_STREAM_IDLE_TIMEOUT`, stopped within the fault budget, did not deliver
+the artifact, and did not claim completion. A no-request timeout is separately
+classified as `PROCESS_START/HARNESS_STARTUP_TIMEOUT`, preventing harness cold
+start from masquerading as an LLM failure. The committed baseline has a complete
+6/6 matrix and zero false completions. See
+`learning/docs/14_Cross_Harness_Fault_Attribution.md` and
+`research/benchmark/results/comparative-faults-v1/`.
+
 **Remaining before M18 is complete.** Connector-specific refund/notification
 authorities and compensation; SSE event streaming; durable/background index
 maintenance for very large monorepos; provider-specific tokenizers; distributed
-leases; and Phase 7B2's isolated, same-model real-provider/Pi/OpenClaw/ZCode
-network/context/huge-output/process-tree/restart/duplicate-effect comparison.
+leases; and Phase 7B2.2's isolated, same-model real-provider/Pi/OpenClaw/ZCode
+context/huge-output/process-tree/restart/duplicate-effect comparison.
 Ambiguous effects remain human-owned until those connector proofs exist. See
 `learning/docs/07_Durable_Runtime_Protocol.md`. **Depends on.** M3–M6, M17.
 

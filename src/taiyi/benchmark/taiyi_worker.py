@@ -16,6 +16,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--base-url", required=True)
     parser.add_argument("--run-root", required=True)
     parser.add_argument("--prompt", required=True)
+    parser.add_argument("--phase-timeout", type=float, default=5.0)
+    parser.add_argument("--hard-timeout", type=float, default=20.0)
     args = parser.parse_args(argv)
 
     run_root = Path(args.run_root).resolve()
@@ -37,10 +39,10 @@ def main(argv: list[str] | None = None) -> int:
             model=CONTROLLED_MODEL_ID,
             api_key="benchmark-local-only",
             name="taiyi-controlled-comparison",
-            connect_timeout=5,
-            first_token_timeout=5,
-            stream_idle_timeout=5,
-            hard_timeout=20,
+            connect_timeout=args.phase_timeout,
+            first_token_timeout=args.phase_timeout,
+            stream_idle_timeout=args.phase_timeout,
+            hard_timeout=args.hard_timeout,
         )
         executor = SandboxExecutor(
             workspace,

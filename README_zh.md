@@ -12,7 +12,7 @@
 |---|---|
 | **产（生产，留根）** — Agent 本体 | |
 | `src/taiyi/` | **生产代码** — 可靠运行、上下文、治理、执行与验证模块 |
-| `tests/` | 366 个测试，覆盖治理不变量、三模式、持久任务/副作用恢复、仓库上下文、LLM 故障、基准合同与可执行 Skill 门禁 |
+| `tests/` | 372 个测试，覆盖治理不变量、三模式、持久任务/副作用恢复、仓库上下文、LLM 故障、基准合同与可执行 Skill 门禁 |
 | `web/` | 内置 React Web UI（构建产物在 `web/dist`） |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | 打包 + 配置模板 |
@@ -99,6 +99,13 @@ Harness 的传输、工具循环、隔离和完成真值：三者均以 2 次模
 批处理证据接口被明确标成 `NOT_COMPARABLE`，不会被伪造为分数。这还不是模型能力或生产效率排名。详见
 [`learning/docs/11_Harness_Benchmark_Protocol.md`](./learning/docs/11_Harness_Benchmark_Protocol.md) 和
 [`learning/docs/12_Controlled_Cross_Harness_Comparison.md`](./learning/docs/12_Controlled_Cross_Harness_Comparison.md)。
+
+Phase 7B2.1 进一步注入确定性的首 token 停顿和流中途停顿。TaiYi、Pi、OpenClaw 的 6 个
+可比较故障单元全部归因到正确 LLM 阶段、安全终止，并保持 0 次虚假完成。Receipt 还把 Harness
+启动与模型等待拆开：在本机基线中，OpenClaw 首次模型请求约发生在 7.8 秒，TaiYi 约 0.2 秒，
+Pi 约 0.4 秒。这说明过短的总超时可能在 OpenClaw 尚未接触模型时就到期；该数据用于诊断，
+不是生产效率排名。详见
+[`learning/docs/14_Cross_Harness_Fault_Attribution.md`](./learning/docs/14_Cross_Harness_Fault_Attribution.md)。
 
 LLM 请求使用独立的可靠性协议。OpenAI 兼容响应以流式方式读取，并分别约束连接、首 token、
 流空闲和单次硬截止。429、5xx、网络和阶段超时可以在模式预算内重试或切换 provider；鉴权失败和

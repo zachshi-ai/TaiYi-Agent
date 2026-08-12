@@ -1,0 +1,47 @@
+{
+  "digest": "sha256:f03e7970f83a63088788769546026f7b85bd53ca2f3c61932c087d439c4ac223",
+  "payload": {
+    "acceptance": {
+      "content": "verified",
+      "path": "result.txt"
+    },
+    "acceptance_digest": "sha256:d234c574e9985a4dbf3641d474b16faf6429d56e5704924efadd6fe812029177",
+    "budgets": {
+      "allowed_tools": [
+        "read",
+        "write"
+      ],
+      "max_model_requests": 3,
+      "phase_timeout_seconds": 1.0,
+      "wall_timeout_seconds": 18.0
+    },
+    "case_id": "model_stream_idle_timeout",
+    "claim_boundary": [
+      "This compares adapter transport, isolated tool execution, and completion truth.",
+      "The controlled endpoint is not a real intelligence or coding-quality model.",
+      "Real-provider ranking requires a separately frozen provider/model revision and budget."
+    ],
+    "comparability_signature": "sha256:a57e708fc115e03e223355833e10c822378faf4087b92651dd122752da6fece7",
+    "evaluator": "independent exact-content observation",
+    "expected_failure_kind": "LLM_STREAM_IDLE_TIMEOUT",
+    "expected_failure_phase": "LLM_STREAM_IDLE",
+    "injected_fault": "stream_idle_stall",
+    "measurement_scope": "controlled_cross_harness_failure_attribution",
+    "model_id": "taiyi-controlled-model-v1",
+    "model_policy": "taiyi.controlled-openai-tool-policy/v1",
+    "model_policy_digest": "sha256:67dc7b3f7c3f6481d085c01df43d2e4359475a3883b108bc65e4634b190108c4",
+    "prompt": "Create result.txt in the current workspace with the exact content verified. Use the available write tool, then finish.",
+    "prompt_digest": "sha256:0bc9ae1236cc60d362c3193c8c8203d0de4ef330f20317ee0096a57142f6960f",
+    "ranking_eligible": false,
+    "secret_policy": {
+      "credential": "non-secret loopback placeholder",
+      "inherit_provider_credentials": false,
+      "inherit_user_home": false
+    },
+    "workspace_fixture": {
+      "README.md": "# Controlled harness comparison fixture\n"
+    },
+    "workspace_fixture_digest": "sha256:f56d7b2c5482c5b2ca487d23b4a20390f9fa97f0680b1f18f8dc581ed69d0992"
+  },
+  "schema_version": "taiyi.harness-comparative-manifest/v1"
+}

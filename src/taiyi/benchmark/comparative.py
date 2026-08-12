@@ -16,6 +16,8 @@ from taiyi.benchmark.adapters import terminate_process_group
 from taiyi.benchmark.model_fixture import (
     CONTROLLED_MODEL_ID,
     CONTROLLED_MODEL_POLICY,
+    FAULT_FIRST_TOKEN_STALL,
+    FAULT_STREAM_IDLE_STALL,
     ControlledModelServer,
 )
 from taiyi.benchmark.schema import (
@@ -29,6 +31,7 @@ from taiyi.benchmark.schema import (
 
 COMPARATIVE_CASE_ID = "fixed_file_delivery"
 COMPARATIVE_SCOPE = "controlled_transport_tool_conformance"
+COMPARATIVE_FAULT_SCOPE = "controlled_cross_harness_failure_attribution"
 COMPARATIVE_PROMPT = (
     "Create result.txt in the current workspace with the exact content verified. "
     "Use the available write tool, then finish."
@@ -36,13 +39,46 @@ COMPARATIVE_PROMPT = (
 ACCEPTANCE_PATH = "result.txt"
 ACCEPTANCE_CONTENT = "verified"
 WALL_TIMEOUT_SECONDS = 30.0
+FAILURE_PHASE_FIRST_TOKEN = "LLM_FIRST_TOKEN"
+FAILURE_PHASE_STREAM_IDLE = "LLM_STREAM_IDLE"
+FAILURE_PHASE_PROCESS_START = "PROCESS_START"
+FAILURE_KIND_FIRST_TOKEN_TIMEOUT = "LLM_FIRST_TOKEN_TIMEOUT"
+FAILURE_KIND_STREAM_IDLE_TIMEOUT = "LLM_STREAM_IDLE_TIMEOUT"
+FAILURE_KIND_HARNESS_STARTUP_TIMEOUT = "HARNESS_STARTUP_TIMEOUT"
+FAILURE_KIND_HARNESS_STARTUP_FAILURE = "HARNESS_STARTUP_FAILURE"
 
 
-def comparative_manifest(model_policy_digest: str) -> dict[str, Any]:
+COMPARATIVE_FAULT_CASES: tuple[dict[str, Any], ...] = (
+    {
+        "case_id": "model_first_token_timeout",
+        "fault": FAULT_FIRST_TOKEN_STALL,
+        "expected_failure_phase": FAILURE_PHASE_FIRST_TOKEN,
+        "expected_failure_kind": FAILURE_KIND_FIRST_TOKEN_TIMEOUT,
+    },
+    {
+        "case_id": "model_stream_idle_timeout",
+        "fault": FAULT_STREAM_IDLE_STALL,
+        "expected_failure_phase": FAILURE_PHASE_STREAM_IDLE,
+        "expected_failure_kind": FAILURE_KIND_STREAM_IDLE_TIMEOUT,
+    },
+)
+
+
+def comparative_manifest(
+    model_policy_digest: str,
+    *,
+    case_id: str = COMPARATIVE_CASE_ID,
+    injected_fault: str | None = None,
+    expected_failure_phase: str | None = None,
+    expected_failure_kind: str | None = None,
+    wall_timeout_seconds: float = WALL_TIMEOUT_SECONDS,
+    phase_timeout_seconds: float = 5.0,
+    max_model_requests: int = 2,
+) -> dict[str, Any]:
     fixture = {"README.md": "# Controlled harness comparison fixture\n"}
     fixed = {
         "measurement_scope": COMPARATIVE_SCOPE,
-        "case_id": COMPARATIVE_CASE_ID,
+        "case_id": case_id,
         "prompt": COMPARATIVE_PROMPT,
         "prompt_digest": canonical_digest(COMPARATIVE_PROMPT),
         "model_id": CONTROLLED_MODEL_ID,
@@ -56,8 +92,8 @@ def comparative_manifest(model_policy_digest: str) -> dict[str, Any]:
             "content": ACCEPTANCE_CONTENT,
         }),
         "budgets": {
-            "wall_timeout_seconds": WALL_TIMEOUT_SECONDS,
-            "max_model_requests": 2,
+            "wall_timeout_seconds": float(wall_timeout_seconds),
+            "max_model_requests": int(max_model_requests),
             "allowed_tools": ["read", "write"],
         },
         "secret_policy": {
@@ -68,6 +104,12 @@ def comparative_manifest(model_policy_digest: str) -> dict[str, Any]:
         "evaluator": "independent exact-content observation",
         "ranking_eligible": False,
     }
+    if injected_fault is not None:
+        fixed["injected_fault"] = injected_fault
+        fixed["expected_failure_phase"] = expected_failure_phase
+        fixed["expected_failure_kind"] = expected_failure_kind
+        fixed["measurement_scope"] = COMPARATIVE_FAULT_SCOPE
+        fixed["budgets"]["phase_timeout_seconds"] = float(phase_timeout_seconds)
     fixed["comparability_signature"] = canonical_digest(fixed)
     fixed["claim_boundary"] = [
         "This compares adapter transport, isolated tool execution, and completion truth.",
@@ -114,7 +156,14 @@ def run_taiyi_cell(
         "--run-root",
         str(run_root),
         "--prompt",
-        COMPARATIVE_PROMPT,
+        str(manifest["prompt"]),
+        "--phase-timeout",
+        str(manifest["budgets"].get("phase_timeout_seconds", 5.0)),
+        "--hard-timeout",
+        str(max(
+            float(manifest["budgets"].get("phase_timeout_seconds", 5.0)),
+            float(manifest["budgets"]["wall_timeout_seconds"]) - 1.0,
+        )),
     ]
     env = {
         "PATH": "/usr/bin:/bin",
@@ -124,6 +173,7 @@ def run_taiyi_cell(
         "PYTHONHASHSEED": "0",
     }
     started = time.monotonic()
+    wall_timeout = float(manifest["budgets"]["wall_timeout_seconds"])
     timed_out = False
     exit_code = None
     error = None
@@ -138,7 +188,7 @@ def run_taiyi_cell(
                 start_new_session=True,
             )
             try:
-                exit_code = process.wait(timeout=WALL_TIMEOUT_SECONDS)
+                exit_code = process.wait(timeout=wall_timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 error = "outer benchmark timeout"
@@ -161,22 +211,41 @@ def run_taiyi_cell(
         error = str(worker["error"])
 
     final = workspace_snapshot(workspace)
-    task_passed = _acceptance_passed(workspace)
+    task_passed = _acceptance_passed(workspace, manifest)
     claimed_complete = bool(
         exit_code == 0
         and worker is not None
         and worker.get("reported_state") == "COMPLETED"
         and not timed_out
     )
-    requests = server.request_summaries(since=request_start)
+    requests = server.request_summaries(since=request_start, relative_to=started)
+    failure_phase, failure_kind = _classify_controlled_failure(
+        manifest,
+        requests,
+        task_passed=task_passed,
+        claimed_complete=claimed_complete,
+        timed_out=timed_out,
+    )
+    expected_failure = manifest.get("expected_failure_kind") is not None
+    attribution_matches = _attribution_matches(
+        manifest,
+        failure_phase=failure_phase,
+        failure_kind=failure_kind,
+    )
     budget_passed = (
-        not timed_out
-        and duration <= float(manifest["budgets"]["wall_timeout_seconds"])
+        duration <= wall_timeout + 1.0
+        and (expected_failure or not timed_out)
         and len(requests) <= int(manifest["budgets"]["max_model_requests"])
+    )
+    ordinary_status = (
+        MeasurementStatus.MEASURED
+        if exit_code == 0 and worker is not None and error is None and not timed_out
+        else MeasurementStatus.ERROR
     )
     status = (
         MeasurementStatus.MEASURED
-        if exit_code == 0 and worker is not None and error is None and not timed_out
+        if ordinary_status is MeasurementStatus.MEASURED
+        or (expected_failure and attribution_matches)
         else MeasurementStatus.ERROR
     )
     expected_taiyi_tools = sorted(
@@ -192,10 +261,19 @@ def run_taiyi_cell(
         model_visible_tools == expected_taiyi_tools
         and executor_allowed_tools == expected_taiyi_tools
     )
-    comparison_blockers = (
-        ()
-        if tool_surface_matches
-        else ("observed tool surface does not match the frozen manifest",)
+    comparison_blockers = tuple(
+        reason
+        for condition, reason in (
+            (
+                not tool_surface_matches,
+                "observed tool surface does not match the frozen manifest",
+            ),
+            (
+                expected_failure and not attribution_matches,
+                "failure attribution does not match the frozen fault manifest",
+            ),
+        )
+        if condition
     )
     private_roots = (run_root, workspace, Path.home(), Path(sys.executable).parent)
     _sanitize_log(process_stdout, private_roots)
@@ -209,10 +287,14 @@ def run_taiyi_cell(
         harness_version="0.1.0",
         adapter="taiyi-live-openai-production-runtime",
         measurement_status=status,
-        comparable=status is MeasurementStatus.MEASURED and tool_surface_matches,
+        comparable=(
+            status is MeasurementStatus.MEASURED
+            and tool_surface_matches
+            and (not expected_failure or attribution_matches)
+        ),
         blockers=comparison_blockers,
         model_id=CONTROLLED_MODEL_ID,
-        case_id=COMPARATIVE_CASE_ID,
+        case_id=str(manifest["case_id"]),
         reported_state=(
             str(worker.get("reported_state")) if worker is not None else "HARNESS_ERROR"
         ),
@@ -250,10 +332,13 @@ def run_taiyi_cell(
             },
             "stdout_log": ("raw/taiyi/stdout.log" if artifact_dir is not None else None),
             "stderr_log": ("raw/taiyi/stderr.log" if artifact_dir is not None else None),
-            "acceptance_observed_digest": _acceptance_digest(workspace),
+            "acceptance_observed_digest": _acceptance_digest(workspace, manifest),
+            "attribution_matches": attribution_matches,
             "secret_env_names": [],
         },
         error=error,
+        failure_phase=failure_phase,
+        failure_kind=failure_kind,
     )
 
 
@@ -316,6 +401,7 @@ def run_pi_cell(
         )
 
     node_executable = Path(shutil.which("node") or "").resolve()
+    wall_timeout = float(manifest["budgets"]["wall_timeout_seconds"])
     argv = [
         "sandbox-exec", "-p", profile, "--",
         str(node_executable), str(executable.resolve()),
@@ -324,7 +410,7 @@ def run_pi_cell(
         "--api-key", "benchmark-local-only", "--thinking", "off",
         "--tools", "read,write", "--no-extensions", "--no-skills",
         "--no-prompt-templates", "--no-context-files", "--no-approve",
-        "--offline", COMPARATIVE_PROMPT,
+        "--offline", str(manifest["prompt"]),
     ]
     env = {
         "PATH": "/usr/bin:/bin",
@@ -360,7 +446,7 @@ def run_pi_cell(
                 start_new_session=True,
             )
             try:
-                exit_code = process.wait(timeout=WALL_TIMEOUT_SECONDS)
+                exit_code = process.wait(timeout=wall_timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 error = "outer benchmark timeout"
@@ -374,15 +460,28 @@ def run_pi_cell(
     tool_ends = [event for event in events if event.get("type") == "tool_execution_end"]
     agent_ended = "agent_end" in event_types
     final = workspace_snapshot(workspace)
-    task_passed = _acceptance_passed(workspace)
+    task_passed = _acceptance_passed(workspace, manifest)
     claimed_complete = bool(exit_code == 0 and agent_ended and not timed_out)
-    requests = server.request_summaries(since=request_start)
+    requests = server.request_summaries(since=request_start, relative_to=started)
+    failure_phase, failure_kind = _classify_controlled_failure(
+        manifest,
+        requests,
+        task_passed=task_passed,
+        claimed_complete=claimed_complete,
+        timed_out=timed_out,
+    )
+    expected_failure = manifest.get("expected_failure_kind") is not None
+    attribution_matches = _attribution_matches(
+        manifest,
+        failure_phase=failure_phase,
+        failure_kind=failure_kind,
+    )
     advertised_tools = _advertised_tools(requests)
     allowed_tools = sorted(str(item) for item in manifest["budgets"]["allowed_tools"])
     tool_surface_matches = _requests_match_tool_surface(requests, allowed_tools)
     budget_passed = (
-        not timed_out
-        and duration <= float(manifest["budgets"]["wall_timeout_seconds"])
+        duration <= wall_timeout + 1.0
+        and (expected_failure or not timed_out)
         and len(requests) <= int(manifest["budgets"]["max_model_requests"])
     )
 
@@ -401,17 +500,32 @@ def run_pi_cell(
     shutil.copy2(process_stderr, stderr_path)
     if parse_errors and error is None:
         error = f"{parse_errors} invalid JSONL event(s)"
-    status = (
+    ordinary_status = (
         MeasurementStatus.MEASURED
         if exit_code == 0 and agent_ended and not timed_out and not parse_errors
         else MeasurementStatus.ERROR
     )
+    status = (
+        MeasurementStatus.MEASURED
+        if ordinary_status is MeasurementStatus.MEASURED
+        or (expected_failure and attribution_matches)
+        else MeasurementStatus.ERROR
+    )
     if status is MeasurementStatus.ERROR and error is None:
         error = f"Pi exited {exit_code} without a terminal agent event"
-    comparison_blockers = (
-        ()
-        if tool_surface_matches
-        else ("observed tool surface does not match the frozen manifest",)
+    comparison_blockers = tuple(
+        reason
+        for condition, reason in (
+            (
+                not tool_surface_matches,
+                "observed tool surface does not match the frozen manifest",
+            ),
+            (
+                expected_failure and not attribution_matches,
+                "failure attribution does not match the frozen fault manifest",
+            ),
+        )
+        if condition
     )
     return ComparativeReceipt(
         run_id=f"pi-{uuid.uuid4().hex[:12]}",
@@ -419,10 +533,14 @@ def run_pi_cell(
         harness_version=version,
         adapter="pi-json-sandbox-exec",
         measurement_status=status,
-        comparable=status is MeasurementStatus.MEASURED and tool_surface_matches,
+        comparable=(
+            status is MeasurementStatus.MEASURED
+            and tool_surface_matches
+            and (not expected_failure or attribution_matches)
+        ),
         blockers=comparison_blockers,
         model_id=CONTROLLED_MODEL_ID,
-        case_id=COMPARATIVE_CASE_ID,
+        case_id=str(manifest["case_id"]),
         reported_state=("COMPLETED" if claimed_complete else "FAILED"),
         task_passed=task_passed,
         claimed_complete=claimed_complete,
@@ -442,6 +560,7 @@ def run_pi_cell(
             "model_requests": requests,
             "advertised_tools": advertised_tools,
             "tool_surface_matches": tool_surface_matches,
+            "attribution_matches": attribution_matches,
             "event_count": len(events),
             "event_types": event_types,
             "tool_errors": sum(bool(event.get("isError")) for event in tool_ends),
@@ -451,10 +570,12 @@ def run_pi_cell(
             "sandbox_profile_digest": canonical_digest(profile),
             "stdout_log": "raw/pi/stdout.log",
             "stderr_log": "raw/pi/stderr.log",
-            "acceptance_observed_digest": _acceptance_digest(workspace),
+            "acceptance_observed_digest": _acceptance_digest(workspace, manifest),
             "secret_env_names": [],
         },
         error=error,
+        failure_phase=failure_phase,
+        failure_kind=failure_kind,
     )
 
 
@@ -518,6 +639,8 @@ def run_openclaw_cell(
         )
 
     node_executable = Path(shutil.which("node") or "").resolve()
+    wall_timeout = float(manifest["budgets"]["wall_timeout_seconds"])
+    inner_timeout = max(1, int(wall_timeout - 1.0))
     argv = [
         "sandbox-exec", "-p", profile, "--",
         str(node_executable), str(executable.resolve()),
@@ -529,9 +652,9 @@ def run_openclaw_cell(
         "--code-mode", "direct",
         "--local-model-lean",
         "--thinking", "off",
-        "--timeout", str(int(WALL_TIMEOUT_SECONDS - 5)),
+        "--timeout", str(inner_timeout),
         "--json",
-        COMPARATIVE_PROMPT,
+        str(manifest["prompt"]),
     ]
     env = {
         "PATH": "/usr/bin:/bin",
@@ -560,7 +683,7 @@ def run_openclaw_cell(
                 start_new_session=True,
             )
             try:
-                exit_code = process.wait(timeout=WALL_TIMEOUT_SECONDS)
+                exit_code = process.wait(timeout=wall_timeout)
             except subprocess.TimeoutExpired:
                 timed_out = True
                 error = "outer benchmark timeout"
@@ -590,7 +713,7 @@ def run_openclaw_cell(
             error = f"OpenClaw reported {structured_status}"
 
     final = workspace_snapshot(workspace)
-    task_passed = _acceptance_passed(workspace)
+    task_passed = _acceptance_passed(workspace, manifest)
     claimed_complete = bool(
         exit_code == 0
         and structured
@@ -599,24 +722,47 @@ def run_openclaw_cell(
         and structured_status == "ok"
         and not timed_out
     )
-    requests = server.request_summaries(since=request_start)
+    requests = server.request_summaries(since=request_start, relative_to=started)
+    failure_phase, failure_kind = _classify_controlled_failure(
+        manifest,
+        requests,
+        task_passed=task_passed,
+        claimed_complete=claimed_complete,
+        timed_out=timed_out,
+    )
+    expected_failure = manifest.get("expected_failure_kind") is not None
+    attribution_matches = _attribution_matches(
+        manifest,
+        failure_phase=failure_phase,
+        failure_kind=failure_kind,
+    )
     advertised_tools = _advertised_tools(requests)
     allowed_tools = sorted(str(item) for item in manifest["budgets"]["allowed_tools"])
     tool_surface_matches = _requests_match_tool_surface(requests, allowed_tools)
     budget_passed = (
-        not timed_out
-        and duration <= float(manifest["budgets"]["wall_timeout_seconds"])
+        duration <= wall_timeout + 1.0
+        and (expected_failure or not timed_out)
         and len(requests) <= int(manifest["budgets"]["max_model_requests"])
     )
-    status = (
+    ordinary_status = (
         MeasurementStatus.MEASURED
         if structured and not parse_error and not (timed_out and envelope is None)
         else MeasurementStatus.ERROR
     )
-    identity_matches = bool(
+    envelope_identity_matches = bool(
         envelope is not None
         and envelope.get("model") == CONTROLLED_MODEL_ID
         and envelope.get("provider") == "taiyi-benchmark"
+    )
+    request_identity_matches = bool(requests) and all(
+        request.get("model") == CONTROLLED_MODEL_ID for request in requests
+    )
+    identity_matches = envelope_identity_matches or request_identity_matches
+    status = (
+        MeasurementStatus.MEASURED
+        if ordinary_status is MeasurementStatus.MEASURED
+        or (expected_failure and attribution_matches)
+        else MeasurementStatus.ERROR
     )
     tool_summary = envelope.get("toolSummary") if envelope is not None else None
     tool_calls = (
@@ -655,6 +801,10 @@ def run_openclaw_cell(
                 not tool_surface_matches,
                 "observed tool surface does not match the frozen manifest",
             ),
+            (
+                expected_failure and not attribution_matches,
+                "failure attribution does not match the frozen fault manifest",
+            ),
         )
         if condition
     )
@@ -669,10 +819,11 @@ def run_openclaw_cell(
             status is MeasurementStatus.MEASURED
             and identity_matches
             and tool_surface_matches
+            and (not expected_failure or attribution_matches)
         ),
         blockers=comparison_blockers,
         model_id=CONTROLLED_MODEL_ID,
-        case_id=COMPARATIVE_CASE_ID,
+        case_id=str(manifest["case_id"]),
         reported_state=(
             "COMPLETED"
             if claimed_complete
@@ -695,8 +846,11 @@ def run_openclaw_cell(
             "final_workspace": final,
             "model_requests": requests,
             "identity_matches": identity_matches,
+            "envelope_identity_matches": envelope_identity_matches,
+            "request_identity_matches": request_identity_matches,
             "advertised_tools": advertised_tools,
             "tool_surface_matches": tool_surface_matches,
+            "attribution_matches": attribution_matches,
             "assistant_turns": (
                 envelope.get("assistantTurns") if envelope is not None else None
             ),
@@ -716,10 +870,12 @@ def run_openclaw_cell(
             "sandbox_profile_digest": canonical_digest(profile),
             "stdout_log": "raw/openclaw/stdout.log",
             "stderr_log": "raw/openclaw/stderr.log",
-            "acceptance_observed_digest": _acceptance_digest(workspace),
+            "acceptance_observed_digest": _acceptance_digest(workspace, manifest),
             "secret_env_names": [],
         },
         error=error,
+        failure_phase=failure_phase,
+        failure_kind=failure_kind,
     )
 
 
@@ -764,7 +920,7 @@ def blocked_receipt(
         comparable=False,
         blockers=blockers,
         model_id=CONTROLLED_MODEL_ID,
-        case_id=COMPARATIVE_CASE_ID,
+        case_id=str(manifest["case_id"]),
         reported_state="NOT_RUN",
         task_passed=False,
         claimed_complete=False,
@@ -793,14 +949,68 @@ def workspace_snapshot(root: Path) -> dict[str, Any]:
     return {"file_count": len(files), "tree_digest": canonical_digest(files)}
 
 
-def _acceptance_passed(workspace: Path) -> bool:
-    path = workspace / ACCEPTANCE_PATH
-    return path.is_file() and path.read_text(encoding="utf-8") == ACCEPTANCE_CONTENT
+def _acceptance_passed(workspace: Path, manifest: dict[str, Any]) -> bool:
+    path = workspace / str(manifest["acceptance"]["path"])
+    return (
+        path.is_file()
+        and path.read_text(encoding="utf-8") == manifest["acceptance"]["content"]
+    )
 
 
-def _acceptance_digest(workspace: Path) -> str | None:
-    path = workspace / ACCEPTANCE_PATH
+def _acceptance_digest(
+    workspace: Path,
+    manifest: dict[str, Any],
+) -> str | None:
+    path = workspace / str(manifest["acceptance"]["path"])
     return canonical_digest(path.read_text(encoding="utf-8")) if path.is_file() else None
+
+
+def _classify_controlled_failure(
+    manifest: dict[str, Any],
+    requests: list[dict[str, Any]],
+    *,
+    task_passed: bool,
+    claimed_complete: bool,
+    timed_out: bool,
+) -> tuple[str | None, str | None]:
+    if task_passed or claimed_complete:
+        return None, None
+    if not requests:
+        return (
+            FAILURE_PHASE_PROCESS_START,
+            (
+                FAILURE_KIND_HARNESS_STARTUP_TIMEOUT
+                if timed_out
+                else FAILURE_KIND_HARNESS_STARTUP_FAILURE
+            ),
+        )
+    fault = manifest.get("injected_fault")
+    if fault == FAULT_FIRST_TOKEN_STALL and not any(
+        request.get("response_started") is True for request in requests
+    ):
+        return FAILURE_PHASE_FIRST_TOKEN, FAILURE_KIND_FIRST_TOKEN_TIMEOUT
+    if fault == FAULT_STREAM_IDLE_STALL and any(
+        request.get("response_started") is True
+        and request.get("response_completed") is not True
+        for request in requests
+    ):
+        return FAILURE_PHASE_STREAM_IDLE, FAILURE_KIND_STREAM_IDLE_TIMEOUT
+    return None, None
+
+
+def _attribution_matches(
+    manifest: dict[str, Any],
+    *,
+    failure_phase: str | None,
+    failure_kind: str | None,
+) -> bool:
+    expected_kind = manifest.get("expected_failure_kind")
+    if expected_kind is None:
+        return failure_phase is None and failure_kind is None
+    return (
+        failure_phase == manifest.get("expected_failure_phase")
+        and failure_kind == expected_kind
+    )
 
 
 def _advertised_tools(requests: list[dict[str, Any]]) -> list[str]:

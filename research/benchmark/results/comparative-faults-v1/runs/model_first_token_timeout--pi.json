@@ -1,0 +1,90 @@
+{
+  "digest": "sha256:f54ee9901c4f8fb3614d16f9b59dd9d2a74f407a1976451370d52ec7e45b4ebf",
+  "payload": {
+    "adapter": "pi-json-sandbox-exec",
+    "blockers": [],
+    "budget_passed": true,
+    "case_id": "model_first_token_timeout",
+    "claimed_complete": false,
+    "comparability_signature": "sha256:11dd835a89b5e99fb0831c3fdeefe75dab4b0be49bd0b298b691c1609dd91c44",
+    "comparable": true,
+    "duration_seconds": 18.02210462494986,
+    "error": "outer benchmark timeout",
+    "evidence": {
+      "acceptance_observed_digest": null,
+      "advertised_tools": [
+        "read",
+        "write"
+      ],
+      "attribution_matches": true,
+      "direct_node_entrypoint": true,
+      "event_count": 5,
+      "event_types": [
+        "session",
+        "agent_start",
+        "turn_start",
+        "message_start",
+        "message_end"
+      ],
+      "final_workspace": {
+        "file_count": 1,
+        "tree_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb"
+      },
+      "initial_workspace": {
+        "file_count": 1,
+        "tree_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb"
+      },
+      "isolation": {
+        "outside_write_denied": true,
+        "passed": true,
+        "unlisted_loopback_denied": true,
+        "workspace_write_allowed": true
+      },
+      "model_requests": [
+        {
+          "client_disconnected": false,
+          "injected_fault": "first_token_stall",
+          "message_count": 2,
+          "model": "taiyi-controlled-model-v1",
+          "request_digest": "sha256:cbc6cb59112b2fef1bab9554f146d25d7378d10b93ca086b602c4ca178992e2b",
+          "request_started_after_seconds": 0.456370165979024,
+          "response_completed": false,
+          "response_started": false,
+          "roles": [
+            "system",
+            "user"
+          ],
+          "stream": true,
+          "tool_names": [
+            "read",
+            "write"
+          ]
+        }
+      ],
+      "native_clipboard_disabled": true,
+      "sandbox_profile_digest": "sha256:28f8c8e67424563f37dff05ba3640d207499d9468eeb0cd53cf7e85afc45d80d",
+      "secret_env_names": [],
+      "stderr_log": "raw/pi/stderr.log",
+      "stdout_log": "raw/pi/stdout.log",
+      "tool_errors": 0,
+      "tool_surface_matches": true
+    },
+    "exit_code": 143,
+    "failure_kind": "LLM_FIRST_TOKEN_TIMEOUT",
+    "failure_phase": "LLM_FIRST_TOKEN",
+    "false_completion": false,
+    "final_workspace_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb",
+    "harness_id": "pi",
+    "harness_version": "0.84.1",
+    "initial_workspace_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb",
+    "measurement_status": "MEASURED",
+    "model_id": "taiyi-controlled-model-v1",
+    "model_requests": 1,
+    "reported_state": "FAILED",
+    "run_id": "pi-18cc15d9bc01",
+    "task_passed": false,
+    "timed_out": true,
+    "tool_calls": 0
+  },
+  "schema_version": "taiyi.harness-comparative-fault-receipt/v1"
+}

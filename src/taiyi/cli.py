@@ -181,6 +181,7 @@ def _benchmark(args) -> int:
     import json
 
     from taiyi.benchmark.runner import (
+        run_comparative_fault_matrix,
         run_comparative_smoke,
         run_protocol_matrix,
         write_probe_report,
@@ -215,6 +216,29 @@ def _benchmark(args) -> int:
             "output": str(args.output),
         }, ensure_ascii=False, indent=2))
         return 0 if report["all_comparable_cells_passed"] else 1
+
+    if args.action == "faults":
+        report = run_comparative_fault_matrix(
+            args.output,
+            pi_executable=args.pi_executable,
+            openclaw_executable=args.openclaw_executable,
+        )
+        print(json.dumps({
+            "measurement_scope": report["measurement_scope"],
+            "case_count": report["case_count"],
+            "cell_count": report["cell_count"],
+            "comparable_cell_count": report["comparable_cell_count"],
+            "attributed_cell_count": report["attributed_cell_count"],
+            "safe_failure_cell_count": report["safe_failure_cell_count"],
+            "complete_matrix": report["complete_matrix"],
+            "false_completions": report["false_completions"],
+            "output": str(args.output),
+        }, ensure_ascii=False, indent=2))
+        return 0 if (
+            report["complete_matrix"]
+            and report["all_comparable_failures_attributed"]
+            and report["all_attributed_failures_safe"]
+        ) else 1
 
     payload = write_probe_report(args.output)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -422,8 +446,8 @@ def main(argv=None) -> int:
     )
     benchmark.add_argument(
         "action",
-        choices=["protocol", "comparative", "probe"],
-        help="run TaiYi faults, a controlled cross-harness smoke, or capability probes",
+        choices=["protocol", "comparative", "faults", "probe"],
+        help="run TaiYi faults, cross-harness comparisons, or capability probes",
     )
     benchmark.add_argument(
         "--output",
@@ -433,12 +457,12 @@ def main(argv=None) -> int:
     benchmark.add_argument(
         "--pi-executable",
         default=None,
-        help="explicit Pi CLI path for the comparative action",
+        help="explicit Pi CLI path for comparative/fault actions",
     )
     benchmark.add_argument(
         "--openclaw-executable",
         default=None,
-        help="explicit OpenClaw CLI path for the comparative action",
+        help="explicit OpenClaw CLI path for comparative/fault actions",
     )
     benchmark.set_defaults(func=_benchmark)
 

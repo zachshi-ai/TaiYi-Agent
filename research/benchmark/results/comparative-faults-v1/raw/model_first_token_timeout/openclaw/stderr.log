@@ -1,0 +1,8 @@
+[agents/tool-policy] tool policy removed 6 tool(s) via tools.profile (coding): agents_list, gateway, mobile_ui, nodes, openclaw, transcripts
+[agents/tool-policy] tool policy removed 5 tool(s) via tools.deny: apply_patch, edit, exec, process, sessions_yield; matched apply_patch, edit, exec, process, sessions_yield
+[agents/tool-policy] tool policy removed 23 tool(s) via tools.allow: ask_user, conversations_list, conversations_send, conversations_turn, create_goal, dashboard, get_goal, memory_get, memory_search, session_status, sessions, sessions_history, sessions_list, sessions_search, sessions_send, sessions_spawn, skill_workshop, subagents, terminal, update_goal, update_plan, web_fetch, web_search
+[provider-transport-fetch] [model-fetch] start provider=taiyi-benchmark api=openai-completions model=taiyi-controlled-model-v1 method=POST url=<CONTROLLED_MODEL_ENDPOINT>/chat/completions timeoutMs=undefined proxy=none policy=custom
+[openclaw] Failed to respawn CLI: Error: kill EPERM
+    at ChildProcess.kill (node:internal/child_process:536:26)
+    at process.listener (file://<ISOLATED_ROOT>/dist/child-process-bridge-Vp-FhPhG.js:20:11)
+    at process.emit (node:events:509:28)

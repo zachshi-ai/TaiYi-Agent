@@ -20,7 +20,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
 | `src/taiyi/` | **Production code** — reliable runtime, context, governance, execution, and validation modules |
-| `tests/` | 366 tests covering governance, operating modes, durable jobs/effect recovery, repository context, LLM faults, benchmark contracts, and executable Skill gates |
+| `tests/` | 372 tests covering governance, operating modes, durable jobs/effect recovery, repository context, LLM faults, benchmark contracts, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -245,6 +245,16 @@ authoritative batch/evidence interface is callable. This is explicitly not a
 model-quality ranking. See
 [`learning/docs/12_Controlled_Cross_Harness_Comparison.md`](./learning/docs/12_Controlled_Cross_Harness_Comparison.md).
 
+Phase 7B2.1 adds deterministic first-token and stream-idle stalls. Across TaiYi,
+Pi, and OpenClaw, all six comparable fault cells were attributed to the correct
+LLM phase, terminated safely, and produced zero false completions. The receipt
+also separates harness startup from model waiting: in this local baseline,
+OpenClaw reached its first model request in about 7.8 seconds versus about 0.2
+for TaiYi and 0.4 for Pi. Those cold-start observations explain why a short
+overall timeout can expire before OpenClaw has contacted the model; they are
+diagnostic evidence, not a productivity ranking. See
+[`learning/docs/14_Cross_Harness_Fault_Attribution.md`](./learning/docs/14_Cross_Harness_Fault_Attribution.md).
+
 ### Run it yourself
 
 One command, straight from GitHub (repo is public, no clone needed). pipx is
@@ -343,6 +353,10 @@ taiyi benchmark comparative \
   --pi-executable /path/to/pinned/pi \
   --openclaw-executable /path/to/pinned/openclaw \
   --output research/benchmark/results/comparative-smoke-v2
+taiyi benchmark faults \
+  --pi-executable /path/to/pinned/pi \
+  --openclaw-executable /path/to/pinned/openclaw \
+  --output research/benchmark/results/comparative-faults-v1
 ```
 
 Expected from the example:
