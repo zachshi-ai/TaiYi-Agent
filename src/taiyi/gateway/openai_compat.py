@@ -55,6 +55,7 @@ def to_openai_response(ctx: TaskContext, model: str) -> dict:
             "provider_route": ctx.provider_route,
             "repository_context": ctx.repository_context,
             "context_state": ctx.context_state,
+            "effects": [effect.to_dict() for effect in ctx.effects],
             "contract": ctx.contract.to_dict() if ctx.contract else None,
             "evidence": ctx.evidence.to_dict(),
         },

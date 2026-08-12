@@ -24,6 +24,7 @@ except ImportError:  # pragma: no cover - Windows falls back to process-local cl
 from taiyi.llm.base import LLMMessage
 from taiyi.policy import EvidenceLedger, EvidenceRecord
 from taiyi.runtime.context import StepResult, TaskContext
+from taiyi.runtime.effects import EffectRecord
 from taiyi.runtime.protocol import CheckpointIncompatibleError, RunPhase
 from taiyi.runtime.quality import prepare_quality_contract
 from taiyi.runtime.state import TaskState
@@ -110,6 +111,7 @@ def serialize_context(ctx: TaskContext) -> dict[str, Any]:
         "provider_route": ctx.provider_route,
         "repository_context": ctx.repository_context,
         "context_state": ctx.context_state,
+        "effects": [effect.to_dict() for effect in ctx.effects],
         "contract": ctx.contract.to_dict() if ctx.contract else None,
         "evidence": ctx.evidence.to_dict(),
         "created_at": ctx.created_at,
@@ -157,6 +159,10 @@ def restore_context(snapshot: dict[str, Any], *, validator=None, value_stream=No
             stdout_artifact=item.get("stdout_artifact"),
             stderr_artifact=item.get("stderr_artifact"),
             output_truncated=bool(item.get("output_truncated", False)),
+            operation_id=item.get("operation_id"),
+            effect_status=item.get("effect_status"),
+            effect_evidence=item.get("effect_evidence"),
+            original_failure_kind=item.get("original_failure_kind"),
         )
         for item in snapshot.get("step_results", [])
     ]
@@ -194,6 +200,7 @@ def restore_context(snapshot: dict[str, Any], *, validator=None, value_stream=No
         provider_route=snapshot.get("provider_route"),
         repository_context=snapshot.get("repository_context"),
         context_state=snapshot.get("context_state"),
+        effects=[EffectRecord.from_dict(item) for item in snapshot.get("effects", [])],
         contract=contract,
         validation_checklist=checklist,
         evidence=evidence,

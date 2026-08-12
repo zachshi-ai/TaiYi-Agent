@@ -32,11 +32,17 @@ from taiyi.policy import (
     resolve_policy,
 )
 from taiyi.runtime.context import StepResult, TaskContext
+from taiyi.runtime.effects import (
+    EffectManager,
+    HumanEffectResolution,
+    ReplayPolicy,
+)
 from taiyi.runtime.llm_retry import task_resilient_provider
 from taiyi.runtime.executor import (
     ExecResult,
     Executor,
     MockExecutor,
+    IdempotentExecutor,
     RecoverableExecutor,
     execute_step,
 )
@@ -109,6 +115,7 @@ class AgentRuntime:
         provider_router: ProviderRouter | None = None,
         run_store: RunStore | None = None,
         context_engine: ContextEngine | None = None,
+        effect_manager: EffectManager | None = None,
         llm_sleep=time.sleep,
         llm_clock=time.time,
     ):
@@ -130,6 +137,7 @@ class AgentRuntime:
         self.completion = CompletionController()
         self.run_store = run_store or RunStore()
         self.context_engine = context_engine
+        self.effect_manager = effect_manager
         self._llm_sleep = llm_sleep
         self._llm_clock = llm_clock
         self._recovery_threads: dict[str, threading.Thread] = {}
@@ -623,12 +631,65 @@ class AgentRuntime:
         approved_by: str | None = None,
     ) -> bool:
         sr = ctx.step_results[step_index]
+        effect = (
+            self.effect_manager.find(ctx.effects, str(result.operation_id))
+            if self.effect_manager is not None and result.operation_id
+            else None
+        )
+        if result.failure_kind == FailureKind.EFFECT_OUTCOME_UNKNOWN.value:
+            sr.output = result.output
+            sr.stdout_artifact = result.stdout_artifact
+            sr.stderr_artifact = result.stderr_artifact
+            sr.output_truncated = result.output_truncated
+            sr.operation_id = result.operation_id
+            sr.effect_status = result.effect_status
+            sr.effect_evidence = result.effect_evidence
+            sr.original_failure_kind = result.original_failure_kind
+            ctx.failure_kind = FailureKind.EFFECT_OUTCOME_UNKNOWN.value
+            ctx.error = result.error or result.effect_evidence or result.output
+            ctx.final_output = (
+                "tool outcome is ambiguous; resolve as applied, not_applied, or abandon "
+                f"before continuing (operation_id={result.operation_id})"
+            )
+            continuation = {
+                "kind": "agent_effect_resolution",
+                "round": ctx.round,
+                "operation_id": result.operation_id,
+                "step_index": step_index,
+                "tool": step_obj.tool,
+                "args": list(step_obj.args),
+                "messages": serialize_messages(messages),
+                "next_step": next_step,
+                "result": result.to_dict(),
+            }
+            self._record(
+                ctx,
+                RunPhase.WAITING_INPUT,
+                "effect_resolution_required",
+                state=TaskState.NEEDS_INPUT,
+                continuation=continuation,
+                operation_id=result.operation_id,
+                original_failure_kind=result.original_failure_kind,
+                evidence=result.effect_evidence,
+                effect=(effect.to_dict() if effect is not None else None),
+            )
+            self.audit.append(
+                "effect_resolution_required",
+                task_id=ctx.task_id,
+                operation_id=result.operation_id,
+                original_failure_kind=result.original_failure_kind,
+            )
+            return False
         if not sr.executed:
             sr.executed = True
             sr.output = result.output
             sr.stdout_artifact = result.stdout_artifact
             sr.stderr_artifact = result.stderr_artifact
             sr.output_truncated = result.output_truncated
+            sr.operation_id = result.operation_id
+            sr.effect_status = result.effect_status
+            sr.effect_evidence = result.effect_evidence
+            sr.original_failure_kind = result.original_failure_kind
             ctx.executed_action_count += 1
         # Feed the observation back before checkpointing. If the process dies
         # before this checkpoint, recovery rebuilds the messages from the older
@@ -641,6 +702,10 @@ class AgentRuntime:
             observation.append(f"stdout_artifact: {result.stdout_artifact}")
         if result.stderr_artifact:
             observation.append(f"stderr_artifact: {result.stderr_artifact}")
+        if result.effect_status:
+            observation.append(f"effect_status: {result.effect_status}")
+        if result.effect_evidence:
+            observation.append(f"effect_evidence: {result.effect_evidence}")
         messages.append(LLMMessage("user", "\n".join(observation)))
         if self.context_engine is not None:
             self.context_engine.mark_repository_dirty(ctx)
@@ -680,6 +745,10 @@ class AgentRuntime:
             duration_seconds=result.duration_seconds,
             error=result.error,
             recovered=recovered,
+            effect=(effect.to_dict() if effect is not None else None),
+            effect_status=result.effect_status,
+            effect_evidence=result.effect_evidence,
+            original_failure_kind=result.original_failure_kind,
         )
         self.audit.append(
             "step_executed",
@@ -770,6 +839,7 @@ class AgentRuntime:
             )
             self.audit.append("human_rejected", task_id=ctx.task_id, approval_id=approval_id)
             self._finish(ctx, time.time())
+            self.run_store.release_task_lease(ctx.task_id)
             return ctx
 
         # Human approved — but governance gets the final word on the held step.
@@ -808,6 +878,7 @@ class AgentRuntime:
             self.audit.append("task_rejected", task_id=ctx.task_id, tool=held_step.tool,
                               reason=repermit.reason)
             self._finish(ctx, time.time())
+            self.run_store.release_task_lease(ctx.task_id)
             return ctx
 
         # Re-check passed (ALLOW or still NEEDS_REVIEW-but-human-overrode). Execute
@@ -819,6 +890,9 @@ class AgentRuntime:
             pending.held_index,
             messages=messages,
             approved_by="human",
+            effect_recovery=self._approval_is_effect_recovery(
+                ctx, pending.held_index
+            ),
         )
         held_sr.verdict = "ALLOW(human)"
         if not self._apply_tool_result(
@@ -831,6 +905,7 @@ class AgentRuntime:
             approved_by="human",
         ):
             self._finish(ctx, time.time())
+            self.run_store.release_task_lease(ctx.task_id)
             return ctx
 
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
@@ -850,7 +925,184 @@ class AgentRuntime:
             self._fail(ctx, e)
 
         self._finish(ctx, time.time())
+        self.run_store.release_task_lease(ctx.task_id)
         return ctx
+
+    def _approval_is_effect_recovery(self, ctx: TaskContext, step_index: int) -> bool:
+        if self.effect_manager is None:
+            return False
+        operation_id = f"{ctx.task_id}:round:{ctx.round}:step:{step_index}"
+        effect = self.effect_manager.find(ctx.effects, operation_id)
+        return (
+            effect is not None
+            and effect.human_resolution == HumanEffectResolution.NOT_APPLIED.value
+        )
+
+    def resolve_effect(
+        self,
+        task_id: str,
+        *,
+        resolution: str,
+        note: str,
+    ) -> TaskContext:
+        """Resolve an ambiguous external effect without interpreting approval as replay."""
+
+        if not note.strip():
+            raise ValueError("effect resolution requires an audit note or external receipt")
+        checkpoint = self.run_store.load(task_id)
+        if checkpoint is None:
+            raise KeyError(task_id)
+        if not self.run_store.acquire_task_lease(task_id, blocking=False):
+            raise RuntimeError(f"task {task_id} is already being advanced by another runtime")
+
+        start = time.time()
+        try:
+            checkpoint = self.run_store.load(task_id)
+            if checkpoint is None:
+                raise KeyError(task_id)
+            continuation = checkpoint.get("continuation") or {}
+            if (
+                checkpoint["context"].get("phase") != RunPhase.WAITING_INPUT.value
+                or continuation.get("kind") != "agent_effect_resolution"
+            ):
+                raise RuntimeError(f"task {task_id} is not waiting for an effect resolution")
+            ctx = restore_context(
+                checkpoint["context"],
+                validator=self.validator,
+                value_stream=self.value_stream,
+            )
+            messages = deserialize_messages(continuation.get("messages", []))
+            step_index = int(continuation["step_index"])
+            if not 0 <= step_index < len(ctx.step_results):
+                raise CheckpointIncompatibleError("effect step is out of range")
+            step = ctx.step_results[step_index].step
+            if continuation.get("tool") != step.tool or list(
+                continuation.get("args", [])
+            ) != step.args:
+                raise CheckpointIncompatibleError("effect resolution differs from frozen step")
+            operation_id = str(continuation["operation_id"])
+            effect = (
+                self.effect_manager.find(ctx.effects, operation_id)
+                if self.effect_manager is not None
+                else None
+            )
+            if effect is None:
+                raise CheckpointIncompatibleError("effect ledger entry is missing")
+            parsed = HumanEffectResolution.parse(resolution)
+            self.effect_manager.apply_human_resolution(effect, parsed, note=note.strip())
+            self._record(
+                ctx,
+                RunPhase.RECOVERING,
+                "effect_resolution_received",
+                state=TaskState.EXECUTING,
+                continuation=continuation,
+                operation_id=operation_id,
+                resolution=parsed.value,
+                effect=effect.to_dict(),
+            )
+            self.audit.append(
+                "effect_resolution_received",
+                task_id=ctx.task_id,
+                operation_id=operation_id,
+                resolution=parsed.value,
+                note=note.strip(),
+            )
+
+            if parsed is HumanEffectResolution.ABANDON:
+                self._fail(
+                    ctx,
+                    f"ambiguous effect abandoned by human: {note.strip()}",
+                    kind=FailureKind.EFFECT_OUTCOME_UNKNOWN,
+                )
+                return ctx
+
+            if parsed is HumanEffectResolution.APPLIED:
+                result = ExecResult(
+                    f"human independently confirmed effect applied: {note.strip()}",
+                    ok=True,
+                    operation_id=operation_id,
+                    effect_status=effect.status.value,
+                    effect_evidence=effect.observations[-1].evidence,
+                )
+            else:
+                idempotent = (
+                    isinstance(self.executor, IdempotentExecutor)
+                    and self.executor.supports_idempotency(step)
+                )
+                replay_allowed = effect.replay_policy in {
+                    ReplayPolicy.SAFE,
+                    ReplayPolicy.VERIFY_THEN_RETRY,
+                } or (effect.replay_policy is ReplayPolicy.IDEMPOTENCY_KEY and idempotent)
+                if not replay_allowed:
+                    original = ExecResult.from_dict(dict(continuation.get("result") or {}))
+                    original_kind = original.original_failure_kind or original.failure_kind
+                    self._fail(
+                        ctx,
+                        "human confirmed the effect was not applied, but the frozen policy "
+                        "forbids automatic replay; start a newly authorized task",
+                        kind=(
+                            FailureKind(original_kind)
+                            if original_kind in FailureKind._value2member_map_
+                            else FailureKind.EXTERNAL_FAILURE
+                        ),
+                    )
+                    return ctx
+                permit = self.scheduler.request_permit(
+                    step,
+                    ctx.scenario,
+                    user_id=ctx.user_id,
+                    task_id=ctx.task_id,
+                )
+                if permit.verdict is Verdict.ALLOW:
+                    permit = self._second_opinion(permit, step, ctx)
+                if permit.verdict is Verdict.DENY:
+                    ctx.step_results[step_index].verdict = permit.verdict.value
+                    ctx.step_results[step_index].reason = permit.reason
+                    self._record(
+                        ctx,
+                        RunPhase.SETTLED,
+                        "run_settled",
+                        state=TaskState.REJECTED,
+                        reason=permit.reason,
+                    )
+                    return ctx
+                if permit.verdict is Verdict.NEEDS_REVIEW:
+                    self._park_agent_approval(ctx, step, step_index, permit, messages)
+                    return ctx
+                result = self._execute_tool(
+                    ctx,
+                    step,
+                    step_index,
+                    messages=messages,
+                    approved_by="effect-resolution",
+                    effect_recovery=True,
+                )
+
+            ctx.failure_kind = None
+            ctx.error = None
+            ctx.final_output = None
+            next_step = int(continuation["next_step"])
+            if not self._apply_tool_result(
+                ctx,
+                step,
+                step_index,
+                result,
+                messages,
+                next_step=next_step,
+                recovered=True,
+                approved_by="effect-resolution",
+            ):
+                return ctx
+            assert ctx.policy is not None
+            selection = self.provider_router.select(ctx.policy)
+            ctx.provider_route = selection.to_dict()
+            trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
+            self._loop(ctx, messages, trace, start_step=next_step)
+            return ctx
+        finally:
+            if "ctx" in locals():
+                self._finish(ctx, start)
+            self.run_store.release_task_lease(task_id)
 
     # --- shared helpers ------------------------------------------------------
     @staticmethod
@@ -1023,10 +1275,16 @@ class AgentRuntime:
         *,
         messages: list[LLMMessage],
         approved_by: str | None = None,
+        effect_recovery: bool = False,
     ) -> ExecResult:
         """Checkpoint a stable operation id before attaching to durable work."""
 
         operation_id = f"{ctx.task_id}:round:{ctx.round}:step:{step_index}"
+        effect = (
+            self.effect_manager.prepare(ctx.effects, step, operation_id)
+            if self.effect_manager is not None
+            else None
+        )
         continuation = {
             "kind": "tool_operation",
             "round": ctx.round,
@@ -1036,6 +1294,14 @@ class AgentRuntime:
             "args": list(step.args),
             "messages": serialize_messages(messages),
         }
+        if effect is not None:
+            continuation["effect"] = {
+                "operation_id": effect.operation_id,
+                "policy_digest": effect.policy_digest,
+                "side_effect_class": effect.side_effect_class.value,
+                "replay_policy": effect.replay_policy.value,
+                "idempotency_key": effect.idempotency_key,
+            }
         if approved_by:
             continuation["approved_by"] = approved_by
         self._record(
@@ -1047,7 +1313,20 @@ class AgentRuntime:
             operation_id=operation_id,
             step_index=step_index,
             tool=step.tool,
+            effect=(effect.to_dict() if effect is not None else None),
         )
+
+        if effect is not None:
+            self.effect_manager.mark_dispatch(effect, recovery=effect_recovery)
+            self._record(
+                ctx,
+                RunPhase.TOOL_RUNNING,
+                "effect_dispatching",
+                state=TaskState.EXECUTING,
+                continuation=continuation,
+                operation_id=operation_id,
+                effect=effect.to_dict(),
+            )
 
         def attached(handle) -> None:
             attached_continuation = {**continuation, "job_id": handle.job_id}
@@ -1063,12 +1342,63 @@ class AgentRuntime:
                 tool=step.tool,
             )
 
-        return execute_step(
-            self.executor,
+        try:
+            result = execute_step(
+                self.executor,
+                step,
+                operation_id=operation_id,
+                idempotency_key=(effect.idempotency_key if effect is not None else None),
+                on_started=attached,
+            )
+        except Exception as exc:
+            kind = classify_exception(exc, RunPhase.TOOL_RUNNING)
+            if (
+                effect is None
+                or effect.side_effect_class.value == "NONE"
+            ):
+                raise
+            result = ExecResult(
+                f"executor error: {type(exc).__name__}: {exc}",
+                ok=False,
+                operation_id=operation_id,
+                failure_kind=kind.value,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        if effect is None:
+            return result
+
+        def before_retry(record) -> None:
+            self._record(
+                ctx,
+                RunPhase.EFFECT_VERIFYING,
+                "effect_retry_started",
+                state=TaskState.EXECUTING,
+                continuation=continuation,
+                operation_id=operation_id,
+                effect=record.to_dict(),
+            )
+
+        assert ctx.policy is not None
+        reconciled = self.effect_manager.reconcile_result(
+            effect,
             step,
-            operation_id=operation_id,
-            on_started=attached,
+            result,
+            executor=self.executor,
+            max_recovery_attempts=ctx.policy.max_effect_recovery_attempts,
+            before_retry=before_retry,
         )
+        if effect.observations:
+            self._record(
+                ctx,
+                RunPhase.EFFECT_VERIFYING,
+                "effect_observed",
+                state=TaskState.EXECUTING,
+                continuation=continuation,
+                operation_id=operation_id,
+                observation=effect.observations[-1].to_dict(),
+                effect=effect.to_dict(),
+            )
+        return reconciled
 
     @staticmethod
     def _result_failure_kind(result: ExecResult) -> FailureKind:
@@ -1425,11 +1755,71 @@ class AgentRuntime:
         continuation: dict,
         messages: list[LLMMessage],
     ) -> ExecResult | None:
+        operation_id = str(continuation["operation_id"])
+        effect = (
+            self.effect_manager.find(ctx.effects, operation_id)
+            if self.effect_manager is not None
+            else None
+        )
+        frozen_effect = continuation.get("effect") or {}
+        if frozen_effect:
+            if effect is None or frozen_effect.get("policy_digest") != effect.policy_digest:
+                raise CheckpointIncompatibleError(
+                    "frozen effect policy differs from the persisted effect ledger"
+                )
+            self.effect_manager.validate(effect, step_obj)
+
+        def reconcile(result: ExecResult) -> ExecResult:
+            if effect is None:
+                return result
+
+            def before_retry(record) -> None:
+                self._record(
+                    ctx,
+                    RunPhase.EFFECT_VERIFYING,
+                    "effect_retry_started",
+                    state=TaskState.EXECUTING,
+                    continuation=continuation,
+                    operation_id=operation_id,
+                    recovered=True,
+                    effect=record.to_dict(),
+                )
+
+            assert ctx.policy is not None
+            resolved = self.effect_manager.reconcile_result(
+                effect,
+                step_obj,
+                result,
+                executor=self.executor,
+                max_recovery_attempts=ctx.policy.max_effect_recovery_attempts,
+                before_retry=before_retry,
+            )
+            if effect.observations:
+                self._record(
+                    ctx,
+                    RunPhase.EFFECT_VERIFYING,
+                    "effect_observed",
+                    state=TaskState.EXECUTING,
+                    continuation=continuation,
+                    operation_id=operation_id,
+                    recovered=True,
+                    observation=effect.observations[-1].to_dict(),
+                    effect=effect.to_dict(),
+                )
+            return resolved
+
         if not isinstance(self.executor, RecoverableExecutor):
+            if effect is not None:
+                return reconcile(ExecResult(
+                    "executor process exited before returning an effect receipt",
+                    ok=False,
+                    operation_id=operation_id,
+                    failure_kind=FailureKind.TOOL_LOST.value,
+                    error="non-durable executor outcome was not checkpointed",
+                ))
             raise CheckpointIncompatibleError(
                 "executor cannot reattach a TOOL_RUNNING checkpoint"
             )
-        operation_id = str(continuation["operation_id"])
         recorded_job_id = continuation.get("job_id")
         handle = self.executor.find(operation_id)
         reattached = handle is not None
@@ -1444,6 +1834,14 @@ class AgentRuntime:
                     "checkpoint names a job that is absent from the operation index"
                 )
             if not self.executor.supports_jobs(step_obj):
+                if effect is not None:
+                    return reconcile(ExecResult(
+                        "non-durable tool outcome is unknown after restart",
+                        ok=False,
+                        operation_id=operation_id,
+                        failure_kind=FailureKind.TOOL_LOST.value,
+                        error="no durable job receipt exists for the interrupted effect",
+                    ))
                 raise CheckpointIncompatibleError(
                     "non-durable tool outcome is unknown; refusing duplicate execution"
                 )
@@ -1502,7 +1900,7 @@ class AgentRuntime:
         result = self.executor.wait(handle.job_id)
         if result.operation_id != operation_id or result.job_id != handle.job_id:
             raise CheckpointIncompatibleError("durable job result identity does not match continuation")
-        return result
+        return reconcile(result)
 
     def _park_agent_approval(
         self,

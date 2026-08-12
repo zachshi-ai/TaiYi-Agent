@@ -83,13 +83,32 @@ def test_async_task_returns_immediately_exposes_progress_and_cancels(tmp_path):
     assert cancelled["cancelled"] is True
     assert cancelled["job"]["status"] == "CANCELLED"
 
+    ambiguous = _wait_for(
+        app,
+        accepted["status_url"],
+        lambda item: item["phase"] == RunPhase.WAITING_INPUT.value,
+    )
+    assert ambiguous["state"] == TaskState.NEEDS_INPUT.value
+    assert ambiguous["failure_kind"] == FailureKind.EFFECT_OUTCOME_UNKNOWN.value
+    assert ambiguous["settled"] is False
+
+    resolve_status, _ = app.handle(
+        "POST",
+        f"/v1/tasks/{task_id}/effects/resolve",
+        {},
+        json.dumps({
+            "resolution": "abandon",
+            "note": "operator cancelled the job and accepts an unknown partial effect",
+        }),
+    )
+    assert resolve_status == 200
     settled = _wait_for(
         app,
         accepted["status_url"],
         lambda item: item["phase"] == RunPhase.SETTLED.value,
     )
     assert settled["state"] == TaskState.FAILED.value
-    assert settled["failure_kind"] == FailureKind.TOOL_CANCELLED.value
+    assert settled["failure_kind"] == FailureKind.EFFECT_OUTCOME_UNKNOWN.value
     assert settled["settled"] is True
 
 

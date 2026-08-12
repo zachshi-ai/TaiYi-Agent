@@ -99,6 +99,22 @@ class SandboxExecutor:
         except Exception as e:  # noqa: BLE001 — surface as a failed step, not a crash
             return ExecResult(f"executor error: {type(e).__name__}: {e}", ok=False)
 
+    def supports_idempotency(self, step: PlanStep) -> bool:
+        return step.tool == "file:write" and len(step.args) >= 2
+
+    def execute_idempotent(
+        self,
+        step: PlanStep,
+        *,
+        operation_id: str,
+        idempotency_key: str,
+    ) -> ExecResult:
+        if not self.supports_idempotency(step):
+            raise ValueError(f"tool has no connector-level idempotency: {step.tool}")
+        result = self._write_file(step.args)
+        result.operation_id = operation_id
+        return result
+
     # --- shell ---------------------------------------------------------------
     def supports_jobs(self, step: PlanStep) -> bool:
         return step.tool.startswith("shell:")

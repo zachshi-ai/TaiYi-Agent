@@ -38,6 +38,7 @@ def task_summary(ctx: TaskContext) -> dict:
         "provider_route": ctx.provider_route,
         "repository_context": ctx.repository_context,
         "context_state": ctx.context_state,
+        "effects": [effect.to_dict() for effect in ctx.effects],
         "contract": ctx.contract.to_dict() if ctx.contract else None,
         "evidence": ctx.evidence.to_dict(),
         "steps": [s.to_dict() for s in ctx.step_results],
@@ -94,6 +95,8 @@ class GatewayApp:
                 return self._task_events(path, query)
             if method == "POST" and path.endswith("/cancel"):
                 return self._cancel_task(path)
+            if method == "POST" and path.endswith("/effects/resolve"):
+                return self._resolve_effect(path, payload)
             if method == "GET":
                 return self._task_status(path)
         if method == "POST" and path == "/v1/chat/completions":
@@ -230,6 +233,34 @@ class GatewayApp:
         except RuntimeError as exc:
             return 409, {"error": str(exc)}
         return 202 if result.get("cancelled") else 200, result
+
+    def _resolve_effect(self, path: str, payload: dict) -> tuple[int, dict]:
+        parts = path.strip("/").split("/")
+        if (
+            len(parts) != 5
+            or parts[:2] != ["v1", "tasks"]
+            or parts[3:] != ["effects", "resolve"]
+        ):
+            return 404, {"error": "not found"}
+        resolution = payload.get("resolution")
+        note = payload.get("note")
+        if resolution not in {"applied", "not_applied", "abandon"} or not isinstance(note, str):
+            return 400, {
+                "error": "need resolution=applied|not_applied|abandon and a non-empty note"
+            }
+        try:
+            ctx = self.gateway.resolve_effect(
+                parts[2],
+                resolution=resolution,
+                note=note,
+            )
+        except KeyError:
+            return 404, {"error": f"unknown task: {parts[2]}"}
+        except ValueError as exc:
+            return 400, {"error": str(exc)}
+        except RuntimeError as exc:
+            return 409, {"error": str(exc)}
+        return 200, task_summary(ctx)
 
     def _chat(self, payload: dict) -> tuple[int, dict]:
         prompt = last_user_message(payload.get("messages", []))

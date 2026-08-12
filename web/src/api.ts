@@ -58,6 +58,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ approval_id: approvalId, decision }),
     }),
+  resolveEffect: (
+    taskId: string,
+    resolution: "applied" | "not_applied" | "abandon",
+    note: string,
+  ) => req(`/v1/tasks/${encodeURIComponent(taskId)}/effects/resolve`, {
+    method: "POST",
+    body: JSON.stringify({ resolution, note }),
+  }),
 
   // OODA review
   listPending: () => req("/v1/review/pending"),

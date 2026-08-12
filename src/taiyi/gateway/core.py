@@ -27,8 +27,16 @@ from taiyi.multi_agent import ExpertCommittee
 from taiyi.observability import Observability
 from taiyi.policy import OperatingMode
 from taiyi.agent import AgentRuntime
-from taiyi.runtime import RunStore, TaskContext, TaskRuntime, TaskState
-from taiyi.runtime.executor import Executor, RecoverableExecutor
+from taiyi.runtime import (
+    EffectManager,
+    EffectPolicyRegistry,
+    FileWriteAuthority,
+    RunStore,
+    TaskContext,
+    TaskRuntime,
+    TaskState,
+)
+from taiyi.runtime.executor import Executor, MockExecutor, RecoverableExecutor
 from taiyi.scenarios import DEFAULT_SCENARIOS_DIR, ScenarioMatcher, ScenarioRegistry
 from taiyi.scheduler import LLMPlanner, SchedulerEngine
 from taiyi.skills import DEFAULT_SKILLS_DIR, SkillRegistry
@@ -168,6 +176,7 @@ class Gateway:
                 "provider_route": context.get("provider_route"),
                 "repository_context": context.get("repository_context"),
                 "context_state": context.get("context_state"),
+                "effects": context.get("effects", []),
                 "contract": context.get("contract"),
                 "evidence": context.get("evidence"),
                 "steps": context.get("step_results", []),
@@ -248,6 +257,21 @@ class Gateway:
         """
         return self.runtime.resume(approval_id, approve=approve)
 
+    def resolve_effect(
+        self,
+        task_id: str,
+        *,
+        resolution: str,
+        note: str,
+    ) -> TaskContext:
+        """Resolve an ambiguous effect; this is distinct from pre-execution approval."""
+
+        return self.runtime.resolve_effect(
+            task_id,
+            resolution=resolution,
+            note=note,
+        )
+
     def resolve_review(self, suggestion_id: int, *, approve: bool):
         """Resolve an OODA suggestion: approve lands it in the auto dirs, reject drops it.
 
@@ -284,6 +308,7 @@ def build_gateway(
     extra_scenarios_dirs: tuple[str, ...] = (),
     extra_skills_dirs: tuple[str, ...] = (),
     context_engine: ContextEngine | None = None,
+    effect_manager: EffectManager | None = None,
     context_window_tokens: int = 128_000,
     context_response_reserve_tokens: int = 16_384,
     context_tool_result_max_tokens: int = 4_000,
@@ -296,9 +321,10 @@ def build_gateway(
     base = Path(base_dir) if base_dir else None
     audit = AuditLog(base / "audit.jsonl") if base else AuditLog()
     run_store = RunStore(base)
+    resolved_executor = executor if executor is not None else MockExecutor()
     if context_engine is None:
         repository = None
-        repository_root = getattr(executor, "sandbox", None)
+        repository_root = getattr(resolved_executor, "sandbox", None)
         if repository_index_enabled and repository_root is not None:
             repository = RepositoryContextIndex(
                 repository_root,
@@ -312,6 +338,21 @@ def build_gateway(
             context_window_tokens=context_window_tokens,
             response_reserve_tokens=context_response_reserve_tokens,
             tool_result_max_tokens=context_tool_result_max_tokens,
+        )
+    if effect_manager is None:
+        effect_root = getattr(resolved_executor, "sandbox", None)
+        effect_authorities = (
+            (FileWriteAuthority(effect_root),) if effect_root is not None else ()
+        )
+        effect_manager = EffectManager(
+            registry=EffectPolicyRegistry(
+                environment=str(getattr(resolved_executor, "environment", "unknown")),
+                # A subclass may override ``execute`` and create real effects.
+                # Only the exact built-in implementation earns the simulated
+                # no-effect policy; connector self-description is not trusted.
+                simulated=resolved_executor.__class__ is MockExecutor,
+            ),
+            authorities=effect_authorities,
         )
 
     # OODA outer loop: trajectories + the human-review queue persist under base/.
@@ -363,7 +404,7 @@ def build_gateway(
             audit_log=audit,
             provider=active_provider,
             provider_router=provider_router,
-            executor=executor,
+            executor=resolved_executor,
             validator=val,
             memory=memory,
             value_stream=ValueStreamEngine(),
@@ -374,6 +415,7 @@ def build_gateway(
             default_operating_mode=operating_mode,
             run_store=run_store,
             context_engine=context_engine,
+            effect_manager=effect_manager,
             llm_sleep=llm_sleep,
             llm_clock=llm_clock,
         )
@@ -384,7 +426,7 @@ def build_gateway(
         runtime = TaskRuntime(
             scheduler,
             audit_log=audit,
-            executor=executor,
+            executor=resolved_executor,
             validator=val,
             memory=memory,
             value_stream=ValueStreamEngine(),
@@ -397,6 +439,7 @@ def build_gateway(
             provider_router=workflow_router,
             run_store=run_store,
             context_engine=context_engine,
+            effect_manager=effect_manager,
             llm_sleep=llm_sleep,
             llm_clock=llm_clock,
         )

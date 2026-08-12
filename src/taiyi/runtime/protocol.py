@@ -20,6 +20,7 @@ class RunPhase(str, Enum):
     AWAITING_PERMIT = "AWAITING_PERMIT"
     TOOL_RUNNING = "TOOL_RUNNING"
     TOOL_RESULT = "TOOL_RESULT"
+    EFFECT_VERIFYING = "EFFECT_VERIFYING"
     VALIDATING = "VALIDATING"
     WAITING_INPUT = "WAITING_INPUT"
     WAITING_APPROVAL = "WAITING_APPROVAL"
@@ -56,6 +57,7 @@ class FailureKind(str, Enum):
     RATE_LIMIT = "RATE_LIMIT"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
     EXTERNAL_FAILURE = "EXTERNAL_FAILURE"
+    EFFECT_OUTCOME_UNKNOWN = "EFFECT_OUTCOME_UNKNOWN"
     CHECKPOINT_INCOMPATIBLE = "CHECKPOINT_INCOMPATIBLE"
     INTERNAL = "INTERNAL"
 
@@ -72,6 +74,8 @@ def classify_exception(exc: BaseException, phase: RunPhase) -> FailureKind:
     decide whether the failure is timeout-like.
     """
 
+    if isinstance(exc, CheckpointIncompatibleError):
+        return FailureKind.CHECKPOINT_INCOMPATIBLE
     if isinstance(exc, PermissionError):
         return FailureKind.PERMISSION_DENIED
 
