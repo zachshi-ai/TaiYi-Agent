@@ -88,6 +88,18 @@ llm_first_token_timeout: 60
 llm_stream_idle_timeout: 30
 llm_hard_timeout: 180
 
+# Context is admitted before every model request. The response reserve is never
+# filled with repository text, and large tool results remain complete artifacts
+# while only a bounded projection is shown to the model.
+context_window_tokens: 128000
+context_response_reserve_tokens: 16384
+context_tool_result_max_tokens: 4000
+# With executor=sandbox, index the sandbox repository incrementally. Every
+# retrieved snippet carries snapshot id, path, line span, and content digest.
+repository_index_enabled: true
+repository_index_max_files: 50000
+repository_file_max_bytes: 524288
+
 # Custom rules / scenarios / skills are MERGED with the built-ins (yours can
 # override a built-in by reusing its id/name). Drop YAML/Markdown into these dirs.
 rules_dirs: []

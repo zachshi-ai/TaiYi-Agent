@@ -58,6 +58,13 @@ class TaiyiConfig:
     llm_first_token_timeout: float = 60.0 # headers + first response body deadline
     llm_stream_idle_timeout: float = 30.0 # maximum gap between response chunks
     llm_hard_timeout: float = 180.0      # absolute wall-clock deadline per attempt
+    # --- model context / repository evidence --------------------------------
+    context_window_tokens: int = 128_000
+    context_response_reserve_tokens: int = 16_384
+    context_tool_result_max_tokens: int = 4_000
+    repository_index_enabled: bool = True
+    repository_index_max_files: int = 50_000
+    repository_file_max_bytes: int = 524_288
 
 
 # Fields the web UI is allowed to write back via PUT /v1/config. Anything else
@@ -69,6 +76,9 @@ WRITABLE_FIELDS = {
     "tool_hard_timeout", "tool_idle_timeout", "job_heartbeat_interval", "tool_output_limit",
     "llm_connect_timeout", "llm_first_token_timeout", "llm_stream_idle_timeout",
     "llm_hard_timeout",
+    "context_window_tokens", "context_response_reserve_tokens",
+    "context_tool_result_max_tokens", "repository_index_enabled",
+    "repository_index_max_files", "repository_file_max_bytes",
 }
 
 
@@ -193,6 +203,24 @@ def _apply_env(cfg: TaiyiConfig) -> TaiyiConfig:
         over["llm_stream_idle_timeout"] = float(env["TAIYI_LLM_STREAM_IDLE_TIMEOUT"])
     if env.get("TAIYI_LLM_HARD_TIMEOUT"):
         over["llm_hard_timeout"] = float(env["TAIYI_LLM_HARD_TIMEOUT"])
+    if env.get("TAIYI_CONTEXT_WINDOW_TOKENS"):
+        over["context_window_tokens"] = int(env["TAIYI_CONTEXT_WINDOW_TOKENS"])
+    if env.get("TAIYI_CONTEXT_RESPONSE_RESERVE_TOKENS"):
+        over["context_response_reserve_tokens"] = int(
+            env["TAIYI_CONTEXT_RESPONSE_RESERVE_TOKENS"]
+        )
+    if env.get("TAIYI_CONTEXT_TOOL_RESULT_MAX_TOKENS"):
+        over["context_tool_result_max_tokens"] = int(
+            env["TAIYI_CONTEXT_TOOL_RESULT_MAX_TOKENS"]
+        )
+    if env.get("TAIYI_REPOSITORY_INDEX_ENABLED"):
+        over["repository_index_enabled"] = env["TAIYI_REPOSITORY_INDEX_ENABLED"].strip().lower() in {
+            "1", "true", "yes", "on",
+        }
+    if env.get("TAIYI_REPOSITORY_INDEX_MAX_FILES"):
+        over["repository_index_max_files"] = int(env["TAIYI_REPOSITORY_INDEX_MAX_FILES"])
+    if env.get("TAIYI_REPOSITORY_FILE_MAX_BYTES"):
+        over["repository_file_max_bytes"] = int(env["TAIYI_REPOSITORY_FILE_MAX_BYTES"])
     if env.get("TAIYI_STATIC_DIR"):
         over["static_dir"] = env["TAIYI_STATIC_DIR"]
     return replace(cfg, **over)

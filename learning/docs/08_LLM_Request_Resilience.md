@@ -34,9 +34,9 @@ HTTP and transport failures are typed independently:
 - connection/transport faults are retryable;
 - 401/403 are non-retryable `LLM_AUTH_ERROR`;
 - other invalid responses are non-retryable `LLM_PROTOCOL_ERROR`;
-- context length/overflow is non-retryable `CONTEXT_OVERFLOW` in this phase. It
-  must later invoke structured compaction, not pretend another provider fixes the
-  task contract.
+- context length/overflow is non-retryable inside provider retry. The outer
+  runtime now invokes the Phase 5 structured compaction protocol and retries the
+  transformed turn under a separate bounded context-recovery budget.
 
 No adapter fabricates a response after failure.
 
@@ -55,7 +55,9 @@ Balanced and efficiency can switch after the first retryable failure. Candidate
 order is mode-aware and duplicate provider/model pairs are removed. A failover is
 observable evidence, never a silent replacement.
 
-Authentication, protocol, and context failures stop immediately in every mode.
+Authentication and protocol failures stop immediately in every mode. Context
+overflow never triggers provider failover; it either succeeds through structured
+compaction or remains a typed `CONTEXT_OVERFLOW` failure.
 No mode can enlarge its retry count or deadline beyond its resolved task policy.
 
 ## Durable state machine

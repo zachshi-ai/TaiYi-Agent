@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 3 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 5 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -459,12 +459,27 @@ job attachment and constructing a new gateway settles both runtime shapes; the
 test marker is written once, the ReAct observation is appended once, and the
 attempt id advances without a duplicate operation.
 
-**Remaining before M18 is complete.** Phase-specific LLM
-connect/first-token/idle/hard deadlines; budgeted provider retry/backoff;
-side-effect classes; idempotent or authority-verified external retry; SSE event
-streaming; structured compaction; and the broader network/context/huge-output
-fault benchmark. An ambiguous side effect is never auto-rerun before those
-controls exist. See
+**Delivered in Phase 4.** Model requests use distinct connect, first-token,
+stream-idle, and hard deadlines. Typed transient failures retry/fail over inside
+mode budgets, with persisted attempt/backoff state that survives restart. Auth,
+protocol, and context failures are excluded from generic failover, and the model
+retry boundary cannot replay a returned tool proposal.
+
+**Delivered in Phase 5.** The sandbox workspace now has a persistent,
+Git-HEAD/content-addressed incremental index, directory/symbol/line retrieval,
+per-mode context budgets, large-tool-result projections, and atomic structured
+compaction artifacts. `INDEXING` and `COMPACTING` are observable phases.
+`CONTEXT_OVERFLOW` takes a separate bounded compact-and-retry path. Agent and
+Workflow continuations freeze the exact provider projection, so restart preserves
+the interrupted repository evidence and fault injection proves one prior tool
+effect after compaction recovery. See
+`learning/docs/09_Large_Repository_Context_Protocol.md`.
+
+**Remaining before M18 is complete.** Side-effect classes; idempotent or
+authority-verified external retry; SSE event streaming; durable/background index
+maintenance for very large monorepos; provider-specific tokenizers; and the
+controlled real-provider/OpenClaw/ZCode network/context/huge-output benchmark.
+An ambiguous side effect is never auto-rerun before those controls exist. See
 `learning/docs/07_Durable_Runtime_Protocol.md`. **Depends on.** M3–M6, M17.
 
 ### M16 — Iterative agent loop ✅ Done

@@ -11,8 +11,8 @@
 | 路径 | 内容 |
 |---|---|
 | **产（生产，留根）** — Agent 本体 | |
-| `src/taiyi/` | **生产代码** — 17 个模块 |
-| `tests/` | 308 个测试，覆盖治理不变量、三模式、持久任务/恢复、LLM 故障与可执行 Skill 门禁 |
+| `src/taiyi/` | **生产代码** — 可靠运行、上下文、治理、执行与验证模块 |
+| `tests/` | 326 个测试，覆盖治理不变量、三模式、持久任务/恢复、仓库上下文、LLM 故障与可执行 Skill 门禁 |
 | `web/` | 内置 React Web UI（构建产物在 `web/dist`） |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | 打包 + 配置模板 |
@@ -31,7 +31,7 @@
 
 ## 当前状态
 
-**17 个模块的代码骨架与核心链路已经建成，目前是向 L4 演进的 L3 生产原型。** 治理、permit、ReAct、沙箱、验证、审计和人工恢复均有可运行实现；真实 LLM 端到端路径也已用 DeepSeek 验证。默认 `mock` executor 和尚未接入的业务 connector 仍是明确的非生产边界，不能拿测试全绿代替真实业务验收。
+**核心代码骨架与可靠运行链路已经建成，目前是向 L4 演进的 L3 生产原型。** 治理、permit、ReAct、沙箱、验证、审计和人工恢复均有可运行实现；真实 LLM 端到端路径也已用 DeepSeek 验证。默认 `mock` executor 和尚未接入的业务 connector 仍是明确的非生产边界，不能拿测试全绿代替真实业务验收。
 
 一个请求经 CLI、HTTP 或内置 Web UI 进入后，会匹配场景和生产级 Skill，解析质量/平衡/效率运行策略，在任何规划或执行前冻结不可变 Task Contract（包括 Git remote/ref、退款金额等任务参数），再逐步通过治理闸门执行。独立验证观察完整工具调用而非只有工具名，并产生绑定 Contract、检查器类型和当前产物摘要的 Evidence Ledger；完成控制器只有在当前产物的全部必过标准得到证据后才允许成功终态。若工具动作由无副作用 `mock` 执行，即使 Harness 检查全过也只能进入 `SIMULATED`；只有非 mock 执行才可进入 `COMPLETED`。模拟任务不会作为真实交付写入长期完成记忆、价值评分或 Skill 沉淀。失败证据会回灌下一轮规划，而不是重复原计划。轨迹进入 OODA 外循环，规则/Skill 建议仍须人审并在下次启动生效。详细设计见 [`learning/docs/05_Immutable_Acceptance_Contracts.md`](./learning/docs/05_Immutable_Acceptance_Contracts.md)。
 
@@ -74,11 +74,25 @@ ReAct 对话，并从精确的下一步继续。`POST /v1/tasks` 支持 `async=t
 [`learning/docs/07_Durable_Runtime_Protocol.md`](./learning/docs/07_Durable_Runtime_Protocol.md)。
 
 LLM 请求使用独立的可靠性协议。OpenAI 兼容响应以流式方式读取，并分别约束连接、首 token、
-流空闲和单次硬截止。429、5xx、网络和阶段超时可以在模式预算内重试或切换 provider；鉴权失败、
-无效请求和上下文溢出立即停止。每次失败、退避、切换和恢复都会持久化，进程重启后仍会遵守剩余
+流空闲和单次硬截止。429、5xx、网络和阶段超时可以在模式预算内重试或切换 provider；鉴权失败和
+无效请求立即停止。上下文溢出不会触发 provider failover，而是进入独立的结构化压缩协议。每次失败、退避、切换和恢复都会持久化，进程重启后仍会遵守剩余
 退避时间和冻结的消息/计划。重试边界在模型结果触发任何工具之前结束，因此不会重放外部副作用。
 质量模式预算最大且先重试最强路由，平衡模式首次失败后切换，效率模式只有最短的两次尝试预算。
 详细设计见 [`learning/docs/08_LLM_Request_Resilience.md`](./learning/docs/08_LLM_Request_Resilience.md)。
+
+### 大型仓库上下文协议
+
+使用 sandbox 工作区时，太一会建立持久化增量仓库快照，快照同时绑定 Git HEAD 和文件内容摘要。
+索引覆盖目录结构、Python 符号和有界行块；检索只把当前模式预算内的片段交给模型，而且每段都带
+快照、相对路径、精确行号和内容摘要。仓库文字会被明确标为不可信数据，不能冒充系统指令。
+
+每次 Agent 或模型驱动 Workflow 请求前，上下文引擎都会预留回复空间、限制大工具结果的模型投影，
+必要时压缩旧历史。压缩不是让模型自由回忆，而是写入原子的结构化 JSON artifact：完整规范对话、
+步骤/证据账本和来源摘要都可追溯，工具调用与结果不会被切开。实际发送给 provider 的投影也冻结在
+checkpoint 中，因此进程重启后，即使工作区文件已经变化，仍会重放中断请求真正看到的仓库证据。
+`CONTEXT_OVERFLOW` 只允许在模式预算内走“压缩后重试”，不能偷偷换 provider，更不能重放已经执行的
+工具副作用。三种模式只改变检索与近期历史预算，不改变合同、治理和恢复真值。详见
+[`learning/docs/09_Large_Repository_Context_Protocol.md`](./learning/docs/09_Large_Repository_Context_Protocol.md)。
 
 使用 `executor: sandbox` 时还可启用只读 Git Authority：执行前冻结 HEAD 和仓库本地身份，执行后独立证明出现了新提交，并核对 author/committer。详见 [`learning/docs/06_External_Authority_Checks.md`](./learning/docs/06_External_Authority_Checks.md)。
 
@@ -140,7 +154,7 @@ api_key: sk-...
 ### 运行测试与示例
 
 ```bash
-python -m pytest                            # 308 测试
+python -m pytest                            # 326 测试
 taiyi verify-skills                        # 执行 3 个内置 Skill 的 9 个质量门案例
 python3 research/examples/agent_demo.py     # 演示 ReAct loop + 治理拦截
 python3 research/demo/src/main.py           # Phase 0 demo
