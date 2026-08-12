@@ -15,6 +15,10 @@ from typing import Any, Mapping
 BENCHMARK_SCHEMA = "taiyi.harness-benchmark/v1"
 RECEIPT_SCHEMA = "taiyi.harness-run-receipt/v1"
 REPORT_SCHEMA = "taiyi.harness-benchmark-report/v1"
+COMPARATIVE_MANIFEST_SCHEMA = "taiyi.harness-comparative-manifest/v1"
+COMPARATIVE_RECEIPT_SCHEMA = "taiyi.harness-comparative-receipt/v1"
+COMPARATIVE_REPORT_SCHEMA = "taiyi.harness-comparative-report/v1"
+COMPARATIVE_WORKER_SCHEMA = "taiyi.harness-comparative-worker/v1"
 
 
 class MeasurementStatus(str, Enum):
@@ -105,6 +109,41 @@ class RunReceipt:
         return value
 
 
+@dataclass(frozen=True)
+class ComparativeReceipt:
+    run_id: str
+    harness_id: str
+    harness_version: str | None
+    adapter: str
+    measurement_status: MeasurementStatus
+    comparable: bool
+    blockers: tuple[str, ...]
+    model_id: str
+    case_id: str
+    reported_state: str
+    task_passed: bool
+    claimed_complete: bool
+    false_completion: bool
+    timed_out: bool
+    exit_code: int | None
+    duration_seconds: float
+    budget_passed: bool
+    model_requests: int
+    tool_calls: int
+    initial_workspace_digest: str
+    final_workspace_digest: str
+    comparability_signature: str
+    evidence: Mapping[str, Any]
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        value = asdict(self)
+        value["measurement_status"] = self.measurement_status.value
+        value["blockers"] = list(self.blockers)
+        value["evidence"] = dict(self.evidence)
+        return value
+
+
 def canonical_digest(value: Any) -> str:
     payload = json.dumps(
         value,
@@ -162,9 +201,14 @@ def write_artifact(path: str | Path, schema_version: str, payload: Mapping[str, 
 
 __all__ = [
     "BENCHMARK_SCHEMA",
+    "COMPARATIVE_MANIFEST_SCHEMA",
+    "COMPARATIVE_RECEIPT_SCHEMA",
+    "COMPARATIVE_REPORT_SCHEMA",
+    "COMPARATIVE_WORKER_SCHEMA",
     "REPORT_SCHEMA",
     "RECEIPT_SCHEMA",
     "BenchmarkCase",
+    "ComparativeReceipt",
     "ExpectedOutcome",
     "HarnessProbe",
     "MeasurementStatus",

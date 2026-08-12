@@ -1,6 +1,7 @@
 """Benchmark orchestration, aggregation, and artifact emission."""
 from __future__ import annotations
 
+import shutil
 import statistics
 import tempfile
 import time
@@ -8,11 +9,22 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from taiyi.benchmark.adapters import probe_external_harnesses, probe_set_digest
+from taiyi.benchmark.comparative import (
+    blocked_external_receipts,
+    comparative_manifest,
+    run_pi_cell,
+    run_taiyi_cell,
+)
+from taiyi.benchmark.model_fixture import ControlledModelServer
 from taiyi.benchmark.protocol import TaiYiProtocolAdapter, cases_manifest, protocol_cases
 from taiyi.benchmark.schema import (
     BENCHMARK_SCHEMA,
+    COMPARATIVE_MANIFEST_SCHEMA,
+    COMPARATIVE_RECEIPT_SCHEMA,
+    COMPARATIVE_REPORT_SCHEMA,
     REPORT_SCHEMA,
     RECEIPT_SCHEMA,
+    ComparativeReceipt,
     MeasurementStatus,
     RunReceipt,
     canonical_digest,
@@ -67,6 +79,133 @@ def run_protocol_matrix(output_dir: str | Path) -> dict[str, Any]:
     write_artifact(destination / "report.json", REPORT_SCHEMA, report)
     (destination / "REPORT.md").write_text(render_markdown_report(report), encoding="utf-8")
     return report
+
+
+def run_comparative_smoke(
+    output_dir: str | Path,
+    *,
+    pi_executable: str | Path | None = None,
+) -> dict[str, Any]:
+    """Run same-endpoint transport/tool cells without claiming model quality."""
+
+    destination = Path(output_dir)
+    destination.mkdir(parents=True, exist_ok=True)
+    for harness_id in ("taiyi", "pi"):
+        for log_name in ("stdout.log", "stderr.log"):
+            (destination / "raw" / harness_id / log_name).unlink(missing_ok=True)
+    with ControlledModelServer() as server:
+        manifest = comparative_manifest(server.policy_digest)
+        write_artifact(
+            destination / "manifest.json",
+            COMPARATIVE_MANIFEST_SCHEMA,
+            manifest,
+        )
+        with tempfile.TemporaryDirectory(prefix="taiyi-comparative-benchmark-") as temporary:
+            scratch = Path(temporary)
+            receipts = [
+                run_taiyi_cell(
+                    server=server,
+                    manifest=manifest,
+                    run_root=scratch / "taiyi",
+                    artifact_dir=destination / "raw" / "taiyi",
+                )
+            ]
+            discovered_pi = str(pi_executable) if pi_executable else shutil.which("pi")
+            receipts.append(run_pi_cell(
+                pi_executable=(discovered_pi or scratch / "missing-pi"),
+                server=server,
+                manifest=manifest,
+                run_root=scratch / "pi",
+                artifact_dir=destination / "raw" / "pi",
+            ))
+            receipts.extend(blocked_external_receipts(manifest, scratch))
+
+        for receipt in receipts:
+            write_artifact(
+                destination / "runs" / f"{receipt.harness_id}.json",
+                COMPARATIVE_RECEIPT_SCHEMA,
+                receipt.to_dict(),
+            )
+        report = build_comparative_report(receipts, manifest)
+        write_artifact(
+            destination / "report.json",
+            COMPARATIVE_REPORT_SCHEMA,
+            report,
+        )
+        (destination / "REPORT.md").write_text(
+            render_comparative_markdown(report), encoding="utf-8"
+        )
+        return report
+
+
+def build_comparative_report(
+    receipts: Iterable[ComparativeReceipt],
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    values = list(receipts)
+    signatures_match = all(
+        item.comparability_signature == manifest["comparability_signature"]
+        for item in values
+    )
+    comparable = [
+        item for item in values
+        if (
+            item.comparable
+            and item.measurement_status is MeasurementStatus.MEASURED
+            and item.comparability_signature == manifest["comparability_signature"]
+        )
+    ]
+    return {
+        "measurement_scope": manifest["measurement_scope"],
+        "generated_at": time.time(),
+        "case_id": manifest["case_id"],
+        "model_id": manifest["model_id"],
+        "comparability_signature": manifest["comparability_signature"],
+        "signatures_match": signatures_match,
+        "cell_count": len(values),
+        "comparable_cell_count": len(comparable),
+        "all_comparable_cells_passed": signatures_match and bool(comparable) and all(
+            item.task_passed
+            and item.claimed_complete
+            and item.budget_passed
+            and not item.false_completion
+            for item in comparable
+        ),
+        "false_completions": sum(item.false_completion for item in values),
+        "ranking_eligible": False,
+        "cells": [item.to_dict() for item in values],
+        "claim_boundary": list(manifest["claim_boundary"]),
+    }
+
+
+def render_comparative_markdown(report: dict[str, Any]) -> str:
+    lines = [
+        "# TaiYi Controlled Cross-Harness Smoke",
+        "",
+        f"- Measurement scope: `{report['measurement_scope']}`",
+        f"- Model endpoint identity: `{report['model_id']}`",
+        f"- Comparable cells: {report['comparable_cell_count']} / {report['cell_count']}",
+        f"- Comparability signatures match: {'YES' if report['signatures_match'] else 'NO'}",
+        f"- Comparable cells passed: {'YES' if report['all_comparable_cells_passed'] else 'NO'}",
+        f"- False completions: {report['false_completions']}",
+        f"- Ranking eligible: {'YES' if report['ranking_eligible'] else 'NO'}",
+        "",
+        "| Harness | Status | Comparable | Task passed | Budget passed | Model requests | Tool calls | Blocker |",
+        "| --- | --- | --- | ---: | ---: | ---: | ---: | --- |",
+    ]
+    for cell in report["cells"]:
+        blocker = "; ".join(cell["blockers"]) or cell.get("error") or "-"
+        lines.append(
+            f"| {cell['harness_id']} | {cell['measurement_status']} | "
+            f"{'yes' if cell['comparable'] else 'no'} | "
+            f"{'yes' if cell['task_passed'] else 'no'} | "
+            f"{'yes' if cell['budget_passed'] else 'no'} | "
+            f"{cell['model_requests']} | {cell['tool_calls']} | {blocker} |"
+        )
+    lines.extend(["", "## Claim boundary", ""])
+    lines.extend(f"- {item}" for item in report["claim_boundary"])
+    lines.append("")
+    return "\n".join(lines)
 
 
 def build_report(
@@ -184,6 +323,7 @@ __all__ = [
     "OPERATING_MODES",
     "build_report",
     "render_markdown_report",
+    "run_comparative_smoke",
     "run_protocol_matrix",
     "write_probe_report",
 ]
