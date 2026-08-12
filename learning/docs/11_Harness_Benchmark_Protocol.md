@@ -79,21 +79,26 @@ Run the benchmark with:
 
 ```bash
 taiyi benchmark protocol --output research/benchmark/results/protocol-v1
+taiyi benchmark comparative --pi-executable /path/to/pinned/pi \
+  --output research/benchmark/results/comparative-smoke-v1
 taiyi benchmark probe --output /tmp/taiyi-harness-probes
 ```
 
-The first command writes a manifest, external capability cells, one receipt per
-run, a machine-readable aggregate, and `REPORT.md`. The second performs only
-read-only capability discovery.
+The protocol command writes a manifest, external capability cells, one receipt
+per run, a machine-readable aggregate, and `REPORT.md`. The comparative command
+runs the controlled transport/tool layer described in
+[`12_Controlled_Cross_Harness_Comparison.md`](./12_Controlled_Cross_Harness_Comparison.md).
+The probe command performs only read-only capability discovery.
 
 ## External harness cells
 
 External harnesses are reported separately until they satisfy the comparison
 contract:
 
-- **Pi** documents print/JSON, RPC, SDK, session, and compaction interfaces, but
-  the CLI and a normalized same-model adapter are not present in this benchmark
-  environment. See the [Pi coding-agent package](https://github.com/earendil-works/pi/tree/main/packages/coding-agent).
+- **Pi** documents print/JSON, RPC, SDK, session, and compaction interfaces. A
+  pinned Pi 0.84.1 executable now has a normalized, sandboxed same-endpoint
+  adapter in the controlled transport/tool layer. This is not yet a live-model
+  quality comparison. See the [Pi coding-agent package](https://github.com/earendil-works/pi/tree/main/packages/coding-agent).
 - **OpenClaw** provides an agent JSON interface, but its main-session tools run
   on the host unless sandboxing is configured. The observed local profile is
   therefore not comparable until a dedicated isolated profile and common model
@@ -132,7 +137,8 @@ specified under these deterministic faults. It does not prove that an arbitrary
 provider will be reliable, that the 1,200-file fixture represents every monorepo,
 or that TaiYi outperforms another harness.
 
-The next benchmark phase must add real same-model tasks with context overflow,
+The next benchmark phase must extend the controlled adapter contract to real
+same-model tasks with context overflow,
 stream idle, hard LLM timeout, long subprocess output, process-tree timeout,
 restart, and duplicate-effect traps. Any harness that cannot be isolated or
 cannot emit sufficient evidence remains visible but unranked.

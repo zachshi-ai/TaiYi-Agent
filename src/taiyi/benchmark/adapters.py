@@ -144,7 +144,7 @@ class CommandHarnessAdapter:
                 except subprocess.TimeoutExpired:
                     timed_out = True
                     error = "outer benchmark timeout"
-                    _terminate_process_group(process)
+                    terminate_process_group(process)
                     exit_code = process.returncode
             except subprocess.TimeoutExpired:
                 timed_out = True
@@ -191,7 +191,7 @@ class CommandHarnessAdapter:
         )
 
 
-def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+def terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     """Stop a timed-out harness and every child it started in its session."""
 
     if process.poll() is not None:
@@ -329,4 +329,5 @@ __all__ = [
     "CommandRun",
     "probe_external_harnesses",
     "probe_set_digest",
+    "terminate_process_group",
 ]

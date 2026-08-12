@@ -12,7 +12,7 @@
 |---|---|
 | **产（生产，留根）** — Agent 本体 | |
 | `src/taiyi/` | **生产代码** — 可靠运行、上下文、治理、执行与验证模块 |
-| `tests/` | 349 个测试，覆盖治理不变量、三模式、持久任务/副作用恢复、仓库上下文、LLM 故障与可执行 Skill 门禁 |
+| `tests/` | 361 个测试，覆盖治理不变量、三模式、持久任务/副作用恢复、仓库上下文、LLM 故障、基准合同与可执行 Skill 门禁 |
 | `web/` | 内置 React Web UI（构建产物在 `web/dist`） |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | 打包 + 配置模板 |
@@ -25,6 +25,7 @@
 | [`learning/DEVELOPMENT_PLAN.md`](./learning/DEVELOPMENT_PLAN.md) | 模块化构建路线 |
 | **研（research/）** — 理论转道路、测试验证 | |
 | [`research/examples/`](./research/examples/) | 对生产包的可运行示例 |
+| [`research/benchmark/`](./research/benchmark/) | 版本化 Harness 协议基准、逐次回执与基线 |
 | [`research/demo/`](./research/demo/) | Phase 0 一次性 demo（全 mock，仅参考） |
 | **用（practices/）** — 落地后的优秀实践 | |
 | [`practices/`](./practices/) | 经过验证的技能、prompt、运维笔记（持续积累） |
@@ -87,6 +88,16 @@ key 有界重放；无法判断时进入 `WAITING_INPUT`，步骤不标记为已
 任意 shell、SQL、HTTP 和不可逆动作默认 `NEVER` 重放。三种模式只能改变恢复次数，不能改变
 真值边界。详见
 [`learning/docs/10_Side_Effect_Recovery_Protocol.md`](./learning/docs/10_Side_Effect_Recovery_Protocol.md)。
+
+### Harness 对照基准
+
+Phase 7A 的 18 次确定性协议基准覆盖六类故障/规模案例与三种模式，当前结果是 100%
+协议符合、0 次虚假完成、0 次重复副作用。Phase 7B1 又冻结同一个模型端点、提示词、工作区、
+预算和外部验收器，让 TaiYi 与固定版本 Pi 只比较 Harness 的传输、工具循环、隔离和完成真值：
+两者均以 2 次模型请求、1 次工具调用完成交付。OpenClaw 与 ZCode 因本地可调用批处理接口
+不足被明确标成 `NOT_COMPARABLE`，不会被伪造为分数。这还不是模型能力或生产效率排名。详见
+[`learning/docs/11_Harness_Benchmark_Protocol.md`](./learning/docs/11_Harness_Benchmark_Protocol.md) 和
+[`learning/docs/12_Controlled_Cross_Harness_Comparison.md`](./learning/docs/12_Controlled_Cross_Harness_Comparison.md)。
 
 LLM 请求使用独立的可靠性协议。OpenAI 兼容响应以流式方式读取，并分别约束连接、首 token、
 流空闲和单次硬截止。429、5xx、网络和阶段超时可以在模式预算内重试或切换 provider；鉴权失败和

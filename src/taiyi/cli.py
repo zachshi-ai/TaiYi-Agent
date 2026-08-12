@@ -180,7 +180,11 @@ def _benchmark(args) -> int:
     """Run reproducible harness measurements or capability-only probes."""
     import json
 
-    from taiyi.benchmark.runner import run_protocol_matrix, write_probe_report
+    from taiyi.benchmark.runner import (
+        run_comparative_smoke,
+        run_protocol_matrix,
+        write_probe_report,
+    )
 
     if args.action == "protocol":
         report = run_protocol_matrix(args.output)
@@ -195,6 +199,21 @@ def _benchmark(args) -> int:
         }
         print(json.dumps(summary, ensure_ascii=False, indent=2))
         return 0 if report["all_protocol_passed"] else 1
+
+    if args.action == "comparative":
+        report = run_comparative_smoke(
+            args.output,
+            pi_executable=args.pi_executable,
+        )
+        print(json.dumps({
+            "measurement_scope": report["measurement_scope"],
+            "cell_count": report["cell_count"],
+            "comparable_cell_count": report["comparable_cell_count"],
+            "all_comparable_cells_passed": report["all_comparable_cells_passed"],
+            "false_completions": report["false_completions"],
+            "output": str(args.output),
+        }, ensure_ascii=False, indent=2))
+        return 0 if report["all_comparable_cells_passed"] else 1
 
     payload = write_probe_report(args.output)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -402,13 +421,18 @@ def main(argv=None) -> int:
     )
     benchmark.add_argument(
         "action",
-        choices=["protocol", "probe"],
-        help="protocol runs the TaiYi fault matrix; probe records external capability cells",
+        choices=["protocol", "comparative", "probe"],
+        help="run TaiYi faults, a controlled cross-harness smoke, or capability probes",
     )
     benchmark.add_argument(
         "--output",
         default="./research/benchmark/results/latest",
         help="artifact directory (default: ./research/benchmark/results/latest)",
+    )
+    benchmark.add_argument(
+        "--pi-executable",
+        default=None,
+        help="explicit Pi CLI path for the comparative action",
     )
     benchmark.set_defaults(func=_benchmark)
 
