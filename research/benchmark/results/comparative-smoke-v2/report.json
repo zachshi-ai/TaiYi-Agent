@@ -1,0 +1,363 @@
+{
+  "digest": "sha256:77de65d9b08ba53eb5188f3b1a630d7297ca70e8e47269ccb07a6523e3b386bf",
+  "payload": {
+    "all_comparable_cells_passed": true,
+    "case_id": "fixed_file_delivery",
+    "cell_count": 4,
+    "cells": [
+      {
+        "adapter": "taiyi-live-openai-production-runtime",
+        "blockers": [],
+        "budget_passed": true,
+        "case_id": "fixed_file_delivery",
+        "claimed_complete": true,
+        "comparability_signature": "sha256:4d0e74e76b4aa19c3b3bc6db83916b76ec37a5b394d0f31ced3a424690bbc65d",
+        "comparable": true,
+        "duration_seconds": 0.23901662498246878,
+        "error": null,
+        "evidence": {
+          "acceptance_observed_digest": "sha256:3d50e8dfbd6e9d98d503dbdd371f0896b67b6f98884de6b1bbc711bff2508994",
+          "effect_statuses": [
+            "CONFIRMED_APPLIED"
+          ],
+          "execution_environment": "workspace",
+          "executor_allowed_tools": [
+            "file:read",
+            "file:write"
+          ],
+          "final_workspace": {
+            "file_count": 2,
+            "tree_digest": "sha256:ec103a76f9c3b5f177da50457951bb0b46bc064d707373e72f5fa52056103499"
+          },
+          "initial_workspace": {
+            "file_count": 1,
+            "tree_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb"
+          },
+          "isolation": {
+            "isolated_home": true,
+            "kernel_sandbox": false,
+            "minimal_environment": true,
+            "separate_process": true,
+            "tool_workspace_confined": true
+          },
+          "model_requests": [
+            {
+              "message_count": 6,
+              "model": "taiyi-controlled-model-v1",
+              "request_digest": "sha256:e74ab4b584258271f91255fb6bd750a55b95cd035e6040a9aeaa03aba232d34b",
+              "roles": [
+                "system",
+                "system",
+                "system",
+                "system",
+                "user",
+                "system"
+              ],
+              "stream": true,
+              "tool_names": []
+            },
+            {
+              "message_count": 9,
+              "model": "taiyi-controlled-model-v1",
+              "request_digest": "sha256:38b891244ce85a3699cc9e16ca2f391923ebb35ab859cae499acf5d1d609216c",
+              "roles": [
+                "system",
+                "system",
+                "system",
+                "system",
+                "user",
+                "user",
+                "assistant",
+                "user",
+                "system"
+              ],
+              "stream": true,
+              "tool_names": []
+            }
+          ],
+          "model_visible_tools": [
+            "file:read",
+            "file:write"
+          ],
+          "secret_env_names": [],
+          "stderr_log": "raw/taiyi/stderr.log",
+          "stdout_log": "raw/taiyi/stdout.log",
+          "tool_surface_matches": true
+        },
+        "exit_code": 0,
+        "false_completion": false,
+        "final_workspace_digest": "sha256:ec103a76f9c3b5f177da50457951bb0b46bc064d707373e72f5fa52056103499",
+        "harness_id": "taiyi",
+        "harness_version": "0.1.0",
+        "initial_workspace_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb",
+        "measurement_status": "MEASURED",
+        "model_id": "taiyi-controlled-model-v1",
+        "model_requests": 2,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-6d2442416d8f",
+        "task_passed": true,
+        "timed_out": false,
+        "tool_calls": 1
+      },
+      {
+        "adapter": "pi-json-sandbox-exec",
+        "blockers": [],
+        "budget_passed": true,
+        "case_id": "fixed_file_delivery",
+        "claimed_complete": true,
+        "comparability_signature": "sha256:4d0e74e76b4aa19c3b3bc6db83916b76ec37a5b394d0f31ced3a424690bbc65d",
+        "comparable": true,
+        "duration_seconds": 0.5070707499980927,
+        "error": null,
+        "evidence": {
+          "acceptance_observed_digest": "sha256:3d50e8dfbd6e9d98d503dbdd371f0896b67b6f98884de6b1bbc711bff2508994",
+          "advertised_tools": [
+            "read",
+            "write"
+          ],
+          "direct_node_entrypoint": true,
+          "event_count": 24,
+          "event_types": [
+            "session",
+            "agent_start",
+            "turn_start",
+            "message_start",
+            "message_end",
+            "message_start",
+            "message_update",
+            "message_update",
+            "message_update",
+            "message_end",
+            "tool_execution_start",
+            "tool_execution_end",
+            "message_start",
+            "message_end",
+            "turn_end",
+            "turn_start",
+            "message_start",
+            "message_update",
+            "message_update",
+            "message_update",
+            "message_end",
+            "turn_end",
+            "agent_end",
+            "agent_settled"
+          ],
+          "final_workspace": {
+            "file_count": 2,
+            "tree_digest": "sha256:ec103a76f9c3b5f177da50457951bb0b46bc064d707373e72f5fa52056103499"
+          },
+          "initial_workspace": {
+            "file_count": 1,
+            "tree_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb"
+          },
+          "isolation": {
+            "outside_write_denied": true,
+            "passed": true,
+            "unlisted_loopback_denied": true,
+            "workspace_write_allowed": true
+          },
+          "model_requests": [
+            {
+              "message_count": 2,
+              "model": "taiyi-controlled-model-v1",
+              "request_digest": "sha256:5643bb81d54a1c32b0a92e0a6867a9f5d6758c3499b32caceb90bc3c3e01154d",
+              "roles": [
+                "system",
+                "user"
+              ],
+              "stream": true,
+              "tool_names": [
+                "read",
+                "write"
+              ]
+            },
+            {
+              "message_count": 4,
+              "model": "taiyi-controlled-model-v1",
+              "request_digest": "sha256:648f120599d574a8da0b4a0c7d9fc591a6e8129b99c7cc4af6446b9dc7990161",
+              "roles": [
+                "system",
+                "user",
+                "assistant",
+                "tool"
+              ],
+              "stream": true,
+              "tool_names": [
+                "read",
+                "write"
+              ]
+            }
+          ],
+          "native_clipboard_disabled": true,
+          "sandbox_profile_digest": "sha256:a393d0dbae6bb489f800f6d37cab2dc6833d8137d0994314f5d14ce6b6b87baa",
+          "secret_env_names": [],
+          "stderr_log": "raw/pi/stderr.log",
+          "stdout_log": "raw/pi/stdout.log",
+          "tool_errors": 0,
+          "tool_surface_matches": true
+        },
+        "exit_code": 0,
+        "false_completion": false,
+        "final_workspace_digest": "sha256:ec103a76f9c3b5f177da50457951bb0b46bc064d707373e72f5fa52056103499",
+        "harness_id": "pi",
+        "harness_version": "0.84.1",
+        "initial_workspace_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb",
+        "measurement_status": "MEASURED",
+        "model_id": "taiyi-controlled-model-v1",
+        "model_requests": 2,
+        "reported_state": "COMPLETED",
+        "run_id": "pi-51d81e86c406",
+        "task_passed": true,
+        "timed_out": false,
+        "tool_calls": 1
+      },
+      {
+        "adapter": "openclaw-agent-exec-json-sandbox-exec",
+        "blockers": [],
+        "budget_passed": true,
+        "case_id": "fixed_file_delivery",
+        "claimed_complete": true,
+        "comparability_signature": "sha256:4d0e74e76b4aa19c3b3bc6db83916b76ec37a5b394d0f31ced3a424690bbc65d",
+        "comparable": true,
+        "duration_seconds": 10.475800750020426,
+        "error": null,
+        "evidence": {
+          "acceptance_observed_digest": "sha256:3d50e8dfbd6e9d98d503dbdd371f0896b67b6f98884de6b1bbc711bff2508994",
+          "advertised_tools": [
+            "read",
+            "write"
+          ],
+          "assistant_turns": 2,
+          "bridge_calls": null,
+          "code_mode_engaged": false,
+          "direct_node_entrypoint": true,
+          "explicit_config": true,
+          "explicit_state_dir": true,
+          "final_workspace": {
+            "file_count": 2,
+            "tree_digest": "sha256:ec103a76f9c3b5f177da50457951bb0b46bc064d707373e72f5fa52056103499"
+          },
+          "identity_matches": true,
+          "initial_workspace": {
+            "file_count": 1,
+            "tree_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb"
+          },
+          "isolated_home": true,
+          "isolation": {
+            "outside_write_denied": true,
+            "passed": true,
+            "unlisted_loopback_denied": true,
+            "workspace_write_allowed": true
+          },
+          "minimal_environment": true,
+          "model_requests": [
+            {
+              "message_count": 2,
+              "model": "taiyi-controlled-model-v1",
+              "request_digest": "sha256:2a26b7afe4396ebd9eebd8ed232de6f3e1ebb9aeab3b113d2d3d62b7a4b2432b",
+              "roles": [
+                "system",
+                "user"
+              ],
+              "stream": true,
+              "tool_names": [
+                "read",
+                "write"
+              ]
+            },
+            {
+              "message_count": 4,
+              "model": "taiyi-controlled-model-v1",
+              "request_digest": "sha256:d1785033ba929191e87f9d4bca99ae729ef76e6c1f71c6d62ed36d1d1e51a587",
+              "roles": [
+                "system",
+                "user",
+                "assistant",
+                "tool"
+              ],
+              "stream": true,
+              "tool_names": [
+                "read",
+                "write"
+              ]
+            }
+          ],
+          "sandbox_profile_digest": "sha256:77a7a69317dd61a42cbe870ca3fae1fd4c49aceda17c534bb55af9cd8fdf4a6b",
+          "secret_env_names": [],
+          "stderr_log": "raw/openclaw/stderr.log",
+          "stdout_log": "raw/openclaw/stdout.log",
+          "tool_summary": {
+            "calls": 1,
+            "failures": 0,
+            "tools": [
+              "write"
+            ]
+          },
+          "tool_surface_matches": true
+        },
+        "exit_code": 0,
+        "false_completion": false,
+        "final_workspace_digest": "sha256:ec103a76f9c3b5f177da50457951bb0b46bc064d707373e72f5fa52056103499",
+        "harness_id": "openclaw",
+        "harness_version": "OpenClaw 2026.8.1-beta.1 (ff8a3fe)",
+        "initial_workspace_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb",
+        "measurement_status": "MEASURED",
+        "model_id": "taiyi-controlled-model-v1",
+        "model_requests": 2,
+        "reported_state": "COMPLETED",
+        "run_id": "openclaw-f14495c17634",
+        "task_passed": true,
+        "timed_out": false,
+        "tool_calls": 1
+      },
+      {
+        "adapter": "zcode-desktop",
+        "blockers": [
+          "ZCode desktop is installed but has no documented non-interactive batch interface"
+        ],
+        "budget_passed": false,
+        "case_id": "fixed_file_delivery",
+        "claimed_complete": false,
+        "comparability_signature": "sha256:4d0e74e76b4aa19c3b3bc6db83916b76ec37a5b394d0f31ced3a424690bbc65d",
+        "comparable": false,
+        "duration_seconds": 0.0,
+        "error": null,
+        "evidence": {
+          "workspace": {
+            "file_count": 1,
+            "tree_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb"
+          }
+        },
+        "exit_code": null,
+        "false_completion": false,
+        "final_workspace_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb",
+        "harness_id": "zcode",
+        "harness_version": null,
+        "initial_workspace_digest": "sha256:0bbc68aca7fe5f4d54cd8f0558f82ef9890c198fc988fb28c9bf3f0003c51eeb",
+        "measurement_status": "NOT_COMPARABLE",
+        "model_id": "taiyi-controlled-model-v1",
+        "model_requests": 0,
+        "reported_state": "NOT_RUN",
+        "run_id": "zcode-434a9dda4a83",
+        "task_passed": false,
+        "timed_out": false,
+        "tool_calls": 0
+      }
+    ],
+    "claim_boundary": [
+      "This compares adapter transport, isolated tool execution, and completion truth.",
+      "The controlled endpoint is not a real intelligence or coding-quality model.",
+      "Real-provider ranking requires a separately frozen provider/model revision and budget."
+    ],
+    "comparability_signature": "sha256:4d0e74e76b4aa19c3b3bc6db83916b76ec37a5b394d0f31ced3a424690bbc65d",
+    "comparable_cell_count": 3,
+    "false_completions": 0,
+    "generated_at": 1786555834.4463072,
+    "measurement_scope": "controlled_transport_tool_conformance",
+    "model_id": "taiyi-controlled-model-v1",
+    "ranking_eligible": false,
+    "signatures_match": true
+  },
+  "schema_version": "taiyi.harness-comparative-report/v1"
+}

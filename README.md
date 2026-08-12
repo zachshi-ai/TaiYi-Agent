@@ -20,7 +20,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
 | `src/taiyi/` | **Production code** — reliable runtime, context, governance, execution, and validation modules |
-| `tests/` | 361 tests covering governance, operating modes, durable jobs/effect recovery, repository context, LLM faults, benchmark contracts, and executable Skill gates |
+| `tests/` | 366 tests covering governance, operating modes, durable jobs/effect recovery, repository context, LLM faults, benchmark contracts, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -235,12 +235,14 @@ ranked results—until the same model, isolated workspace, and batch/evidence
 contract can be proven. See
 [`learning/docs/11_Harness_Benchmark_Protocol.md`](./learning/docs/11_Harness_Benchmark_Protocol.md).
 
-Phase 7B1 adds a same-endpoint transport/tool comparison. TaiYi and a pinned Pi
-0.84.1 both completed the controlled write through real streaming HTTP with two
-model requests, one tool call, external artifact acceptance, and zero false
-completions. OpenClaw and ZCode remain visible `NOT_COMPARABLE` cells until their
-required isolated batch interfaces are callable. This is explicitly not a model
-quality ranking. See
+Phase 7B1.1 adds a same-endpoint transport/tool comparison. TaiYi, pinned Pi
+0.84.1, and published OpenClaw 2026.8.1-beta.1 each completed the controlled
+write through real streaming HTTP with two model requests, one tool call,
+external artifact acceptance, and zero false completions. Their model-visible
+and executable tool surfaces are constrained to the frozen read/write budget and
+verified from observed requests. ZCode remains visible `NOT_COMPARABLE` until an
+authoritative batch/evidence interface is callable. This is explicitly not a
+model-quality ranking. See
 [`learning/docs/12_Controlled_Cross_Harness_Comparison.md`](./learning/docs/12_Controlled_Cross_Harness_Comparison.md).
 
 ### Run it yourself
@@ -337,8 +339,10 @@ pip install -e ".[dev]"
 pytest
 taiyi verify-skills  # execute the 9 built-in Skill gate cases
 taiyi benchmark protocol --output research/benchmark/results/protocol-v1
-taiyi benchmark comparative --pi-executable /path/to/pinned/pi \
-  --output research/benchmark/results/comparative-smoke-v1
+taiyi benchmark comparative \
+  --pi-executable /path/to/pinned/pi \
+  --openclaw-executable /path/to/pinned/openclaw \
+  --output research/benchmark/results/comparative-smoke-v2
 ```
 
 Expected from the example:

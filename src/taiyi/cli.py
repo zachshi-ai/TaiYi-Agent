@@ -204,6 +204,7 @@ def _benchmark(args) -> int:
         report = run_comparative_smoke(
             args.output,
             pi_executable=args.pi_executable,
+            openclaw_executable=args.openclaw_executable,
         )
         print(json.dumps({
             "measurement_scope": report["measurement_scope"],
@@ -433,6 +434,11 @@ def main(argv=None) -> int:
         "--pi-executable",
         default=None,
         help="explicit Pi CLI path for the comparative action",
+    )
+    benchmark.add_argument(
+        "--openclaw-executable",
+        default=None,
+        help="explicit OpenClaw CLI path for the comparative action",
     )
     benchmark.set_defaults(func=_benchmark)
 

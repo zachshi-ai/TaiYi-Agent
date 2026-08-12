@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B1 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B1.1 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 7B1 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 7B1.1 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -496,18 +496,22 @@ common model, isolated workspace, or batch adapter cannot be proven. The first
 duplicate effects. See `learning/docs/11_Harness_Benchmark_Protocol.md` and
 `research/benchmark/results/protocol-v1/`.
 
-**Delivered in Phase 7B1.** A frozen same-endpoint comparison now exercises
-TaiYi and a pinned Pi 0.84.1 through real streaming HTTP, one tool action,
-terminal-event parsing, and an evaluator outside either harness. Pi runs with an
-isolated home/config/session, no ambient credentials or extensions, a macOS
-deny-by-default wrapper, and canaries for workspace confinement and exact-port
-network access. Both comparable cells passed with two model requests, one tool
-call, independent artifact delivery, and zero false completions. The installed
-OpenClaw release and ZCode desktop remain explicit `NOT_COMPARABLE` cells because
-their required batch interfaces are unavailable. This layer tests adapter
-transport/tool truth, not model intelligence or harness ranking. See
-`learning/docs/12_Controlled_Cross_Harness_Comparison.md` and
-`research/benchmark/results/comparative-smoke-v1/`.
+**Delivered in Phase 7B1.1.** A frozen same-endpoint comparison now exercises
+TaiYi, pinned Pi 0.84.1, and published OpenClaw 2026.8.1-beta.1 through real
+streaming HTTP, one tool action, terminal-envelope parsing, and an evaluator
+outside every harness. External adapters use isolated home/config/state, no
+ambient credentials or extensions, a macOS deny-by-default wrapper, and canaries
+for workspace confinement and exact-port network access. TaiYi additionally
+enforces the same capability allowlist in its model hint and executor. Observed
+model requests must expose exactly the frozen read/write tool surface or the cell
+is automatically excluded. All three comparable cells passed repeated runs with
+two model requests, one tool call, independent artifact delivery, and zero false
+completions. ZCode remains explicit `NOT_COMPARABLE` because its required batch
+evidence interface is unavailable. This layer tests adapter transport/tool truth,
+not model intelligence or harness ranking. See
+`learning/docs/12_Controlled_Cross_Harness_Comparison.md`,
+`learning/docs/13_OpenClaw_Adapter_and_Failure_Model.md`, and
+`research/benchmark/results/comparative-smoke-v2/`.
 
 **Remaining before M18 is complete.** Connector-specific refund/notification
 authorities and compensation; SSE event streaming; durable/background index

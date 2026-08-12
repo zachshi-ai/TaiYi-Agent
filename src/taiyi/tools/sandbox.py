@@ -55,6 +55,7 @@ class SandboxExecutor:
         job_dir: str | Path | None = None,
         output_limit: int = 16_384,
         backend: str = "local",
+        allowed_tools: tuple[str, ...] | None = None,
     ):
         self.sandbox = Path(sandbox).resolve()
         self.sandbox.mkdir(parents=True, exist_ok=True)
@@ -68,6 +69,9 @@ class SandboxExecutor:
             raise ValueError("idle_timeout must be positive")
         self.heartbeat_interval = max(0.05, heartbeat_interval)
         self.output_limit = max(256, output_limit)
+        self.allowed_tools = (
+            frozenset(allowed_tools) if allowed_tools is not None else None
+        )
         self.timeout = self.hard_timeout  # backward-compatible public attribute
         default_job_dir = self.sandbox.parent / f".{self.sandbox.name}.taiyi-jobs"
         self.jobs = JobStore(job_dir or default_job_dir)
@@ -84,6 +88,10 @@ class SandboxExecutor:
 
     def execute(self, step: PlanStep) -> ExecResult:
         tool = step.tool
+        if not self._tool_allowed(tool):
+            return ExecResult(
+                f"tool denied by executor capability policy: {tool}", ok=False
+            )
         try:
             if tool.startswith("shell:"):
                 handle = self.start(step, operation_id=f"adhoc:{uuid.uuid4().hex}")
@@ -100,7 +108,11 @@ class SandboxExecutor:
             return ExecResult(f"executor error: {type(e).__name__}: {e}", ok=False)
 
     def supports_idempotency(self, step: PlanStep) -> bool:
-        return step.tool == "file:write" and len(step.args) >= 2
+        return (
+            self._tool_allowed(step.tool)
+            and step.tool == "file:write"
+            and len(step.args) >= 2
+        )
 
     def execute_idempotent(
         self,
@@ -117,7 +129,10 @@ class SandboxExecutor:
 
     # --- shell ---------------------------------------------------------------
     def supports_jobs(self, step: PlanStep) -> bool:
-        return step.tool.startswith("shell:")
+        return self._tool_allowed(step.tool) and step.tool.startswith("shell:")
+
+    def _tool_allowed(self, tool: str) -> bool:
+        return self.allowed_tools is None or tool in self.allowed_tools
 
     def start(self, step: PlanStep, *, operation_id: str) -> JobHandle:
         if not self.supports_jobs(step):

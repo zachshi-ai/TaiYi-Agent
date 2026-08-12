@@ -12,7 +12,7 @@
 |---|---|
 | **产（生产，留根）** — Agent 本体 | |
 | `src/taiyi/` | **生产代码** — 可靠运行、上下文、治理、执行与验证模块 |
-| `tests/` | 361 个测试，覆盖治理不变量、三模式、持久任务/副作用恢复、仓库上下文、LLM 故障、基准合同与可执行 Skill 门禁 |
+| `tests/` | 366 个测试，覆盖治理不变量、三模式、持久任务/副作用恢复、仓库上下文、LLM 故障、基准合同与可执行 Skill 门禁 |
 | `web/` | 内置 React Web UI（构建产物在 `web/dist`） |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | 打包 + 配置模板 |
@@ -92,10 +92,11 @@ key 有界重放；无法判断时进入 `WAITING_INPUT`，步骤不标记为已
 ### Harness 对照基准
 
 Phase 7A 的 18 次确定性协议基准覆盖六类故障/规模案例与三种模式，当前结果是 100%
-协议符合、0 次虚假完成、0 次重复副作用。Phase 7B1 又冻结同一个模型端点、提示词、工作区、
-预算和外部验收器，让 TaiYi 与固定版本 Pi 只比较 Harness 的传输、工具循环、隔离和完成真值：
-两者均以 2 次模型请求、1 次工具调用完成交付。OpenClaw 与 ZCode 因本地可调用批处理接口
-不足被明确标成 `NOT_COMPARABLE`，不会被伪造为分数。这还不是模型能力或生产效率排名。详见
+协议符合、0 次虚假完成、0 次重复副作用。Phase 7B1.1 又冻结同一个模型端点、提示词、工作区、
+预算和外部验收器，让 TaiYi、固定版本 Pi 0.84.1 与已发布的 OpenClaw 2026.8.1-beta.1 只比较
+Harness 的传输、工具循环、隔离和完成真值：三者均以 2 次模型请求、1 次工具调用完成交付；
+模型可见和执行器可用的工具面均限制为冻结的读写预算，并从真实请求反查。ZCode 因缺少权威
+批处理证据接口被明确标成 `NOT_COMPARABLE`，不会被伪造为分数。这还不是模型能力或生产效率排名。详见
 [`learning/docs/11_Harness_Benchmark_Protocol.md`](./learning/docs/11_Harness_Benchmark_Protocol.md) 和
 [`learning/docs/12_Controlled_Cross_Harness_Comparison.md`](./learning/docs/12_Controlled_Cross_Harness_Comparison.md)。
 

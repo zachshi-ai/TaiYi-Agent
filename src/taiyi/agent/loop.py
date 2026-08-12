@@ -147,8 +147,8 @@ class AgentRuntime:
         # will free-form answer and be misread as "done" (断裂点 1/3).
         from taiyi.tools.registry import tool_hint_block
         base_system = system_prompt or DEFAULT_SYSTEM
-        self.system = base_system + "\n\n" + tool_hint_block()
-        self.tool_names = tool_names
+        self.tool_names = list(tool_names) if tool_names is not None else None
+        self.system = base_system + "\n\n" + tool_hint_block(self.tool_names)
 
     def run(
         self,

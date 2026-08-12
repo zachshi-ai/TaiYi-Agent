@@ -1,0 +1,29 @@
+{
+  "ok": true,
+  "status": "ok",
+  "final": "delivery prepared for independent verification",
+  "payloads": [
+    {
+      "text": "delivery prepared for independent verification",
+      "mediaUrl": null
+    }
+  ],
+  "usage": {
+    "input": 2,
+    "output": 2,
+    "total": 4
+  },
+  "costUsd": 0,
+  "codeModeEngaged": false,
+  "assistantTurns": 2,
+  "toolSummary": {
+    "calls": 1,
+    "tools": [
+      "write"
+    ],
+    "failures": 0
+  },
+  "model": "taiyi-controlled-model-v1",
+  "provider": "taiyi-benchmark",
+  "sessionId": "6167ba06-5976-42b6-8c20-4f43b951571e"
+}
