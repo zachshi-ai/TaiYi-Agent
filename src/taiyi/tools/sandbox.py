@@ -155,6 +155,9 @@ class SandboxExecutor:
     def poll(self, job_id: str) -> JobRecord:
         return self.jobs.poll(job_id)
 
+    def read_notifications(self, after_offset: int = 0):
+        return self.jobs.read_notifications(after_offset)
+
     def find(self, operation_id: str) -> JobHandle | None:
         record = self.jobs.find_by_operation(operation_id)
         return None if record is None else JobHandle(record.job_id, record.operation_id)

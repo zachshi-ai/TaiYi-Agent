@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.6 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.7 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 7B2.6 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 7B2.7 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -591,9 +591,22 @@ A pinned Kubernetes run deliberately disconnected at revision 4, resumed at 5
 without replay, and settled at 12 from one 7.139-second job. See
 `learning/docs/19_Durable_Event_Notifications_and_SSE.md`.
 
+**Delivered in Phase 7B2.7.** Asynchronous Agent and Workflow shell tools now
+park only after the stable operation, Effect Record dispatch, durable job id,
+and frozen continuation are checkpointed. The original task thread and task
+lease are released while the supervisor runs. One generic Gateway wake loop
+incrementally consumes repository and tool journals, falls back to authoritative
+JobRecord polling when a hint is lost, and schedules recovery only after a
+terminal receipt. Restart, cancellation, missing-notification, both-runtime,
+same-job, and no-replay tests preserve the existing Effect Ledger boundary. A
+pinned Kubernetes run read 31,297 files and 277.6 MB, parked in 0.023 seconds,
+survived Gateway replacement, and settled from one 2.147-second Job with one
+terminal notification. See
+`learning/docs/20_Parked_Tool_Continuations.md`.
+
 **Remaining before M18 is complete.** Connector-specific refund/notification
-authorities and compensation; parking generic durable tool continuations;
-distributed fenced task/consumer leases and event fan-out; provider-specific
+authorities and compensation; distributed fenced task/consumer leases and event
+fan-out; provider-specific
 tokenizers; and live-provider/network verification.
 Cross-harness cells require a portable
 controlled-tool interface before they can be scored.

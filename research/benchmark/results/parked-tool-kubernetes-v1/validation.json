@@ -1,0 +1,52 @@
+{
+  "digest": "sha256:64e6b3dc8d4c9127a5efb9a67a07b37dc2f292e2b3a3a3742786ab41693786a7",
+  "payload": {
+    "assertions": {
+      "full_suite_collected": 411,
+      "full_suite_passed": true,
+      "no_event_replay_after_reconnect": true,
+      "one_authoritative_job_notification": true,
+      "one_recovery_event": true,
+      "one_tool_park_event": true,
+      "same_job_after_gateway_restart": true,
+      "settled_after_gateway_restart": true,
+      "task_thread_absent_while_job_running": true
+    },
+    "delivery": {
+      "disconnected_after_revision": 8,
+      "final_revision": 14,
+      "reconnected_first_revision": 9,
+      "reconnected_last_revision": 14
+    },
+    "job": {
+      "attached_unique_job_count": 1,
+      "duration_seconds": 2.146555,
+      "notification_count": 1,
+      "notification_status": "SUCCEEDED",
+      "status": "SUCCEEDED"
+    },
+    "measurement_scope": "taiyi_parked_tool_continuations",
+    "observed_date": "2026-08-14",
+    "ranking_eligible": false,
+    "runtime": {
+      "attempts": 2,
+      "checkpoint_scans_after_restart": 4,
+      "final_phase": "SETTLED",
+      "final_state": "COMPLETED",
+      "notification_reads_after_restart": 9,
+      "park_latency_seconds": 0.023271,
+      "runtime_mode": "agent",
+      "total_duration_seconds": 2.408519
+    },
+    "source": {
+      "bytes_read": 277608112,
+      "content_digest": "sha256:1054cb0041e3f866b52348131a60333eba75c04a971ed9e95d21225e1ad8c2b2",
+      "file_count": 31297,
+      "git_head": "52ba90138eb40cab0987dac73e05c838149bdd1c",
+      "kind": "pinned_git_checkout",
+      "origin": "https://github.com/kubernetes/kubernetes.git",
+      "tracked_file_count": 31300
+    }
+  },
+  "schema_version": "taiyi.parked-tool-validation/v1"
+}

@@ -76,6 +76,25 @@ class RecoverableExecutor(DurableExecutor, Protocol):
 
 
 @runtime_checkable
+class EventedExecutor(RecoverableExecutor, Protocol):
+    """Durable executor that supports thread-free parked continuations."""
+
+    def poll(self, job_id: str) -> JobRecord: ...
+
+    def read_notifications(
+        self, after_offset: int = 0
+    ) -> tuple[tuple[dict[str, Any], ...], int]: ...
+
+
+class DurableToolParked(RuntimeError):
+    """Internal control signal: a governed tool continues in its supervisor."""
+
+    def __init__(self, handle: JobHandle):
+        self.handle = handle
+        super().__init__(f"durable tool job {handle.job_id} is parked")
+
+
+@runtime_checkable
 class IdempotentExecutor(Protocol):
     """Connector contract for server-enforced replay of one logical operation."""
 

@@ -314,6 +314,17 @@ disconnected after parked revision 4, resumed at revision 5 with no replay, and
 settled at revision 12 from one 7.139-second index job. See
 [`learning/docs/19_Durable_Event_Notifications_and_SSE.md`](./learning/docs/19_Durable_Event_Notifications_and_SSE.md).
 
+Phase 7B2.7 extends the same parked-continuation contract to ordinary durable
+shell tools. After governance clearance, Effect Ledger dispatch, and stable
+operation/job attachment are checkpointed, an asynchronous task releases its
+Python waiter and task lease while the supervisor continues. A generic Gateway
+waker consumes tool and repository notifications, verifies terminal JobRecords,
+then reattaches the frozen continuation without replaying the command. A
+Gateway-restart run read 31,297 files (277.6 MB) from the pinned Kubernetes
+checkout, parked in 0.023 seconds, resumed SSE at the next revision, and settled
+from one 2.147-second Job. See
+[`learning/docs/20_Parked_Tool_Continuations.md`](./learning/docs/20_Parked_Tool_Continuations.md).
+
 ### Run it yourself
 
 One command, straight from GitHub (repo is public, no clone needed). pipx is

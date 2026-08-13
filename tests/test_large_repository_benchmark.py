@@ -17,8 +17,30 @@ from taiyi.benchmark.schema import (
     LARGE_REPO_RECEIPT_SCHEMA,
     LARGE_REPO_REPORT_SCHEMA,
     PARKED_INDEX_VALIDATION_SCHEMA,
+    PARKED_TOOL_VALIDATION_SCHEMA,
     verify_artifact,
 )
+
+
+def test_committed_parked_tool_validation_is_signed_and_real_scale():
+    path = Path(
+        "research/benchmark/results/parked-tool-kubernetes-v1/validation.json"
+    )
+    payload = verify_artifact(
+        json.loads(path.read_text(encoding="utf-8")),
+        schema_version=PARKED_TOOL_VALIDATION_SCHEMA,
+    )
+
+    assert payload["measurement_scope"] == "taiyi_parked_tool_continuations"
+    assert payload["source"]["file_count"] == 31_297
+    assert payload["source"]["git_head"] == (
+        "52ba90138eb40cab0987dac73e05c838149bdd1c"
+    )
+    assert payload["assertions"]["task_thread_absent_while_job_running"] is True
+    assert payload["assertions"]["same_job_after_gateway_restart"] is True
+    assert payload["assertions"]["one_authoritative_job_notification"] is True
+    assert payload["assertions"]["no_event_replay_after_reconnect"] is True
+    assert payload["ranking_eligible"] is False
 
 
 def test_committed_durable_event_validation_is_signed_and_reconnectable():

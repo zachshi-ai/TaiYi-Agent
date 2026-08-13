@@ -37,7 +37,12 @@ from taiyi.runtime import (
     TaskRuntime,
     TaskState,
 )
-from taiyi.runtime.executor import Executor, MockExecutor, RecoverableExecutor
+from taiyi.runtime.executor import (
+    EventedExecutor,
+    Executor,
+    MockExecutor,
+    RecoverableExecutor,
+)
 from taiyi.scenarios import DEFAULT_SCENARIOS_DIR, ScenarioMatcher, ScenarioRegistry
 from taiyi.scheduler import LLMPlanner, SchedulerEngine
 from taiyi.skills import DEFAULT_SKILLS_DIR, SkillRegistry
@@ -164,24 +169,31 @@ class Gateway:
         return task_id
 
     def start_background_recovery(self, *, force: bool = False) -> None:
-        """Start one shared wake loop for every parked repository continuation."""
+        """Start one shared wake loop for every parked durable continuation."""
 
         context_engine = self.runtime.context_engine
+        repository_jobs = (
+            context_engine.index_jobs if context_engine is not None else None
+        )
+        tool_jobs = (
+            self.runtime.executor
+            if isinstance(self.runtime.executor, EventedExecutor)
+            else None
+        )
         if (
             not self.runtime.run_store.persistent
-            or context_engine is None
-            or context_engine.index_jobs is None
+            or (repository_jobs is None and tool_jobs is None)
         ):
             return
-        if not force and not self._has_parked_repository_task():
+        if not force and not self._has_parked_durable_task():
             return
         with self._task_lock:
             if self._wake_thread is not None:
                 return
             self._wake_stop.clear()
             thread = threading.Thread(
-                target=self._wake_parked_repository_tasks,
-                name="taiyi-repository-waker",
+                target=self._wake_parked_durable_tasks,
+                name="taiyi-durable-job-waker",
                 daemon=True,
             )
             self._wake_thread = thread
@@ -196,39 +208,66 @@ class Gateway:
             thread.join(timeout=2)
         self._wake_thread = None
 
-    def _wake_parked_repository_tasks(self) -> None:
-        manager = self.runtime.context_engine.index_jobs
-        notification_offset = 0
-        terminal_jobs: set[str] = set()
+    def _wake_parked_durable_tasks(self) -> None:
+        context_engine = self.runtime.context_engine
+        manager = context_engine.index_jobs if context_engine is not None else None
+        executor = (
+            self.runtime.executor
+            if isinstance(self.runtime.executor, EventedExecutor)
+            else None
+        )
+        repository_notification_offset = 0
+        tool_notification_offset = 0
+        terminal_jobs: set[tuple[str, str]] = set()
         cancelled_consumers: set[tuple[str, str]] = set()
-        parked: dict[str, str] = {}
+        parked: dict[str, tuple[str, str]] = {}
         observed_generation = -1
         next_checkpoint_refresh = 0.0
-        refresh_interval = min(
-            1.0,
-            max(0.25, manager.consumer_lease_seconds / 3),
+        refresh_interval = (
+            min(1.0, max(0.25, manager.consumer_lease_seconds / 3))
+            if manager is not None
+            else 1.0
         )
         try:
             while not self._wake_stop.wait(0.25):
-                notifications, notification_offset = manager.read_notifications(
-                    notification_offset
-                )
-                self._wake_notification_reads += 1
-                for notification in notifications:
-                    if notification.get("event") == "notification_invalid":
-                        self.runtime.audit.append(
-                            "repository_wake_notification_invalid",
-                            error=notification.get("error"),
-                            raw_digest=notification.get("raw_digest"),
-                        )
-                        continue
-                    job_id = str(notification.get("job_id", ""))
-                    if notification.get("event") == "job_terminal" and job_id:
-                        terminal_jobs.add(job_id)
-                    elif notification.get("event") == "consumer_cancelled":
-                        consumer_id = str(notification.get("consumer_id", ""))
-                        if job_id and consumer_id:
-                            cancelled_consumers.add((job_id, consumer_id))
+                if manager is not None:
+                    notifications, repository_notification_offset = manager.read_notifications(
+                        repository_notification_offset
+                    )
+                    self._wake_notification_reads += 1
+                    for notification in notifications:
+                        if notification.get("event") == "notification_invalid":
+                            self.runtime.audit.append(
+                                "durable_wake_notification_invalid",
+                                job_kind="repository_index",
+                                error=notification.get("error"),
+                                raw_digest=notification.get("raw_digest"),
+                            )
+                            continue
+                        job_id = str(notification.get("job_id", ""))
+                        if notification.get("event") == "job_terminal" and job_id:
+                            terminal_jobs.add(("repository_index", job_id))
+                        elif notification.get("event") == "consumer_cancelled":
+                            consumer_id = str(notification.get("consumer_id", ""))
+                            if job_id and consumer_id:
+                                cancelled_consumers.add((job_id, consumer_id))
+                if executor is not None:
+                    notifications, tool_notification_offset = executor.read_notifications(
+                        tool_notification_offset
+                    )
+                    self._wake_notification_reads += 1
+                    for notification in notifications:
+                        if notification.get("event") == "notification_invalid":
+                            self.runtime.audit.append(
+                                "durable_wake_notification_invalid",
+                                job_kind="tool",
+                                error=notification.get("error"),
+                                raw_digest=notification.get("raw_digest"),
+                            )
+                            continue
+                        job_id = str(notification.get("job_id", ""))
+                        if notification.get("event") == "job_terminal" and job_id:
+                            terminal_jobs.add(("tool", job_id))
 
                 now = time.monotonic()
                 generation = self.runtime.run_store.event_generation
@@ -237,39 +276,52 @@ class Gateway:
                     or now >= next_checkpoint_refresh
                 )
                 if refresh_due:
-                    parked = self._parked_repository_tasks()
+                    parked = self._parked_durable_tasks()
                     active_jobs = set(parked.values())
                     terminal_jobs.intersection_update(active_jobs)
                     cancelled_consumers.intersection_update(
-                        (job_id, task_id) for task_id, job_id in parked.items()
+                        (job_id, task_id)
+                        for task_id, (kind, job_id) in parked.items()
+                        if kind == "repository_index"
                     )
                     observed_generation = generation
                     next_checkpoint_refresh = now + refresh_interval
 
                 ready = any(
-                    job_id in terminal_jobs
-                    or (job_id, task_id) in cancelled_consumers
-                    for task_id, job_id in parked.items()
+                    (kind, job_id) in terminal_jobs
+                    or (
+                        kind == "repository_index"
+                        and (job_id, task_id) in cancelled_consumers
+                    )
+                    for task_id, (kind, job_id) in parked.items()
                 )
                 if refresh_due and not ready:
-                    for task_id, job_id in parked.items():
+                    for task_id, (kind, job_id) in parked.items():
                         # Lease-bound refresh is the correctness fallback for a
                         # lost wake hint or another process writing the journal.
                         try:
-                            if manager.ready_for_resume(job_id, task_id):
+                            if kind == "repository_index" and manager is not None:
+                                if manager.ready_for_resume(job_id, task_id):
+                                    ready = True
+                                else:
+                                    manager.renew_consumer(job_id, task_id)
+                            elif (
+                                kind == "tool"
+                                and executor is not None
+                                and executor.poll(job_id).status.terminal
+                            ):
                                 ready = True
-                            else:
-                                manager.renew_consumer(job_id, task_id)
                         except (FileNotFoundError, RuntimeError, ValueError) as exc:
                             self.runtime.audit.append(
-                                "repository_wake_failed",
+                                "durable_wake_failed",
                                 task_id=task_id,
                                 job_id=job_id,
+                                job_kind=kind,
                                 error=f"{type(exc).__name__}: {exc}",
                             )
                 if ready:
                     self.runtime.audit.append(
-                        "repository_wake_notification",
+                        "durable_wake_notification",
                         parked_tasks=len(parked),
                         terminal_notifications=len(terminal_jobs),
                         cancellation_notifications=len(cancelled_consumers),
@@ -283,11 +335,11 @@ class Gateway:
                 if self._wake_thread is threading.current_thread():
                     self._wake_thread = None
 
-    def _has_parked_repository_task(self) -> bool:
-        return bool(self._parked_repository_tasks())
+    def _has_parked_durable_task(self) -> bool:
+        return bool(self._parked_durable_tasks())
 
-    def _parked_repository_tasks(self) -> dict[str, str]:
-        parked: dict[str, str] = {}
+    def _parked_durable_tasks(self) -> dict[str, tuple[str, str]]:
+        parked: dict[str, tuple[str, str]] = {}
         self._wake_checkpoint_scans += 1
         for checkpoint in self.runtime.run_store.iter_checkpoints():
             snapshot = checkpoint.get("context") or {}
@@ -299,7 +351,15 @@ class Gateway:
                 task_id = str(snapshot.get("task_id", ""))
                 job_id = str(continuation.get("job_id", ""))
                 if task_id and job_id:
-                    parked[task_id] = job_id
+                    parked[task_id] = ("repository_index", job_id)
+            elif (
+                snapshot.get("phase") == RunPhase.TOOL_RUNNING.value
+                and continuation.get("parked") is True
+            ):
+                task_id = str(snapshot.get("task_id", ""))
+                job_id = str(continuation.get("job_id", ""))
+                if task_id and job_id:
+                    parked[task_id] = ("tool", job_id)
         return parked
 
     def task_status(self, task_id: str) -> dict | None:

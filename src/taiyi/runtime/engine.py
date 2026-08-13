@@ -46,6 +46,8 @@ from taiyi.runtime.effects import (
     ReplayPolicy,
 )
 from taiyi.runtime.executor import (
+    DurableToolParked,
+    EventedExecutor,
     ExecResult,
     Executor,
     IdempotentExecutor,
@@ -203,7 +205,7 @@ class TaskRuntime:
             with self._span(trace, "task"):
                 self._record(ctx, RunPhase.PARSING, "phase_changed", state=TaskState.PARSING)
                 self._execute_rounds(ctx, trace)
-        except RepositoryIndexParked:
+        except (RepositoryIndexParked, DurableToolParked):
             parked = True
         except Exception as e:  # noqa: BLE001 — convert any failure into a terminal state
             self._fail(ctx, e)
@@ -1395,13 +1397,50 @@ class TaskRuntime:
             )
 
         try:
-            result = execute_step(
-                self.executor,
-                step,
-                operation_id=operation_id,
-                idempotency_key=(effect.idempotency_key if effect is not None else None),
-                on_started=attached,
-            )
+            if (
+                bool(getattr(self._execution_options, "park_background_jobs", False))
+                and isinstance(self.executor, EventedExecutor)
+                and self.executor.supports_jobs(step)
+            ):
+                handle = self.executor.start(step, operation_id=operation_id)
+                parked_continuation = {
+                    **continuation,
+                    "job_id": handle.job_id,
+                    "parked": True,
+                }
+                self._record(
+                    ctx,
+                    RunPhase.TOOL_RUNNING,
+                    "job_attached",
+                    state=TaskState.EXECUTING,
+                    continuation=parked_continuation,
+                    operation_id=operation_id,
+                    job_id=handle.job_id,
+                    step_index=step_index,
+                    tool=step.tool,
+                )
+                self._record(
+                    ctx,
+                    RunPhase.TOOL_RUNNING,
+                    "tool_job_parked",
+                    state=TaskState.EXECUTING,
+                    continuation=parked_continuation,
+                    operation_id=operation_id,
+                    job_id=handle.job_id,
+                    step_index=step_index,
+                    tool=step.tool,
+                )
+                raise DurableToolParked(handle)
+            else:
+                result = execute_step(
+                    self.executor,
+                    step,
+                    operation_id=operation_id,
+                    idempotency_key=(effect.idempotency_key if effect is not None else None),
+                    on_started=attached,
+                )
+        except DurableToolParked:
+            raise
         except Exception as exc:
             kind = classify_exception(exc, RunPhase.TOOL_RUNNING)
             if (
@@ -1511,6 +1550,19 @@ class TaskRuntime:
                     job_id, task_id
                 ):
                     self.context_engine.index_jobs.renew_consumer(job_id, task_id)
+                    continue
+            if (
+                snapshot.get("phase") == RunPhase.TOOL_RUNNING.value
+                and continuation.get("parked") is True
+                and isinstance(self.executor, EventedExecutor)
+            ):
+                job_id = str(continuation.get("job_id", ""))
+                if not job_id:
+                    continue
+                try:
+                    if not self.executor.poll(job_id).status.terminal:
+                        continue
+                except FileNotFoundError:
                     continue
             if not task_id or not self.run_store.acquire_task_lease(task_id, blocking=False):
                 continue
@@ -1689,6 +1741,9 @@ class TaskRuntime:
         start = time.time()
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         parked = False
+        self._execution_options.park_background_jobs = bool(
+            continuation.get("parked") is True
+        )
         try:
             kind = continuation["kind"]
             if kind == "workflow_failure":
@@ -1740,11 +1795,12 @@ class TaskRuntime:
                 return
             if not self._finish_round(ctx, trace, ctx.round):
                 self._execute_rounds(ctx, trace, start_round=ctx.round + 1)
-        except RepositoryIndexParked:
+        except (RepositoryIndexParked, DurableToolParked):
             parked = True
         except Exception as exc:  # noqa: BLE001 — recovery failures must settle visibly
             self._fail(ctx, exc)
         finally:
+            self._execution_options.park_background_jobs = False
             if not parked:
                 self._finish(ctx, start)
             self.run_store.release_task_lease(ctx.task_id)
