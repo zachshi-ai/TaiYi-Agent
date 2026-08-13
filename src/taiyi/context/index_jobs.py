@@ -30,6 +30,14 @@ class RepositoryIndexJobError(RuntimeError):
         super().__init__(message)
 
 
+class RepositoryIndexParked(RuntimeError):
+    """Internal control signal: durable work continues without a task thread."""
+
+    def __init__(self, handle: JobHandle):
+        self.handle = handle
+        super().__init__(f"repository index job {handle.job_id} is parked")
+
+
 class RepositoryIndexJobManager:
     """Start once per index generation and reattach after gateway restart."""
 
@@ -40,6 +48,7 @@ class RepositoryIndexJobManager:
         heartbeat_interval: float = 0.25,
         poll_interval: float = 0.05,
         worker_progress_delay: float = 0.0,
+        consumer_lease_seconds: float = 30.0,
     ):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -48,6 +57,7 @@ class RepositoryIndexJobManager:
         self.poll_interval = max(0.01, float(poll_interval))
         # Deterministic fault/parking tests use this; production leaves it zero.
         self.worker_progress_delay = max(0.0, float(worker_progress_delay))
+        self.consumer_lease_seconds = max(1.0, float(consumer_lease_seconds))
         self._generation_lock = threading.RLock()
         self._request_lock = threading.RLock()
 
@@ -100,6 +110,7 @@ class RepositoryIndexJobManager:
         chunk_lines: int,
         operation_id: str,
         consumer_id: str,
+        park: bool = False,
         attached: Callable[[JobHandle], None] | None = None,
         progress: Callable[[RepositoryIndexProgress], None] | None = None,
     ) -> RepositoryIndexResult:
@@ -134,22 +145,24 @@ class RepositoryIndexJobManager:
         )
         attachment_path = self._attachment_path(handle.job_id, consumer_id)
         cancellation_path = self._cancellation_path(handle.job_id, consumer_id)
-        self._atomic_json(attachment_path, {
-            "job_id": handle.job_id,
-            "consumer_id": consumer_id,
-            "attached_at": time.time(),
-        })
+        self._write_attachment(handle.job_id, consumer_id, attached_at=time.time())
+        parked = False
         try:
             if attached is not None:
                 attached(handle)
 
             last_progress = None
+            next_lease_renewal = 0.0
             while True:
                 if cancellation_path.exists():
                     raise RepositoryIndexJobError(
                         "repository index subscription was cancelled",
                         failure_kind="REPOSITORY_INDEX_CANCELLED",
                     )
+                now = time.time()
+                if now >= next_lease_renewal:
+                    self.renew_consumer(handle.job_id, consumer_id)
+                    next_lease_renewal = now + self.consumer_lease_seconds / 3
                 current = self._read_json(progress_path)
                 if current is not None and current != last_progress:
                     self._require_progress(current, operation_id)
@@ -159,9 +172,13 @@ class RepositoryIndexJobManager:
                 record = self.jobs.poll(handle.job_id)
                 if record.status.terminal:
                     return self._settle(record, receipt_path, operation_id)
+                if park:
+                    parked = True
+                    raise RepositoryIndexParked(handle)
                 time.sleep(self.poll_interval)
         finally:
-            attachment_path.unlink(missing_ok=True)
+            if not parked:
+                attachment_path.unlink(missing_ok=True)
 
     def poll(self, job_id: str) -> JobRecord:
         return self.jobs.poll(job_id)
@@ -182,12 +199,47 @@ class RepositoryIndexJobManager:
         other_consumers = False
         for path in attachment_dir.glob("*.json"):
             value = self._read_json(path) or {}
+            if self._attachment_expired(value):
+                path.unlink(missing_ok=True)
+                continue
             if value.get("consumer_id") != consumer_id:
                 other_consumers = True
                 break
         if other_consumers:
             return self.jobs.poll(job_id), True
         return self.jobs.cancel(job_id), False
+
+    def renew_consumer(self, job_id: str, consumer_id: str) -> None:
+        path = self._attachment_path(job_id, consumer_id)
+        existing = self._read_json(path) or {}
+        now = time.time()
+        try:
+            remaining = float(existing.get("lease_expires_at", 0.0)) - now
+        except (TypeError, ValueError):
+            remaining = 0.0
+        if remaining > self.consumer_lease_seconds * 2 / 3:
+            return
+        self._write_attachment(
+            job_id,
+            consumer_id,
+            attached_at=float(existing.get("attached_at", now)),
+        )
+
+    def consumer_cancelled(self, job_id: str, consumer_id: str) -> bool:
+        return self._cancellation_path(job_id, consumer_id).exists()
+
+    def ready_for_resume(self, job_id: str, consumer_id: str) -> bool:
+        if self.consumer_cancelled(job_id, consumer_id):
+            return True
+        return self.jobs.poll(job_id).status.terminal
+
+    def prune_expired_consumers(self, job_id: str) -> int:
+        removed = 0
+        for path in (self.root / "attachments" / job_id).glob("*.json"):
+            if self._attachment_expired(self._read_json(path) or {}):
+                path.unlink(missing_ok=True)
+                removed += 1
+        return removed
 
     def _settle(
         self,
@@ -242,6 +294,29 @@ class RepositoryIndexJobManager:
     def _cancellation_path(self, job_id: str, consumer_id: str) -> Path:
         digest = hashlib.sha256(consumer_id.encode("utf-8")).hexdigest()
         return self.root / "cancellations" / job_id / f"{digest}.json"
+
+    def _write_attachment(
+        self,
+        job_id: str,
+        consumer_id: str,
+        *,
+        attached_at: float,
+    ) -> None:
+        now = time.time()
+        self._atomic_json(self._attachment_path(job_id, consumer_id), {
+            "job_id": job_id,
+            "consumer_id": consumer_id,
+            "attached_at": attached_at,
+            "renewed_at": now,
+            "lease_expires_at": now + self.consumer_lease_seconds,
+        })
+
+    @staticmethod
+    def _attachment_expired(value: dict) -> bool:
+        try:
+            return float(value.get("lease_expires_at", 0.0)) <= time.time()
+        except (TypeError, ValueError):
+            return True
 
     def _write_generation(
         self, path: Path, repository_id: str, generation: int
@@ -318,4 +393,8 @@ class RepositoryIndexJobManager:
         os.replace(temporary, path)
 
 
-__all__ = ["RepositoryIndexJobError", "RepositoryIndexJobManager"]
+__all__ = [
+    "RepositoryIndexJobError",
+    "RepositoryIndexJobManager",
+    "RepositoryIndexParked",
+]

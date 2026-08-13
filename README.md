@@ -295,6 +295,16 @@ the same pinned 25,683-file Kubernetes checkout in 7.190 seconds and completed
 an unchanged second-generation scan in 0.551 seconds. See
 [`learning/docs/17_Durable_Repository_Index_Jobs.md`](./learning/docs/17_Durable_Repository_Index_Jobs.md).
 
+Phase 7B2.5 parks asynchronous Agent and Workflow continuations after they attach
+to that durable index job. Their transient task thread and task lease are
+released while indexing continues; one Gateway-wide wake loop renews expiring
+consumer leases and resumes the frozen continuation from the same job receipt.
+A replacement Gateway can perform that wake after the first monitor closes. On
+the pinned Kubernetes checkout, the task parked 0.013 seconds after creation,
+the 25,683-file job completed in 7.129 seconds, and attempt 2 settled from the
+same job id. See
+[`learning/docs/18_Parked_Repository_Continuations.md`](./learning/docs/18_Parked_Repository_Continuations.md).
+
 ### Run it yourself
 
 One command, straight from GitHub (repo is public, no clone needed). pipx is

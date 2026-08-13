@@ -138,6 +138,13 @@ occurs exactly once. They also prove that a concurrent gateway cannot recover a
 leased task, a frozen LLM turn survives restart, and cancellation is reflected as
 `TOOL_CANCELLED` rather than generic failure.
 
+Repository indexing advances this one step further in Phase 7B2.5. Asynchronous
+Agent and Workflow runs persist `parked=true`, release their transient task
+thread and task lease, and are resumed by one Gateway-wide wake loop when the
+durable receipt becomes terminal. The same loop renews expiring task-consumer
+attachments; closing the Gateway leaves the worker alive for restart recovery.
+See [`18_Parked_Repository_Continuations.md`](./18_Parked_Repository_Continuations.md).
+
 ## Phase 4: LLM request resilience
 
 Model requests now continue the same durable protocol. OpenAI-compatible
@@ -173,8 +180,8 @@ class, idempotency contract, and authority-specific post-crash verification.
 1. Add connector-specific effect authorities and compensation protocols on top
    of the delivered generic effect ledger.
 2. Add SSE progress streaming on top of the persisted event cursor.
-3. Replace the delivered lightweight repository-job waiter thread with an
-   event-driven parked continuation and expiring distributed consumer leases.
+3. Replace the delivered local polling wake loop with durable event notification
+   and distributed fenced task/consumer leases.
 4. Combine the delivered tool-output/process-tree matrix with real-provider
    network loss and a frozen large-repository/context-overflow workload.
 

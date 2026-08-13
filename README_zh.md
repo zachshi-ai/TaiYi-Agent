@@ -131,6 +131,13 @@ SQLite writer。取消按任务订阅者隔离：只有唯一订阅者时才终�
 25,683 文件 Kubernetes checkout 上首代耗时 7.190 秒，无变化第二代刷新耗时 0.551 秒。详见
 [`learning/docs/17_Durable_Repository_Index_Jobs.md`](./learning/docs/17_Durable_Repository_Index_Jobs.md)。
 
+Phase 7B2.5 会在异步 Agent 或 Workflow 连接持久索引作业后停泊 continuation：索引继续运行，
+但该任务的临时线程和任务 lease 已释放；一个 Gateway 级共享唤醒器负责续租有期限的消费者附件，
+并在终态收据出现后从同一 `job_id` 恢复冻结 continuation。原 Gateway 关闭后，新 Gateway 也能完成
+这次唤醒。固定 Kubernetes checkout 的真实运行在创建后 0.013 秒进入停泊，25,683 文件索引作业
+耗时 7.129 秒，随后 attempt 2 从同一作业恢复并完成。详见
+[`learning/docs/18_Parked_Repository_Continuations.md`](./learning/docs/18_Parked_Repository_Continuations.md)。
+
 LLM 请求使用独立的可靠性协议。OpenAI 兼容响应以流式方式读取，并分别约束连接、首 token、
 流空闲和单次硬截止。429、5xx、网络和阶段超时可以在模式预算内重试或切换 provider；鉴权失败和
 无效请求立即停止。上下文溢出不会触发 provider failover，而是进入独立的结构化压缩协议。每次失败、退避、切换和恢复都会持久化，进程重启后仍会遵守剩余
