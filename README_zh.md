@@ -115,6 +115,15 @@ idle timeout、stdout/stderr 洪泛、父进程退出后的残留后代，以及
 Pi、OpenClaw、ZCode 在没有同一权威受控工具生命周期接口前均标为 `NOT_COMPARABLE`。详见
 [`learning/docs/15_Tool_Process_Reliability.md`](./learning/docs/15_Tool_Process_Reliability.md)。
 
+Phase 7B2.3 把此前分离的边界放进同一个固定大型仓库任务中。签名 Kubernetes 基线纳入
+25,683 个文件、生成 59,825 个可检索分块，并明确标出 1,492 个不可文本检索文件；三种模式分别
+注入索引进程退出、冻结快照后的首字节超时、单次大输出工具副作用后的上下文溢出，以及模型等待
+期间进程退出。12/12 单元格通过，虚假完成和重复副作用均为 0。真实运行还发现并修复了“路径集合
+未变化却每轮重建目录 FTS”的性能问题：问题刷新约耗时 248 秒，修复后对应单元格约为 1.0–2.5 秒。
+文件清单完整性和文本可检索覆盖现在分开报告，模型不能从二进制、超大、未支持或读取失败的内容中
+推断代码不存在。详见
+[`learning/docs/16_Large_Repository_Combined_Resilience.md`](./learning/docs/16_Large_Repository_Combined_Resilience.md)。
+
 LLM 请求使用独立的可靠性协议。OpenAI 兼容响应以流式方式读取，并分别约束连接、首 token、
 流空闲和单次硬截止。429、5xx、网络和阶段超时可以在模式预算内重试或切换 provider；鉴权失败和
 无效请求立即停止。上下文溢出不会触发 provider failover，而是进入独立的结构化压缩协议。每次失败、退避、切换和恢复都会持久化，进程重启后仍会遵守剩余
@@ -127,6 +136,8 @@ LLM 请求使用独立的可靠性协议。OpenAI 兼容响应以流式方式读
 使用 sandbox 工作区时，太一会建立持久化增量仓库快照，快照同时绑定 Git HEAD 和文件内容摘要。
 索引覆盖目录结构、Python 符号和有界行块；检索只把当前模式预算内的片段交给模型，而且每段都带
 快照、相对路径、精确行号和内容摘要。仓库文字会被明确标为不可信数据，不能冒充系统指令。
+索引每个有界批次都会写入持久心跳；中断事务不会发布半成品快照。`inventory_complete` 与
+`searchable_complete` 分别表达文件清单是否截断、内容是否全部可文本检索。
 
 每次 Agent 或模型驱动 Workflow 请求前，上下文引擎都会预留回复空间、限制大工具结果的模型投影，
 必要时压缩旧历史。压缩不是让模型自由回忆，而是写入原子的结构化 JSON artifact：完整规范对话、

@@ -20,7 +20,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
 | `src/taiyi/` | **Production code** — reliable runtime, context, governance, execution, and validation modules |
-| `tests/` | 372 tests covering governance, operating modes, durable jobs/effect recovery, repository context, LLM faults, benchmark contracts, and executable Skill gates |
+| `tests/` | 380 passing tests (+ 5 platform skips) covering governance, operating modes, durable jobs/effect recovery, repository context, LLM faults, benchmark contracts, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -165,6 +165,11 @@ structure, Python symbols, and bounded line chunks; retrieval gives the model
 only mode-budgeted snippets carrying snapshot id, path, exact line span, and
 content digest. Repository text is explicitly untrusted data, never a system
 instruction.
+Inventory completeness and text-search coverage are reported separately, so
+binary, oversized, unsupported, or unreadable files cannot disappear behind a
+misleading `complete` flag. Index progress is checkpointed every bounded batch;
+an interrupted transaction publishes no partial snapshot. Unchanged directory
+FTS chunks are reused unless the path set changes.
 
 Before every Agent or model-backed Workflow request, the context engine reserves
 response space, bounds large tool-result projections, and compacts old history
@@ -267,6 +272,18 @@ external effect to `NEEDS_INPUT`. Pi, OpenClaw, and ZCode remain
 `NOT_COMPARABLE` for this layer until they expose the same authoritative
 controlled-tool lifecycle. See
 [`learning/docs/15_Tool_Process_Reliability.md`](./learning/docs/15_Tool_Process_Reliability.md).
+
+Phase 7B2.3 combines the previously separate boundaries in one pinned large
+repository task. The signed Kubernetes baseline indexes 25,683 files into 59,825
+searchable chunks, explicitly reports 1,492 unsearchable files, and injects
+index-process exit, frozen-snapshot first-token timeout, large tool output plus
+context overflow, and model-wait process exit in all three modes. All 12 cells
+passed with zero false completions and zero duplicate effects. The run also found
+and fixed an unchanged-directory-index rebuild that had cost roughly 248 seconds
+per refresh; equivalent post-fix cells completed in roughly 1.0–2.5 seconds.
+External harnesses remain `NOT_COMPARABLE` until the same source/model/fault and
+authoritative receipt boundary is observable. See
+[`learning/docs/16_Large_Repository_Combined_Resilience.md`](./learning/docs/16_Large_Repository_Combined_Resilience.md).
 
 ### Run it yourself
 

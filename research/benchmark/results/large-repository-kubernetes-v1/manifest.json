@@ -1,0 +1,54 @@
+{
+  "digest": "sha256:9b4d09b20f9d59c13bc963c03f56c83c7aff9198bba2fde06c6794ed6e7f9e22",
+  "payload": {
+    "cases": [
+      {
+        "case_id": "index_process_restart",
+        "fault": "process exit after a persisted index heartbeat"
+      },
+      {
+        "case_id": "frozen_snapshot_first_token_timeout",
+        "fault": "retryable first-token timeout after repository evidence is frozen"
+      },
+      {
+        "case_id": "large_tool_output_context_overflow",
+        "fault": "provider context overflow after one large-output tool effect"
+      },
+      {
+        "case_id": "model_wait_process_restart",
+        "fault": "process exit while the provider owns a frozen model projection"
+      }
+    ],
+    "contract_digest": "sha256:5d8bb91058f81a2138ccbc8a2a3b37000d49674bd6a0a3b7133e2c207e5c991e",
+    "measurement_scope": "taiyi_large_repository_combined_resilience",
+    "operating_modes": [
+      "quality",
+      "balanced",
+      "efficiency"
+    ],
+    "reliability_floor": [
+      "atomic repository snapshot or no published snapshot",
+      "persisted index progress and phase-correct recovery",
+      "frozen source projection across provider or process interruption",
+      "bounded context overflow recovery",
+      "no model retry may replay a governed tool effect",
+      "no false completion"
+    ],
+    "source": {
+      "chunk_count": 59825,
+      "complete": true,
+      "file_count": 25683,
+      "git_head": "52ba90138eb40cab0987dac73e05c838149bdd1c",
+      "inventory_complete": true,
+      "kind": "pinned_git_checkout",
+      "omitted_files": 0,
+      "origin": "https://github.com/kubernetes/kubernetes.git",
+      "query": "type Kubelet struct",
+      "searchable_complete": false,
+      "skipped_files": 1492,
+      "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+      "unsearchable_files": 1492
+    }
+  },
+  "schema_version": "taiyi.large-repo-fault-manifest/v1"
+}

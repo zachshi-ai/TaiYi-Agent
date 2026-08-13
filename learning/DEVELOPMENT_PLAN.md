@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.2 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.3 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 7B2.2 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 7B2.3 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -542,12 +542,23 @@ false completions, and zero duplicate effects. External harnesses remain
 lifecycle. See `learning/docs/15_Tool_Process_Reliability.md` and
 `research/benchmark/results/tool-faults-v1/`.
 
+**Delivered in Phase 7B2.3.** Repository refresh now emits persisted batch
+heartbeats and rolls an interrupted SQLite transaction back before restart
+re-enters the frozen Agent continuation. Directory FTS chunks rebuild only when
+the path set changes, fixing a pinned Kubernetes refresh that spent about 248
+seconds rebuilding unchanged hierarchy after a sub-second metadata pass.
+Inventory completeness and text-search coverage are independent evidence, with
+an explicit absence warning for unsearchable content. Four combined production
+faults across three modes use a pinned 25,683-file Kubernetes checkout and
+produce 12/12 passing signed receipts, zero false completions, and zero duplicate
+effects. See `learning/docs/16_Large_Repository_Combined_Resilience.md` and
+`research/benchmark/results/large-repository-kubernetes-v1/`.
+
 **Remaining before M18 is complete.** Connector-specific refund/notification
 authorities and compensation; SSE event streaming; durable/background index
-maintenance for very large monorepos; provider-specific tokenizers; distributed
-leases; and Phase 7B2.3's frozen large-repository combination of indexing,
-context growth/compaction, provider interruption, process-tree execution,
-restart, and duplicate-effect checks. Cross-harness cells require a portable
+maintenance that parks rather than occupies the submitting worker; provider-
+specific tokenizers; distributed leases; and live-provider/network verification.
+Cross-harness cells require a portable
 controlled-tool interface before they can be scored.
 Ambiguous effects remain human-owned until those connector proofs exist. See
 `learning/docs/07_Durable_Runtime_Protocol.md`. **Depends on.** M3–M6, M17.

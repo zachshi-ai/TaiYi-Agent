@@ -1202,8 +1202,21 @@ class AgentRuntime:
                 state=TaskState.PLANNING,
                 continuation=continuation,
             )
+
+            def index_progress(progress):
+                self._record(
+                    ctx,
+                    RunPhase.INDEXING,
+                    "repository_index_heartbeat",
+                    state=TaskState.PLANNING,
+                    continuation=continuation,
+                    progress=progress.to_dict(),
+                )
+
             try:
-                indexed = self.context_engine.ensure_repository(ctx, force=True)
+                indexed = self.context_engine.ensure_repository(
+                    ctx, force=True, progress=index_progress
+                )
             except Exception as exc:  # tools remain a diagnosable fallback
                 repo_state = dict(ctx.repository_context or {})
                 repo_state.update({

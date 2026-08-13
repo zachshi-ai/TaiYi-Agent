@@ -11,6 +11,7 @@ from taiyi.context.repository import (
     RepositoryContext,
     RepositoryContextIndex,
     RepositoryIndexResult,
+    RepositoryIndexProgress,
     RepositorySnippet,
 )
 
@@ -21,6 +22,7 @@ __all__ = [
     "RepositoryContext",
     "RepositoryContextIndex",
     "RepositoryIndexResult",
+    "RepositoryIndexProgress",
     "RepositorySnippet",
     "estimate_message_tokens",
     "estimate_text_tokens",

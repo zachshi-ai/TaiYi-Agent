@@ -1,0 +1,27 @@
+{
+  "digest": "sha256:519a91c2c257d837151e7a99f3a8a42771040dde337f10753744df8c10c3d247",
+  "payload": {
+    "case_id": "frozen_snapshot_first_token_timeout",
+    "claimed_complete": true,
+    "duplicate_effects": 0,
+    "duration_seconds": 0.7264994580182247,
+    "error": null,
+    "evidence": {
+      "directory_chunks_rebuilt": false,
+      "duplicate_effects": 0,
+      "failure_kind": "LLM_FIRST_TOKEN_TIMEOUT",
+      "frozen_projection_reused": true,
+      "llm_calls": 2,
+      "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+      "state": "COMPLETED"
+    },
+    "false_completion": false,
+    "manifest_case_digest": "sha256:d6df5e333ff358f16e5cfa24dcc11bbb4febbf768832d323c9245dd009f54a8c",
+    "measurement_status": "MEASURED",
+    "operating_mode": "balanced",
+    "protocol_passed": true,
+    "reported_state": "COMPLETED",
+    "run_id": "taiyi-frozen_snapshot_first_token_timeout-balanced-feb6ccae68b6"
+  },
+  "schema_version": "taiyi.large-repo-fault-receipt/v1"
+}

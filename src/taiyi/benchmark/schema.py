@@ -23,6 +23,9 @@ COMPARATIVE_FAULT_RECEIPT_SCHEMA = "taiyi.harness-comparative-fault-receipt/v1"
 TOOL_FAULT_MANIFEST_SCHEMA = "taiyi.tool-fault-manifest/v1"
 TOOL_FAULT_RECEIPT_SCHEMA = "taiyi.tool-fault-receipt/v1"
 TOOL_FAULT_REPORT_SCHEMA = "taiyi.tool-fault-report/v1"
+LARGE_REPO_MANIFEST_SCHEMA = "taiyi.large-repo-fault-manifest/v1"
+LARGE_REPO_RECEIPT_SCHEMA = "taiyi.large-repo-fault-receipt/v1"
+LARGE_REPO_REPORT_SCHEMA = "taiyi.large-repo-fault-report/v1"
 
 
 class MeasurementStatus(str, Enum):
@@ -222,6 +225,9 @@ __all__ = [
     "TOOL_FAULT_MANIFEST_SCHEMA",
     "TOOL_FAULT_RECEIPT_SCHEMA",
     "TOOL_FAULT_REPORT_SCHEMA",
+    "LARGE_REPO_MANIFEST_SCHEMA",
+    "LARGE_REPO_RECEIPT_SCHEMA",
+    "LARGE_REPO_REPORT_SCHEMA",
     "BenchmarkCase",
     "ComparativeReceipt",
     "ExpectedOutcome",
