@@ -294,10 +294,21 @@ class Gateway:
                 and context_engine is not None
                 and context_engine.index_jobs is not None
             ):
-                status["job"] = context_engine.poll_repository_job(str(job_id)).to_dict()
-                status["job"]["job_kind"] = "repository_index"
+                try:
+                    job = context_engine.poll_repository_job(str(job_id)).to_dict()
+                except FileNotFoundError:
+                    # Attachment is checkpointed before the supervisor publishes
+                    # job.json. Status polling must tolerate that narrow window.
+                    pass
+                else:
+                    status["job"] = job
+                    status["job"]["job_kind"] = "repository_index"
             elif job_id and hasattr(executor, "poll"):
-                status["job"] = executor.poll(str(job_id)).to_dict()
+                try:
+                    status["job"] = executor.poll(str(job_id)).to_dict()
+                except FileNotFoundError:
+                    # The job id is durable first; the initial JobRecord follows.
+                    pass
             return status
 
         with self._task_lock:
