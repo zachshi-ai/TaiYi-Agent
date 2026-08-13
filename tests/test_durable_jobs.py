@@ -167,8 +167,8 @@ def test_output_flood_keeps_a_bounded_head_tail_artifact_and_full_stream_digest(
     stderr = b"ERR-HEAD" + (b"y" * 150_000) + b"ERR-TAIL"
     code = (
         "import os; "
-        f"os.write(1, {stdout!r}); "
-        f"os.write(2, {stderr!r})"
+        "os.write(1, b'HEAD' + (b'x' * 200_000) + b'TAIL'); "
+        "os.write(2, b'ERR-HEAD' + (b'y' * 150_000) + b'ERR-TAIL')"
     )
 
     result = executor.execute(_python(code))
