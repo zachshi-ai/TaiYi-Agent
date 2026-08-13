@@ -1,0 +1,47 @@
+{
+  "digest": "sha256:2961f1dee403677a2d128283bab281ed6e4ea8d39a0bf0ca877087654513497b",
+  "payload": {
+    "assertions": {
+      "distinct_generation_job_ids": true,
+      "fresh_scan_after_terminal_generation": true,
+      "full_suite_collected": 391,
+      "full_suite_passed": true,
+      "no_directory_rebuild_without_path_change": true,
+      "snapshot_stable_without_changes": true
+    },
+    "measurement_scope": "taiyi_durable_repository_index_jobs",
+    "observed_date": "2026-08-13",
+    "ranking_eligible": false,
+    "runs": [
+      {
+        "duration_seconds": 7.19,
+        "failure_kind": null,
+        "generation": 0,
+        "job_id": "j_f2f6626e5f8447bb82b3a50023cfcb26",
+        "status": "SUCCEEDED"
+      },
+      {
+        "changed_files": 0,
+        "directory_chunks_rebuilt": false,
+        "duration_seconds": 0.551,
+        "failure_kind": null,
+        "generation": 1,
+        "job_id": "j_52d4172b737b4e91b3fd7f9a1b40be71",
+        "reused_files": 25683,
+        "status": "SUCCEEDED"
+      }
+    ],
+    "source": {
+      "chunk_count": 59825,
+      "file_count": 25683,
+      "git_head": "52ba90138eb40cab0987dac73e05c838149bdd1c",
+      "kind": "pinned_git_checkout",
+      "origin": "https://github.com/kubernetes/kubernetes.git",
+      "query": "type Kubelet struct",
+      "query_matched": true,
+      "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+      "unsearchable_files": 1492
+    }
+  },
+  "schema_version": "taiyi.durable-index-validation/v1"
+}

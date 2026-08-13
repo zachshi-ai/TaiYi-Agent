@@ -18,7 +18,7 @@ import threading
 import time
 from contextlib import nullcontext
 
-from taiyi.context import ContextBudgetError, ContextEngine
+from taiyi.context import ContextBudgetError, ContextEngine, RepositoryIndexJobError
 from taiyi.approvals import ApprovalStore, PendingApproval
 from taiyi.core.audit import AuditLog
 from taiyi.core.types import Verdict
@@ -568,6 +568,22 @@ class TaskRuntime:
                 state=TaskState.PLANNING,
                 continuation=continuation,
             )
+            index_continuation = dict(continuation)
+
+            def index_attached(handle):
+                index_continuation["job_id"] = handle.job_id
+                current = dict(ctx.repository_context or {})
+                current["index_job_id"] = handle.job_id
+                ctx.repository_context = current
+                self._record(
+                    ctx,
+                    RunPhase.INDEXING,
+                    "repository_index_attached",
+                    state=TaskState.PLANNING,
+                    continuation=index_continuation,
+                    job_id=handle.job_id,
+                    operation_id=handle.operation_id,
+                )
 
             def index_progress(progress):
                 self._record(
@@ -575,15 +591,20 @@ class TaskRuntime:
                     RunPhase.INDEXING,
                     "repository_index_heartbeat",
                     state=TaskState.PLANNING,
-                    continuation=continuation,
+                    continuation=index_continuation,
                     progress=progress.to_dict(),
                 )
 
             try:
                 indexed = self.context_engine.ensure_repository(
-                    ctx, force=True, progress=index_progress
+                    ctx, force=True, progress=index_progress, attached=index_attached
                 )
             except Exception as exc:
+                if isinstance(exc, RepositoryIndexJobError) and exc.failure_kind in {
+                    FailureKind.REPOSITORY_INDEX_CANCELLED.value,
+                    FailureKind.REPOSITORY_INDEX_LOST.value,
+                }:
+                    raise
                 repo_state = dict(ctx.repository_context or {})
                 repo_state.update({
                     "status": "degraded",
@@ -596,7 +617,8 @@ class TaskRuntime:
                     RunPhase.INDEXING,
                     "repository_index_failed",
                     state=TaskState.PLANNING,
-                    continuation=continuation,
+                    continuation=index_continuation,
+                    failure_kind=getattr(exc, "failure_kind", None),
                     error=repo_state["error"],
                 )
             else:
@@ -605,7 +627,7 @@ class TaskRuntime:
                     RunPhase.INDEXING,
                     "repository_index_finished",
                     state=TaskState.PLANNING,
-                    continuation=continuation,
+                    continuation=index_continuation,
                     snapshot=(indexed.to_dict() if indexed is not None else None),
                 )
         try:

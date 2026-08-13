@@ -12,7 +12,7 @@
 |---|---|
 | **产（生产，留根）** — Agent 本体 | |
 | `src/taiyi/` | **生产代码** — 可靠运行、上下文、治理、执行与验证模块 |
-| `tests/` | 372 个测试，覆盖治理不变量、三模式、持久任务/副作用恢复、仓库上下文、LLM 故障、基准合同与可执行 Skill 门禁 |
+| `tests/` | 391 个已收集测试，覆盖治理不变量、三模式、持久任务/副作用恢复、仓库上下文、LLM 故障、基准合同与可执行 Skill 门禁 |
 | `web/` | 内置 React Web UI（构建产物在 `web/dist`） |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | 打包 + 配置模板 |
@@ -123,6 +123,13 @@ Phase 7B2.3 把此前分离的边界放进同一个固定大型仓库任务中�
 文件清单完整性和文本可检索覆盖现在分开报告，模型不能从二进制、超大、未支持或读取失败的内容中
 推断代码不存在。详见
 [`learning/docs/16_Large_Repository_Combined_Resilience.md`](./learning/docs/16_Large_Repository_Combined_Resilience.md)。
+
+Phase 7B2.4 把仓库刷新移入持久 supervisor。并发任务共享一个正在运行的索引代际，后续新任务会
+领取新代际重新检查仓库；Gateway 重启后依据 checkpoint 重连原 `job_id`，不会再启动第二个
+SQLite writer。取消按任务订阅者隔离：只有唯一订阅者时才终止底层作业，不能破坏仍依赖共享索引的
+另一个任务。状态接口也会把仓库索引 JobRecord 与普通工具作业分开显示。生产路径在同一固定
+25,683 文件 Kubernetes checkout 上首代耗时 7.190 秒，无变化第二代刷新耗时 0.551 秒。详见
+[`learning/docs/17_Durable_Repository_Index_Jobs.md`](./learning/docs/17_Durable_Repository_Index_Jobs.md)。
 
 LLM 请求使用独立的可靠性协议。OpenAI 兼容响应以流式方式读取，并分别约束连接、首 token、
 流空闲和单次硬截止。429、5xx、网络和阶段超时可以在模式预算内重试或切换 provider；鉴权失败和

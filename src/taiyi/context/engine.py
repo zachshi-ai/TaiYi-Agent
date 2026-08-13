@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from taiyi.llm.base import LLMMessage
+from taiyi.context.index_jobs import RepositoryIndexJobManager
 from taiyi.context.repository import RepositoryContext, RepositoryContextIndex, RepositoryIndexResult
 
 
@@ -57,6 +58,7 @@ class ContextEngine:
         context_window_tokens: int = 128_000,
         response_reserve_tokens: int = 16_384,
         tool_result_max_tokens: int = 4_000,
+        index_jobs: RepositoryIndexJobManager | None = None,
     ):
         self.repository = repository
         self.base_dir = Path(base_dir) if base_dir is not None else None
@@ -65,6 +67,7 @@ class ContextEngine:
         if self.response_reserve_tokens >= self.context_window_tokens:
             raise ValueError("response_reserve_tokens must be smaller than context_window_tokens")
         self.tool_result_max_tokens = max(256, int(tool_result_max_tokens))
+        self.index_jobs = index_jobs
 
     @property
     def prompt_budget_tokens(self) -> int:
@@ -76,20 +79,48 @@ class ContextEngine:
         *,
         force: bool = False,
         progress=None,
+        attached=None,
     ) -> RepositoryIndexResult | None:
         if self.repository is None:
             return None
         state = dict(ctx.repository_context or {})
         latest = self.repository.latest()
         needs_refresh = force or state.get("needs_refresh", latest is None)
-        result = (
-            self.repository.refresh(progress=progress)
-            if needs_refresh or latest is None
-            else latest
-        )
+        if needs_refresh or latest is None:
+            if "index_generation" in state:
+                generation = max(0, int(state["index_generation"] or 0))
+            elif self.index_jobs is not None:
+                generation = self.index_jobs.claim_generation(
+                    self.repository.repository_id
+                )
+            else:
+                generation = 0
+            state["index_generation"] = generation
+            ctx.repository_context = state
+            if self.index_jobs is not None and self.repository.db_path is not None:
+                operation_id = self.index_jobs.operation_id(
+                    self.repository.repository_id, generation
+                )
+                result = self.index_jobs.run(
+                    repository_root=self.repository.root,
+                    db_path=self.repository.db_path,
+                    max_files=self.repository.max_files,
+                    max_file_bytes=self.repository.max_file_bytes,
+                    chunk_lines=self.repository.chunk_lines,
+                    operation_id=operation_id,
+                    consumer_id=ctx.task_id,
+                    attached=attached,
+                    progress=progress,
+                )
+                state["index_operation_id"] = operation_id
+            else:
+                result = self.repository.refresh(progress=progress)
+        else:
+            result = latest
         state.update(result.to_dict())
         state["needs_refresh"] = False
         state["status"] = "ready" if result.complete else "partial"
+        state.pop("index_job_id", None)
         ctx.repository_context = state
         return result
 
@@ -98,7 +129,25 @@ class ContextEngine:
             return
         state = dict(ctx.repository_context or {})
         state["needs_refresh"] = True
+        if self.index_jobs is not None:
+            state["index_generation"] = self.index_jobs.advance_generation(
+                self.repository.repository_id
+            )
+        else:
+            state["index_generation"] = max(
+                0, int(state.get("index_generation", 0) or 0)
+            ) + 1
         ctx.repository_context = state
+
+    def poll_repository_job(self, job_id: str):
+        if self.index_jobs is None:
+            raise RuntimeError("durable repository index jobs are not configured")
+        return self.index_jobs.poll(job_id)
+
+    def cancel_repository_job(self, job_id: str, *, consumer_id: str):
+        if self.index_jobs is None:
+            raise RuntimeError("durable repository index jobs are not configured")
+        return self.index_jobs.cancel_consumer(job_id, consumer_id)
 
     def assemble(
         self,

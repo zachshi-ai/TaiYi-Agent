@@ -29,7 +29,6 @@ from taiyi.runtime.executor import (
     RecoverableExecutor,
 )
 from taiyi.runtime.jobs import JobHandle, JobRecord, JobStatus, JobStore
-from taiyi.runtime.engine import TaskRuntime, replay_task
 from taiyi.runtime.persistence import RunStore
 from taiyi.runtime.protocol import FailureKind, RunPhase
 
@@ -64,3 +63,13 @@ __all__ = [
     "JobStatus",
     "JobStore",
 ]
+
+
+def __getattr__(name):
+    """Load the engine lazily so lower-level job primitives do not import context."""
+
+    if name in {"TaskRuntime", "replay_task"}:
+        from taiyi.runtime.engine import TaskRuntime, replay_task
+
+        return {"TaskRuntime": TaskRuntime, "replay_task": replay_task}[name]
+    raise AttributeError(name)

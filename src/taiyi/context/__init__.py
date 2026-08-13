@@ -14,6 +14,7 @@ from taiyi.context.repository import (
     RepositoryIndexProgress,
     RepositorySnippet,
 )
+from taiyi.context.index_jobs import RepositoryIndexJobError, RepositoryIndexJobManager
 
 __all__ = [
     "ContextAssembly",
@@ -23,6 +24,8 @@ __all__ = [
     "RepositoryContextIndex",
     "RepositoryIndexResult",
     "RepositoryIndexProgress",
+    "RepositoryIndexJobError",
+    "RepositoryIndexJobManager",
     "RepositorySnippet",
     "estimate_message_tokens",
     "estimate_text_tokens",

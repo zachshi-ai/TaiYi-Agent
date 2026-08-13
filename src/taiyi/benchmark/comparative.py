@@ -316,6 +316,9 @@ def run_taiyi_cell(
             "model_requests": requests,
             "model_visible_tools": model_visible_tools,
             "executor_allowed_tools": executor_allowed_tools,
+            "repository_index_enabled": (
+                worker.get("repository_index_enabled") if worker is not None else None
+            ),
             "tool_surface_matches": tool_surface_matches,
             "execution_environment": (
                 worker.get("execution_environment") if worker is not None else "workspace"

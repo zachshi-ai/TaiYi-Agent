@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.3 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.4 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 7B2.3 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 7B2.4 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -554,10 +554,23 @@ produce 12/12 passing signed receipts, zero false completions, and zero duplicat
 effects. See `learning/docs/16_Large_Repository_Combined_Resilience.md` and
 `research/benchmark/results/large-repository-kubernetes-v1/`.
 
+**Delivered in Phase 7B2.4.** Repository refresh now runs as an idempotent
+background supervisor job with an immutable request and typed result receipt.
+New tasks coalesce on a live repository generation but advance after terminal
+settlement; recovered tasks retain their checkpointed generation and reattach to
+the same job id. Gateway status and cancellation understand repository jobs
+separately from tool jobs. Subscriber-level cancellation terminates a sole job
+but does not break another task sharing the index. Fault tests cover concurrent
+coalescing, sequential freshness, cancellation isolation, startup failure, and
+Gateway-owner exit after attachment. A production run against the pinned
+25,683-file Kubernetes checkout completed the first generation in 7.190 seconds
+and an unchanged second generation in 0.551 seconds. See
+`learning/docs/17_Durable_Repository_Index_Jobs.md`.
+
 **Remaining before M18 is complete.** Connector-specific refund/notification
-authorities and compensation; SSE event streaming; durable/background index
-maintenance that parks rather than occupies the submitting worker; provider-
-specific tokenizers; distributed leases; and live-provider/network verification.
+authorities and compensation; SSE event streaming; event-driven parking of the
+delivered durable index continuation; expiring/distributed consumer leases;
+provider-specific tokenizers; distributed task leases; and live-provider/network verification.
 Cross-harness cells require a portable
 controlled-tool interface before they can be scored.
 Ambiguous effects remain human-owned until those connector proofs exist. See
