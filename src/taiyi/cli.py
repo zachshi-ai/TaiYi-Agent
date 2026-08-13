@@ -186,6 +186,7 @@ def _benchmark(args) -> int:
         run_protocol_matrix,
         write_probe_report,
     )
+    from taiyi.benchmark.tool_faults import run_tool_fault_matrix
 
     if args.action == "protocol":
         report = run_protocol_matrix(args.output)
@@ -239,6 +240,20 @@ def _benchmark(args) -> int:
             and report["all_comparable_failures_attributed"]
             and report["all_attributed_failures_safe"]
         ) else 1
+
+    if args.action == "tool-faults":
+        report = run_tool_fault_matrix(args.output)
+        print(json.dumps({
+            "measurement_scope": report["measurement_scope"],
+            "case_count": report["case_count"],
+            "run_count": report["run_count"],
+            "protocol_passed_count": report["protocol_passed_count"],
+            "all_protocol_passed": report["all_protocol_passed"],
+            "false_completions": report["false_completions"],
+            "duplicate_effects": report["duplicate_effects"],
+            "output": str(args.output),
+        }, ensure_ascii=False, indent=2))
+        return 0 if report["all_protocol_passed"] else 1
 
     payload = write_probe_report(args.output)
     print(json.dumps(payload, ensure_ascii=False, indent=2))
@@ -446,7 +461,7 @@ def main(argv=None) -> int:
     )
     benchmark.add_argument(
         "action",
-        choices=["protocol", "comparative", "faults", "probe"],
+        choices=["protocol", "comparative", "faults", "tool-faults", "probe"],
         help="run TaiYi faults, cross-harness comparisons, or capability probes",
     )
     benchmark.add_argument(

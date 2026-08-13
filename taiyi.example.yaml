@@ -20,9 +20,10 @@ sandbox_dir: ./state/sandbox
 tool_hard_timeout: 1800
 tool_idle_timeout: null
 job_heartbeat_interval: 1
-# Only this many bytes are returned to the model; full stdout/stderr remain in
-# base_dir/jobs/<job_id>/ as artifacts for inspection and independent validation.
+# Model-visible tail and retained per-stream artifact are separate budgets. The
+# receipt always keeps complete-stream byte counts and SHA-256 digests.
 tool_output_limit: 16384
+tool_artifact_limit: 8388608
 # When executor=sandbox, independently inspect Git HEAD and repository-local
 # identity after Git tasks. This verifier is read-only and does not trust the
 # executor's success text.

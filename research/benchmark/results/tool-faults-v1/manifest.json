@@ -1,0 +1,60 @@
+{
+  "digest": "sha256:385a6a31e6df8217fe6f3c3a4db915f3449c94b66f92b8d8186dce69a747bb77",
+  "payload": {
+    "artifact_limit_per_stream": 4096,
+    "cases": [
+      {
+        "case_id": "hard_timeout_sigterm_resistant_tree",
+        "description": "A parent and descendant ignore SIGTERM until the deadline escalates.",
+        "expected_executor_failure_kind": "TOOL_HARD_TIMEOUT",
+        "expected_failure_kind": "EFFECT_OUTCOME_UNKNOWN",
+        "expected_state": "NEEDS_INPUT"
+      },
+      {
+        "case_id": "idle_timeout_silent_process",
+        "description": "A silent tool exceeds its no-output deadline before its hard deadline.",
+        "expected_executor_failure_kind": "TOOL_IDLE_TIMEOUT",
+        "expected_failure_kind": "EFFECT_OUTCOME_UNKNOWN",
+        "expected_state": "NEEDS_INPUT"
+      },
+      {
+        "case_id": "stdout_stderr_flood",
+        "description": "Both streams exceed artifact and model budgets while the command succeeds.",
+        "expected_executor_failure_kind": null,
+        "expected_failure_kind": null,
+        "expected_state": "COMPLETED"
+      },
+      {
+        "case_id": "lingering_descendant",
+        "description": "A descendant survives its parent and keeps the owned output pipes open.",
+        "expected_executor_failure_kind": "TOOL_LOST",
+        "expected_failure_kind": "EFFECT_OUTCOME_UNKNOWN",
+        "expected_state": "NEEDS_INPUT"
+      },
+      {
+        "case_id": "gateway_restart_reattach_once",
+        "description": "The gateway exits after attach; restart reattaches without replaying the effect.",
+        "expected_executor_failure_kind": null,
+        "expected_failure_kind": null,
+        "expected_state": "COMPLETED"
+      }
+    ],
+    "contract_digest": "sha256:c6bc324cd21577a9b2357066e12bbc2f75af9ca34370604d866c95b7e303235d",
+    "measurement_scope": "taiyi_production_tool_process_reliability",
+    "model_output_limit": 1024,
+    "operating_modes": [
+      "quality",
+      "balanced",
+      "efficiency"
+    ],
+    "reliability_floor": [
+      "phase-correct failure attribution",
+      "bounded model and disk output",
+      "full-stream byte count and digest",
+      "bounded TERM-to-KILL escalation",
+      "durable reattachment without duplicate effect",
+      "no false completion"
+    ]
+  },
+  "schema_version": "taiyi.tool-fault-manifest/v1"
+}

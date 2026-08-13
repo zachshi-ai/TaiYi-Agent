@@ -497,6 +497,7 @@ def build_gateway_from_config(config) -> Gateway:
             heartbeat_interval=config.job_heartbeat_interval,
             job_dir=job_dir,
             output_limit=config.tool_output_limit,
+            artifact_limit=config.tool_artifact_limit,
         )
         authorities = []
         if config.external_git_validation:

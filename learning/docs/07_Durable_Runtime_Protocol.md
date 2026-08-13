@@ -68,15 +68,18 @@ of the sandbox when no persistence root is configured):
 - `request.json` is mode `0600` and contains the launch request;
 - `heartbeat.json` reports supervisor progress, child pid/process token,
   process group, output sizes, and last-output time;
-- `stdout.log` and `stderr.log` keep the complete output as artifacts;
+- `stdout.log` and `stderr.log` keep bounded head/tail artifacts while the
+  receipt retains complete-stream byte counts and SHA-256 digests;
 - `result.json` is the terminal status written atomically by the supervisor.
 
 The supervisor is independent of the gateway process, owns the child process
 group, drains output continuously, and enforces two different deadlines. An
 idle timeout means the process produced no output for the configured period; a
 hard timeout is the absolute wall-clock limit even when output continues.
-Cancellation terminates the whole child process group and has a bounded
-fail-safe when the supervisor itself stops responding.
+Cancellation terminates the whole owned child process group and has a bounded
+fail-safe when the supervisor itself stops responding. The terminal receipt
+states why termination began, whether TERM escalated to KILL, and whether the
+owned process group settled.
 
 Every governed step gets a deterministic operation id before launch. The
 operation index is claimed before the worker is spawned and serialized across
@@ -88,14 +91,17 @@ it.
 
 The runtime records `tool_started`, then `job_attached`, then a typed
 `tool_finished` event containing the job id, exact exit code or signal, timeout
-kind, failure kind, artifact paths, and truncation marker. Only a bounded output
-tail enters the model context; full stdout/stderr remain available for diagnosis
-and independent validation.
+kind, failure kind, artifact paths, full-stream byte counts/digests, retained
+artifact sizes, and independent truncation markers. Only a bounded output tail
+enters the model context. Each retained stream artifact also has a configurable
+hard limit; the worker continues draining after the limit so output activity
+cannot be misreported as an idle timeout. See
+[`15_Tool_Process_Reliability.md`](./15_Tool_Process_Reliability.md).
 
 Failure kinds now distinguish `TOOL_IDLE_TIMEOUT`, `TOOL_HARD_TIMEOUT`,
-`TOOL_STARTUP_ERROR`, `TOOL_EXIT_NONZERO`, `TOOL_SIGNAL`, `TOOL_CANCELLED`, and
-`TOOL_LOST`. A generic tool timeout remains available for legacy executors that
-raise a timeout without the durable protocol.
+`TOOL_STARTUP_ERROR`, `TOOL_EXIT_NONZERO`, `TOOL_SIGNAL`, `TOOL_CANCELLED`,
+`TOOL_LOST`, and `TOOL_OUTPUT_CAPTURE_ERROR`. A generic tool timeout remains
+available for legacy executors that raise a timeout without the durable protocol.
 
 ## Phase 3: task recovery and asynchronous clients
 
@@ -169,8 +175,8 @@ class, idempotency contract, and authority-specific post-crash verification.
 2. Add SSE progress streaming on top of the persisted event cursor.
 3. Move the now-delivered synchronous repository refresh onto the durable job
    scheduler for very large monorepos.
-4. Exercise real-provider network loss, duplicate effects, context overflow, and huge-output
-   faults in the harness benchmark.
+4. Combine the delivered tool-output/process-tree matrix with real-provider
+   network loss and a frozen large-repository/context-overflow workload.
 
 Structured compaction, Git-HEAD/content-addressed repository snapshots, bounded
 hierarchical retrieval, exact prompt freezing, and context-overflow recovery are

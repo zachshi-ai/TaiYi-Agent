@@ -11,7 +11,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping
 
-
 BENCHMARK_SCHEMA = "taiyi.harness-benchmark/v1"
 RECEIPT_SCHEMA = "taiyi.harness-run-receipt/v1"
 REPORT_SCHEMA = "taiyi.harness-benchmark-report/v1"
@@ -21,6 +20,9 @@ COMPARATIVE_REPORT_SCHEMA = "taiyi.harness-comparative-report/v1"
 COMPARATIVE_WORKER_SCHEMA = "taiyi.harness-comparative-worker/v1"
 COMPARATIVE_FAULT_REPORT_SCHEMA = "taiyi.harness-comparative-fault-report/v1"
 COMPARATIVE_FAULT_RECEIPT_SCHEMA = "taiyi.harness-comparative-fault-receipt/v1"
+TOOL_FAULT_MANIFEST_SCHEMA = "taiyi.tool-fault-manifest/v1"
+TOOL_FAULT_RECEIPT_SCHEMA = "taiyi.tool-fault-receipt/v1"
+TOOL_FAULT_REPORT_SCHEMA = "taiyi.tool-fault-report/v1"
 
 
 class MeasurementStatus(str, Enum):
@@ -217,6 +219,9 @@ __all__ = [
     "COMPARATIVE_WORKER_SCHEMA",
     "REPORT_SCHEMA",
     "RECEIPT_SCHEMA",
+    "TOOL_FAULT_MANIFEST_SCHEMA",
+    "TOOL_FAULT_RECEIPT_SCHEMA",
+    "TOOL_FAULT_REPORT_SCHEMA",
     "BenchmarkCase",
     "ComparativeReceipt",
     "ExpectedOutcome",

@@ -124,7 +124,7 @@ have the same comparability signature:
 4. fixed model-call, token, wall-clock, and tool-output budgets;
 5. the same injected fault schedule;
 6. no inherited user home, credentials, or prior session memory;
-7. complete stdout/stderr, process-exit, model-attempt, and tool receipts;
+7. complete stdout/stderr metadata/digests, process-exit, model-attempt, and tool receipts;
 8. an evaluator outside the harness under test.
 
 The methodology follows the controlled-runtime principle used by
