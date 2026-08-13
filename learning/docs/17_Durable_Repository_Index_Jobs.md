@@ -66,9 +66,10 @@ consumer's durable cancellation marker:
 - the waiting runtime checks its own marker, so cancellation is not inferred
   from a shared process state.
 
-Attachment cleanup is best-effort on normal settlement. A future distributed
-lease/garbage-collection phase must add expiry for consumers whose entire host
-is destroyed before cleanup.
+Attachment cleanup is best-effort on normal settlement. Phase 7B2.5 adds
+renewable expiry to these consumers, so a destroyed host does not remain an
+immortal subscriber. See
+[`18_Parked_Repository_Continuations.md`](./18_Parked_Repository_Continuations.md).
 
 ## Failure truth and observability
 
@@ -121,10 +122,9 @@ checked by the automated suite.
 
 ## Remaining boundary
 
-Actual indexing is now an independently supervised process and HTTP submission
-does not remain open. The current Gateway still keeps one lightweight in-process
-task waiter polling the durable job. A later event-driven scheduler should park
-that continuation without retaining a Python thread, expire abandoned consumer
-attachments, and coordinate generation leases across multiple hosts. Those
+Phase 7B2.5 now parks asynchronous continuations without retaining one Python
+waiter thread per task, renews expiring consumer attachments, and resumes through
+one Gateway-wide wake loop. The remaining boundary is a durable event bus and
+distributed, fenced task/generation leases across multiple hosts. Those
 improvements must preserve the operation, receipt, and checkpoint contracts
 defined here.

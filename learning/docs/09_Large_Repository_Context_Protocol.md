@@ -78,6 +78,12 @@ checkpoint. Subscriber-level cancellation does not terminate a shared index
 needed by another task. See
 [`17_Durable_Repository_Index_Jobs.md`](./17_Durable_Repository_Index_Jobs.md).
 
+Phase 7B2.5 parks asynchronous repository continuations after attachment. The
+task thread and task lease are released while the durable worker runs; one
+Gateway-wide monitor renews expiring consumer leases and wakes the frozen
+continuation when its receipt becomes terminal. See
+[`18_Parked_Repository_Continuations.md`](./18_Parked_Repository_Continuations.md).
+
 ## Hierarchical, source-traceable retrieval
 
 The first implementation is deterministic lexical retrieval:

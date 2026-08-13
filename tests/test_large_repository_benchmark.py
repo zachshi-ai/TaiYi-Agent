@@ -15,8 +15,29 @@ from taiyi.benchmark.schema import (
     LARGE_REPO_MANIFEST_SCHEMA,
     LARGE_REPO_RECEIPT_SCHEMA,
     LARGE_REPO_REPORT_SCHEMA,
+    PARKED_INDEX_VALIDATION_SCHEMA,
     verify_artifact,
 )
+
+
+def test_committed_parked_index_validation_is_signed_and_real_scale():
+    path = Path(
+        "research/benchmark/results/parked-index-kubernetes-v1/validation.json"
+    )
+    payload = verify_artifact(
+        json.loads(path.read_text(encoding="utf-8")),
+        schema_version=PARKED_INDEX_VALIDATION_SCHEMA,
+    )
+
+    assert payload["measurement_scope"] == "taiyi_parked_repository_continuations"
+    assert payload["source"]["file_count"] == 25_683
+    assert payload["source"]["git_head"] == (
+        "52ba90138eb40cab0987dac73e05c838149bdd1c"
+    )
+    assert payload["assertions"]["task_waiter_released_while_running"] is True
+    assert payload["assertions"]["same_job_reattached_after_wake"] is True
+    assert payload["assertions"]["settled_after_durable_wake"] is True
+    assert payload["ranking_eligible"] is False
 
 
 def test_committed_durable_index_validation_is_signed_and_real_scale():

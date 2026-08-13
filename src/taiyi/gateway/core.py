@@ -31,6 +31,7 @@ from taiyi.runtime import (
     EffectManager,
     EffectPolicyRegistry,
     FileWriteAuthority,
+    RunPhase,
     RunStore,
     TaskContext,
     TaskRuntime,
@@ -73,6 +74,8 @@ class Gateway:
         self._task_threads: dict[str, threading.Thread] = {}
         self._task_results: dict[str, TaskContext] = {}
         self._task_errors: dict[str, BaseException] = {}
+        self._wake_stop = threading.Event()
+        self._wake_thread: threading.Thread | None = None
 
     def submit(
         self,
@@ -83,6 +86,7 @@ class Gateway:
         session_id: str = "s1",
         operating_mode: str | OperatingMode | None = None,
         task_id: str | None = None,
+        park_background_jobs: bool = False,
     ) -> TaskContext:
         scenario = scenario or self.matcher.match(prompt)
         scenario_obj = self.matcher.registry.get(scenario)
@@ -105,6 +109,7 @@ class Gateway:
             skill_instructions=skill.body if skill else None,
             capability_error=capability_error,
             task_id=task_id,
+            park_background_jobs=park_background_jobs,
         )
 
     def submit_async(
@@ -132,13 +137,18 @@ class Gateway:
                     session_id=session_id,
                     operating_mode=operating_mode,
                     task_id=task_id,
+                    park_background_jobs=True,
                 )
             except BaseException as exc:  # a background failure must remain observable
                 with self._task_lock:
                     self._task_errors[task_id] = exc
             else:
+                if ctx.phase is RunPhase.SETTLED:
+                    with self._task_lock:
+                        self._task_results[task_id] = ctx
+            finally:
                 with self._task_lock:
-                    self._task_results[task_id] = ctx
+                    self._task_threads.pop(task_id, None)
 
         thread = threading.Thread(
             target=run_task,
@@ -148,7 +158,88 @@ class Gateway:
         with self._task_lock:
             self._task_threads[task_id] = thread
         thread.start()
+        self.start_background_recovery(force=True)
         return task_id
+
+    def start_background_recovery(self, *, force: bool = False) -> None:
+        """Start one shared wake loop for every parked repository continuation."""
+
+        context_engine = self.runtime.context_engine
+        if (
+            not self.runtime.run_store.persistent
+            or context_engine is None
+            or context_engine.index_jobs is None
+        ):
+            return
+        if not force and not self._has_parked_repository_task():
+            return
+        with self._task_lock:
+            if self._wake_thread is not None:
+                return
+            self._wake_stop.clear()
+            thread = threading.Thread(
+                target=self._wake_parked_repository_tasks,
+                name="taiyi-repository-waker",
+                daemon=True,
+            )
+            self._wake_thread = thread
+        thread.start()
+
+    def close(self) -> None:
+        """Stop Gateway-owned background monitors without cancelling durable work."""
+
+        self._wake_stop.set()
+        thread = self._wake_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2)
+        self._wake_thread = None
+
+    def _wake_parked_repository_tasks(self) -> None:
+        manager = self.runtime.context_engine.index_jobs
+        try:
+            while not self._wake_stop.wait(0.05):
+                ready = False
+                for checkpoint in self.runtime.run_store.iter_checkpoints():
+                    snapshot = checkpoint.get("context") or {}
+                    continuation = checkpoint.get("continuation") or {}
+                    if (
+                        snapshot.get("phase") != RunPhase.INDEXING.value
+                        or continuation.get("parked") is not True
+                    ):
+                        continue
+                    task_id = str(snapshot.get("task_id", ""))
+                    job_id = str(continuation.get("job_id", ""))
+                    if not task_id or not job_id:
+                        continue
+                    try:
+                        if manager.ready_for_resume(job_id, task_id):
+                            ready = True
+                        else:
+                            manager.renew_consumer(job_id, task_id)
+                    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                        self.runtime.audit.append(
+                            "repository_wake_failed",
+                            task_id=task_id,
+                            job_id=job_id,
+                            error=f"{type(exc).__name__}: {exc}",
+                        )
+                if ready:
+                    self.runtime.recover_pending()
+        finally:
+            with self._task_lock:
+                if self._wake_thread is threading.current_thread():
+                    self._wake_thread = None
+
+    def _has_parked_repository_task(self) -> bool:
+        for checkpoint in self.runtime.run_store.iter_checkpoints():
+            snapshot = checkpoint.get("context") or {}
+            continuation = checkpoint.get("continuation") or {}
+            if (
+                snapshot.get("phase") == RunPhase.INDEXING.value
+                and continuation.get("parked") is True
+            ):
+                return True
+        return False
 
     def task_status(self, task_id: str) -> dict | None:
         """Read the authoritative persisted checkpoint for a submitted task."""
@@ -183,7 +274,14 @@ class Gateway:
                 "updated_at": context.get("updated_at"),
                 "continuation": {
                     key: continuation[key]
-                    for key in ("kind", "operation_id", "job_id", "next_step", "next_step_index")
+                    for key in (
+                        "kind",
+                        "operation_id",
+                        "job_id",
+                        "next_step",
+                        "next_step_index",
+                        "parked",
+                    )
                     if key in continuation
                 } or None,
             }
@@ -196,10 +294,21 @@ class Gateway:
                 and context_engine is not None
                 and context_engine.index_jobs is not None
             ):
-                status["job"] = context_engine.poll_repository_job(str(job_id)).to_dict()
-                status["job"]["job_kind"] = "repository_index"
+                try:
+                    job = context_engine.poll_repository_job(str(job_id)).to_dict()
+                except FileNotFoundError:
+                    # Attachment is checkpointed before the supervisor publishes
+                    # job.json. Status polling must tolerate that narrow window.
+                    pass
+                else:
+                    status["job"] = job
+                    status["job"]["job_kind"] = "repository_index"
             elif job_id and hasattr(executor, "poll"):
-                status["job"] = executor.poll(str(job_id)).to_dict()
+                try:
+                    status["job"] = executor.poll(str(job_id)).to_dict()
+                except FileNotFoundError:
+                    # The job id is durable first; the initial JobRecord follows.
+                    pass
             return status
 
         with self._task_lock:
@@ -493,7 +602,7 @@ def build_gateway(
     # Recovery still starts before this gateway object is returned to traffic.
     runtime.recover_pending()
 
-    return Gateway(
+    gateway = Gateway(
         runtime=runtime,
         scenario_matcher=ScenarioMatcher(scenarios),
         skills=skills,
@@ -504,6 +613,8 @@ def build_gateway(
         approvals=approvals,
         base_dir=str(base) if base else None,
     )
+    gateway.start_background_recovery()
+    return gateway
 
 
 def build_gateway_from_config(config) -> Gateway:

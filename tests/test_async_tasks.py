@@ -30,6 +30,17 @@ def test_async_task_returns_immediately_exposes_progress_and_cancels(tmp_path):
         heartbeat_interval=0.05,
         hard_timeout=10,
     )
+    original_poll = executor.poll
+    first_status_poll = True
+
+    def poll_after_publication(job_id):
+        nonlocal first_status_poll
+        if first_status_poll:
+            first_status_poll = False
+            raise FileNotFoundError(f"job record for {job_id} is not published yet")
+        return original_poll(job_id)
+
+    executor.poll = poll_after_publication
     provider = ScriptedProvider([
         LLMResponse(tool_calls=[ToolCall(
             "shell:python3",

@@ -80,6 +80,7 @@ class ContextEngine:
         force: bool = False,
         progress=None,
         attached=None,
+        park: bool = False,
     ) -> RepositoryIndexResult | None:
         if self.repository is None:
             return None
@@ -109,6 +110,7 @@ class ContextEngine:
                     chunk_lines=self.repository.chunk_lines,
                     operation_id=operation_id,
                     consumer_id=ctx.task_id,
+                    park=park,
                     attached=attached,
                     progress=progress,
                 )

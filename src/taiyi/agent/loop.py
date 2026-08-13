@@ -18,7 +18,12 @@ import threading
 import time
 from contextlib import nullcontext
 
-from taiyi.context import ContextBudgetError, ContextEngine, RepositoryIndexJobError
+from taiyi.context import (
+    ContextBudgetError,
+    ContextEngine,
+    RepositoryIndexJobError,
+    RepositoryIndexParked,
+)
 from taiyi.core.audit import AuditLog
 from taiyi.core.types import Verdict
 from taiyi.approvals import ApprovalStore, PendingApproval
@@ -141,6 +146,7 @@ class AgentRuntime:
         self._llm_sleep = llm_sleep
         self._llm_clock = llm_clock
         self._recovery_threads: dict[str, threading.Thread] = {}
+        self._execution_options = threading.local()
         # Build the system prompt the model actually sees. The default prompt
         # alone is too vague for a real model — it must know the tool-call syntax
         # AND the exact tool ids (with prefixes) governance/executor expect, or it
@@ -163,6 +169,7 @@ class AgentRuntime:
         skill_instructions: str | None = None,
         capability_error: str | None = None,
         task_id: str | None = None,
+        park_background_jobs: bool = False,
     ) -> TaskContext:
         policy = resolve_policy(operating_mode or self.default_operating_mode, scenario=scenario)
         provider_selection = self.provider_router.select(policy)
@@ -255,12 +262,21 @@ class AgentRuntime:
         messages.append(LLMMessage("user", prompt))
         if self.value_stream is not None:
             ctx.goal = self.value_stream.anchor(prompt, scenario)
+        parked = False
+        self._execution_options.park_background_jobs = bool(park_background_jobs)
         try:
             with self._span(trace, "agent_task"):
                 self._loop(ctx, messages, trace)
+        except RepositoryIndexParked:
+            parked = True
         except Exception as e:  # noqa: BLE001
             self._fail(ctx, e)
+        finally:
+            self._execution_options.park_background_jobs = False
 
+        if parked:
+            self.run_store.release_task_lease(ctx.task_id)
+            return ctx
         self._finish(ctx, start)
         return ctx
 
@@ -1203,6 +1219,11 @@ class AgentRuntime:
                 continuation=continuation,
             )
             index_continuation = dict(continuation)
+            park_index = bool(
+                getattr(self._execution_options, "park_background_jobs", False)
+            )
+            if park_index:
+                index_continuation["parked"] = True
 
             def index_attached(handle):
                 index_continuation["job_id"] = handle.job_id
@@ -1231,8 +1252,22 @@ class AgentRuntime:
 
             try:
                 indexed = self.context_engine.ensure_repository(
-                    ctx, force=True, progress=index_progress, attached=index_attached
+                    ctx,
+                    force=True,
+                    progress=index_progress,
+                    attached=index_attached,
+                    park=park_index,
                 )
+            except RepositoryIndexParked:
+                self._record(
+                    ctx,
+                    RunPhase.INDEXING,
+                    "repository_index_parked",
+                    state=TaskState.PLANNING,
+                    continuation=index_continuation,
+                    job_id=index_continuation.get("job_id"),
+                )
+                raise
             except Exception as exc:  # tools remain a diagnosable fallback
                 if isinstance(exc, RepositoryIndexJobError) and exc.failure_kind in {
                     FailureKind.REPOSITORY_INDEX_CANCELLED.value,
@@ -1530,6 +1565,18 @@ class AgentRuntime:
             }:
                 continue
             task_id = str(snapshot.get("task_id", ""))
+            if (
+                snapshot.get("phase") == RunPhase.INDEXING.value
+                and continuation.get("parked") is True
+                and self.context_engine is not None
+                and self.context_engine.index_jobs is not None
+            ):
+                job_id = str(continuation.get("job_id", ""))
+                if job_id and not self.context_engine.index_jobs.ready_for_resume(
+                    job_id, task_id
+                ):
+                    self.context_engine.index_jobs.renew_consumer(job_id, task_id)
+                    continue
             if not task_id or not self.run_store.acquire_task_lease(task_id, blocking=False):
                 continue
             try:
@@ -1704,6 +1751,7 @@ class AgentRuntime:
     ) -> None:
         start = time.time()
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
+        parked = False
         try:
             kind = continuation["kind"]
             if kind == "agent_failure":
@@ -1764,10 +1812,13 @@ class AgentRuntime:
                         continuation.get("model_messages", [])
                     ) or None,
                 )
+        except RepositoryIndexParked:
+            parked = True
         except Exception as exc:  # noqa: BLE001 — recovery failures must settle visibly
             self._fail(ctx, exc)
         finally:
-            self._finish(ctx, start)
+            if not parked:
+                self._finish(ctx, start)
             self.run_store.release_task_lease(ctx.task_id)
             self._recovery_threads.pop(ctx.task_id, None)
 

@@ -12,6 +12,7 @@ from taiyi.context import (
     RepositoryContextIndex,
     RepositoryIndexJobError,
     RepositoryIndexJobManager,
+    RepositoryIndexParked,
 )
 from taiyi.gateway import build_gateway
 from taiyi.llm import LLMResponse
@@ -102,6 +103,15 @@ def _wait_status(gateway, task_id, predicate, timeout=10):
             return last
         time.sleep(0.02)
     raise AssertionError(f"task {task_id} status did not match; last={last}")
+
+
+def _wait_condition(predicate, timeout=10):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return
+        time.sleep(0.02)
+    raise AssertionError("condition did not become true")
 
 
 def test_unchanged_path_set_reuses_directory_chunks(tmp_path):
@@ -270,7 +280,8 @@ def test_async_repository_index_is_observable_and_cancellable(tmp_path):
         base / "context" / "index-runtime",
         heartbeat_interval=0.05,
         poll_interval=0.01,
-        worker_progress_delay=0.25,
+        worker_progress_delay=0.5,
+        consumer_lease_seconds=1.0,
     )
     provider = _SequenceProvider([LLMResponse(text="must not be called")])
     gateway = build_gateway(
@@ -298,6 +309,15 @@ def test_async_repository_index_is_observable_and_cancellable(tmp_path):
     assert indexing["settled"] is False
     assert indexing["job"]["job_kind"] == "repository_index"
     assert indexing["continuation"]["kind"] == "agent_continue"
+    assert indexing["continuation"]["parked"] is True
+    _wait_condition(lambda: task_id not in gateway._task_threads)
+    assert task_id not in gateway.runtime._recovery_threads
+    assert any(
+        event["event"] == "repository_index_parked"
+        for event in gateway.runtime.run_store.read_events(task_id)
+    )
+    time.sleep(1.05)
+    assert manager.prune_expired_consumers(indexing["job"]["job_id"]) == 0
     cancelled = gateway.cancel_task(task_id)
     assert cancelled["cancelled"] is True
     assert cancelled["job"]["job_kind"] == "repository_index"
@@ -308,6 +328,7 @@ def test_async_repository_index_is_observable_and_cancellable(tmp_path):
     assert settled["state"] == TaskState.FAILED.value
     assert settled["failure_kind"] == "REPOSITORY_INDEX_CANCELLED"
     assert provider.seen == []
+    gateway.close()
 
 
 def test_cancelling_one_coalesced_task_does_not_cancel_shared_index_job(tmp_path):
@@ -350,6 +371,11 @@ def test_cancelling_one_coalesced_task_does_not_cancel_shared_index_job(tmp_path
         and status.get("job", {}).get("status") == "RUNNING",
     )
     assert first_indexing["job"]["job_id"] == second_indexing["job"]["job_id"]
+    _wait_condition(
+        lambda: first_task not in gateway._task_threads
+        and second_task not in gateway._task_threads
+    )
+    assert gateway._wake_thread is not None and gateway._wake_thread.is_alive()
 
     cancelled = gateway.cancel_task(first_task)
     assert cancelled["cancelled"] is True
@@ -366,6 +392,162 @@ def test_cancelling_one_coalesced_task_does_not_cancel_shared_index_job(tmp_path
     assert second_settled["state"] == TaskState.COMPLETED.value
     assert second_settled["final_output"] == "shared index completed"
     assert len(provider.seen) == 1
+    gateway.close()
+
+
+def test_parked_repository_index_resumes_after_gateway_monitor_restart(tmp_path):
+    base = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    _write_repository(workspace)
+    db = base / "context" / "repositories.sqlite3"
+    first_manager = RepositoryIndexJobManager(
+        base / "context" / "index-runtime",
+        heartbeat_interval=0.05,
+        poll_interval=0.01,
+        worker_progress_delay=0.4,
+        consumer_lease_seconds=1.0,
+    )
+    unused = _SequenceProvider([LLMResponse(text="must not run in first gateway")])
+    first = build_gateway(
+        base_dir=base,
+        executor=SandboxExecutor(workspace, job_dir=tmp_path / "jobs"),
+        provider=unused,
+        context_engine=ContextEngine(
+            repository=RepositoryContextIndex(workspace, db_path=db),
+            base_dir=base,
+            index_jobs=first_manager,
+        ),
+        validator=False,
+    )
+
+    task_id = first.submit_async("inspect frozen_large_repo_target")
+    parked = _wait_status(
+        first,
+        task_id,
+        lambda status: status["phase"] == RunPhase.INDEXING.value
+        and status.get("continuation", {}).get("parked") is True,
+    )
+    original_job_id = parked["job"]["job_id"]
+    _wait_condition(lambda: task_id not in first._task_threads)
+    assert unused.seen == []
+    assert first.runtime.run_store.acquire_task_lease(task_id, blocking=False)
+    first.runtime.run_store.release_task_lease(task_id)
+    first.close()
+
+    recovered = _SequenceProvider([LLMResponse(text="resumed without a waiter thread")])
+    second_manager = RepositoryIndexJobManager(
+        base / "context" / "index-runtime",
+        heartbeat_interval=0.05,
+        poll_interval=0.01,
+        worker_progress_delay=0.4,
+        consumer_lease_seconds=1.0,
+    )
+    restarted = build_gateway(
+        base_dir=base,
+        executor=SandboxExecutor(workspace, job_dir=tmp_path / "jobs"),
+        provider=recovered,
+        context_engine=ContextEngine(
+            repository=RepositoryContextIndex(workspace, db_path=db),
+            base_dir=base,
+            index_jobs=second_manager,
+        ),
+        validator=False,
+    )
+    settled = _wait_status(
+        restarted,
+        task_id,
+        lambda status: status["phase"] == RunPhase.SETTLED.value,
+    )
+
+    assert settled["state"] == TaskState.COMPLETED.value
+    assert settled["final_output"] == "resumed without a waiter thread"
+    attached_job_ids = {
+        event["payload"]["job_id"]
+        for event in restarted.runtime.run_store.read_events(task_id)
+        if event["event"] == "repository_index_attached"
+    }
+    assert attached_job_ids == {original_job_id}
+    assert task_id not in restarted._task_threads
+    restarted.close()
+
+
+def test_workflow_async_repository_index_parks_without_task_waiter(tmp_path):
+    base = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    _write_repository(workspace)
+    manager = RepositoryIndexJobManager(
+        base / "context" / "index-runtime",
+        heartbeat_interval=0.05,
+        poll_interval=0.01,
+        worker_progress_delay=0.25,
+    )
+    provider = _SequenceProvider([LLMResponse(text="workflow used indexed evidence")])
+    gateway = build_gateway(
+        base_dir=base,
+        mode="workflow",
+        executor=SandboxExecutor(workspace, job_dir=tmp_path / "jobs"),
+        provider=provider,
+        context_engine=ContextEngine(
+            repository=RepositoryContextIndex(
+                workspace, db_path=base / "context" / "repositories.sqlite3"
+            ),
+            base_dir=base,
+            index_jobs=manager,
+        ),
+        validator=False,
+    )
+
+    task_id = gateway.submit_async("inspect frozen_large_repo_target")
+    parked = _wait_status(
+        gateway,
+        task_id,
+        lambda status: status["phase"] == RunPhase.INDEXING.value
+        and status.get("continuation", {}).get("parked") is True,
+    )
+    assert parked["continuation"]["kind"] == "workflow_plan"
+    _wait_condition(lambda: task_id not in gateway._task_threads)
+    assert task_id not in gateway.runtime._recovery_threads
+
+    settled = _wait_status(
+        gateway,
+        task_id,
+        lambda status: status["phase"] == RunPhase.SETTLED.value,
+    )
+    assert settled["state"] == TaskState.COMPLETED.value
+    assert settled["final_output"] == "workflow used indexed evidence"
+    assert len(provider.seen) == 1
+    wake_thread = gateway._wake_thread
+    assert wake_thread is not None and wake_thread.is_alive()
+    gateway.close()
+    assert not wake_thread.is_alive()
+    assert gateway._wake_thread is None
+
+
+def test_expired_repository_consumer_lease_is_reclaimed(tmp_path):
+    repo = tmp_path / "lease-repo"
+    _write_repository(repo)
+    manager = RepositoryIndexJobManager(
+        tmp_path / "index-runtime",
+        heartbeat_interval=0.05,
+        poll_interval=0.01,
+        worker_progress_delay=0.5,
+        consumer_lease_seconds=1.0,
+    )
+    index = RepositoryContextIndex(repo, db_path=tmp_path / "index.sqlite3")
+    engine = ContextEngine(repository=index, index_jobs=manager)
+    attached = []
+
+    with pytest.raises(RepositoryIndexParked):
+        engine.ensure_repository(
+            _repository_task_context("abandoned-consumer"),
+            force=True,
+            park=True,
+            attached=attached.append,
+        )
+
+    time.sleep(1.05)
+    assert manager.prune_expired_consumers(attached[0].job_id) == 1
+    manager.cancel(attached[0].job_id)
 
 
 def test_gateway_restart_reattaches_same_durable_repository_index_job(tmp_path):

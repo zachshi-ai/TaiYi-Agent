@@ -1,0 +1,44 @@
+{
+  "digest": "sha256:21eed28b7eefb3f3d7b68b3f6d86de8a622ac597a49d3f3d485060faef526cee",
+  "payload": {
+    "assertions": {
+      "full_suite_collected": 395,
+      "full_suite_passed": true,
+      "parked_checkpoint_persisted": true,
+      "same_job_reattached_after_wake": true,
+      "settled_after_durable_wake": true,
+      "shared_gateway_waker_observed": true,
+      "task_waiter_released_while_running": true
+    },
+    "job": {
+      "attached_event_count": 2,
+      "duration_seconds": 7.129404,
+      "failure_kind": null,
+      "operation_generation": 0,
+      "status": "SUCCEEDED",
+      "unique_job_id_count": 1
+    },
+    "measurement_scope": "taiyi_parked_repository_continuations",
+    "observed_date": "2026-08-13",
+    "ranking_eligible": false,
+    "source": {
+      "chunk_count": 59825,
+      "file_count": 25683,
+      "git_head": "52ba90138eb40cab0987dac73e05c838149bdd1c",
+      "kind": "pinned_git_checkout",
+      "origin": "https://github.com/kubernetes/kubernetes.git",
+      "query": "type Kubelet struct",
+      "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+      "unsearchable_files": 1492
+    },
+    "task": {
+      "attempts": 2,
+      "final_phase": "SETTLED",
+      "park_latency_seconds": 0.013223,
+      "provider": "controlled-local",
+      "runtime_mode": "agent",
+      "total_duration_seconds": 7.232317
+    }
+  },
+  "schema_version": "taiyi.parked-index-validation/v1"
+}
