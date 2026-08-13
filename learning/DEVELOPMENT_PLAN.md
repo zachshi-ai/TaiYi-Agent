@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.5 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.6 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 7B2.5 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 7B2.6 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -579,10 +579,22 @@ Kubernetes run parked after 0.013 seconds and settled from the same 25,683-file
 job after its 7.129-second durable execution. See
 `learning/docs/18_Parked_Repository_Continuations.md`.
 
+**Delivered in Phase 7B2.6.** Every durable supervisor now appends an fsync'd
+terminal wake notification after its authoritative result. The repository wake
+loop consumes that journal incrementally by byte cursor and retains a
+lease-bound JobRecord fallback instead of scanning every checkpoint and job at
+50 ms intervals. RunStore supports immediate local waits and bounded
+cross-process refresh; clients can use JSON long polling or revision-addressed
+SSE with `Last-Event-ID`. Tests cover HTTP streaming, reconnect replay exclusion,
+partial/corrupt notifications, missing-hint fallback, cancellation, and restart.
+A pinned Kubernetes run deliberately disconnected at revision 4, resumed at 5
+without replay, and settled at 12 from one 7.139-second job. See
+`learning/docs/19_Durable_Event_Notifications_and_SSE.md`.
+
 **Remaining before M18 is complete.** Connector-specific refund/notification
-authorities and compensation; SSE event streaming and durable wake events;
-distributed fenced task/consumer leases; provider-specific tokenizers; and
-live-provider/network verification.
+authorities and compensation; parking generic durable tool continuations;
+distributed fenced task/consumer leases and event fan-out; provider-specific
+tokenizers; and live-provider/network verification.
 Cross-harness cells require a portable
 controlled-tool interface before they can be scored.
 Ambiguous effects remain human-owned until those connector proofs exist. See

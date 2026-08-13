@@ -77,6 +77,33 @@ def test_long_command_runs_under_durable_supervisor(tmp_path):
     assert "finished" in result.output
 
 
+def test_terminal_job_notification_is_durable_and_cursor_addressable(tmp_path):
+    executor = _executor(tmp_path)
+    handle = executor.start(_python("print('notified')"), operation_id="notify-me")
+    result = executor.wait(handle.job_id)
+
+    notifications, cursor = executor.jobs.read_notifications()
+
+    assert result.ok
+    assert len(notifications) == 1
+    assert notifications[0]["event"] == "job_terminal"
+    assert notifications[0]["job_id"] == handle.job_id
+    assert notifications[0]["operation_id"] == "notify-me"
+    assert notifications[0]["status"] == "SUCCEEDED"
+    assert executor.jobs.read_notifications(cursor) == ((), cursor)
+
+
+def test_notification_write_failure_cannot_change_successful_job_outcome(tmp_path):
+    executor = _executor(tmp_path)
+    executor.jobs.notification_path = tmp_path  # opening a directory as a file fails
+
+    result = executor.execute(_python("print('result remains authoritative')"))
+
+    assert result.ok
+    assert result.failure_kind is None
+    assert "result remains authoritative" in result.output
+
+
 def test_idle_timeout_is_distinct_from_hard_timeout(tmp_path):
     executor = _executor(tmp_path, hard_timeout=2, idle_timeout=0.2)
 

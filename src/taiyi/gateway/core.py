@@ -76,6 +76,8 @@ class Gateway:
         self._task_errors: dict[str, BaseException] = {}
         self._wake_stop = threading.Event()
         self._wake_thread: threading.Thread | None = None
+        self._wake_checkpoint_scans = 0
+        self._wake_notification_reads = 0
 
     def submit(
         self,
@@ -196,41 +198,97 @@ class Gateway:
 
     def _wake_parked_repository_tasks(self) -> None:
         manager = self.runtime.context_engine.index_jobs
+        notification_offset = 0
+        terminal_jobs: set[str] = set()
+        cancelled_consumers: set[tuple[str, str]] = set()
+        parked: dict[str, str] = {}
+        observed_generation = -1
+        next_checkpoint_refresh = 0.0
+        refresh_interval = min(
+            1.0,
+            max(0.25, manager.consumer_lease_seconds / 3),
+        )
         try:
-            while not self._wake_stop.wait(0.05):
-                ready = False
-                for checkpoint in self.runtime.run_store.iter_checkpoints():
-                    snapshot = checkpoint.get("context") or {}
-                    continuation = checkpoint.get("continuation") or {}
-                    if (
-                        snapshot.get("phase") != RunPhase.INDEXING.value
-                        or continuation.get("parked") is not True
-                    ):
-                        continue
-                    task_id = str(snapshot.get("task_id", ""))
-                    job_id = str(continuation.get("job_id", ""))
-                    if not task_id or not job_id:
-                        continue
-                    try:
-                        if manager.ready_for_resume(job_id, task_id):
-                            ready = True
-                        else:
-                            manager.renew_consumer(job_id, task_id)
-                    except (FileNotFoundError, RuntimeError, ValueError) as exc:
+            while not self._wake_stop.wait(0.25):
+                notifications, notification_offset = manager.read_notifications(
+                    notification_offset
+                )
+                self._wake_notification_reads += 1
+                for notification in notifications:
+                    if notification.get("event") == "notification_invalid":
                         self.runtime.audit.append(
-                            "repository_wake_failed",
-                            task_id=task_id,
-                            job_id=job_id,
-                            error=f"{type(exc).__name__}: {exc}",
+                            "repository_wake_notification_invalid",
+                            error=notification.get("error"),
+                            raw_digest=notification.get("raw_digest"),
                         )
+                        continue
+                    job_id = str(notification.get("job_id", ""))
+                    if notification.get("event") == "job_terminal" and job_id:
+                        terminal_jobs.add(job_id)
+                    elif notification.get("event") == "consumer_cancelled":
+                        consumer_id = str(notification.get("consumer_id", ""))
+                        if job_id and consumer_id:
+                            cancelled_consumers.add((job_id, consumer_id))
+
+                now = time.monotonic()
+                generation = self.runtime.run_store.event_generation
+                refresh_due = (
+                    generation != observed_generation
+                    or now >= next_checkpoint_refresh
+                )
+                if refresh_due:
+                    parked = self._parked_repository_tasks()
+                    active_jobs = set(parked.values())
+                    terminal_jobs.intersection_update(active_jobs)
+                    cancelled_consumers.intersection_update(
+                        (job_id, task_id) for task_id, job_id in parked.items()
+                    )
+                    observed_generation = generation
+                    next_checkpoint_refresh = now + refresh_interval
+
+                ready = any(
+                    job_id in terminal_jobs
+                    or (job_id, task_id) in cancelled_consumers
+                    for task_id, job_id in parked.items()
+                )
+                if refresh_due and not ready:
+                    for task_id, job_id in parked.items():
+                        # Lease-bound refresh is the correctness fallback for a
+                        # lost wake hint or another process writing the journal.
+                        try:
+                            if manager.ready_for_resume(job_id, task_id):
+                                ready = True
+                            else:
+                                manager.renew_consumer(job_id, task_id)
+                        except (FileNotFoundError, RuntimeError, ValueError) as exc:
+                            self.runtime.audit.append(
+                                "repository_wake_failed",
+                                task_id=task_id,
+                                job_id=job_id,
+                                error=f"{type(exc).__name__}: {exc}",
+                            )
                 if ready:
+                    self.runtime.audit.append(
+                        "repository_wake_notification",
+                        parked_tasks=len(parked),
+                        terminal_notifications=len(terminal_jobs),
+                        cancellation_notifications=len(cancelled_consumers),
+                    )
                     self.runtime.recover_pending()
+                    # Recovery writes checkpoints and may settle several tasks;
+                    # refresh the parked set on the next loop.
+                    observed_generation = -1
         finally:
             with self._task_lock:
                 if self._wake_thread is threading.current_thread():
                     self._wake_thread = None
 
     def _has_parked_repository_task(self) -> bool:
+        return bool(self._parked_repository_tasks())
+
+    def _parked_repository_tasks(self) -> dict[str, str]:
+        parked: dict[str, str] = {}
+        self._wake_checkpoint_scans += 1
         for checkpoint in self.runtime.run_store.iter_checkpoints():
             snapshot = checkpoint.get("context") or {}
             continuation = checkpoint.get("continuation") or {}
@@ -238,8 +296,11 @@ class Gateway:
                 snapshot.get("phase") == RunPhase.INDEXING.value
                 and continuation.get("parked") is True
             ):
-                return True
-        return False
+                task_id = str(snapshot.get("task_id", ""))
+                job_id = str(continuation.get("job_id", ""))
+                if task_id and job_id:
+                    parked[task_id] = job_id
+        return parked
 
     def task_status(self, task_id: str) -> dict | None:
         """Read the authoritative persisted checkpoint for a submitted task."""
@@ -344,6 +405,34 @@ class Gateway:
         if not known:
             known = self.runtime.run_store.load(task_id) is not None
         return () if known else None
+
+    def task_event_page(
+        self,
+        task_id: str,
+        *,
+        after: int = 0,
+        limit: int = 200,
+        wait_seconds: float = 0.0,
+    ) -> tuple[tuple[dict, ...], int, bool] | None:
+        """Read or long-poll one page of the durable task event journal."""
+
+        page = self.runtime.run_store.event_page(task_id, after=after, limit=limit)
+        if page[0] or page[2]:
+            return page
+        with self._task_lock:
+            known = task_id in self._task_threads
+        if not known:
+            known = self.runtime.run_store.load(task_id) is not None
+        if not known:
+            return None
+        if wait_seconds > 0:
+            return self.runtime.run_store.wait_for_events(
+                task_id,
+                after=after,
+                limit=limit,
+                timeout=wait_seconds,
+            )
+        return page
 
     def cancel_task(self, task_id: str) -> dict:
         checkpoint = self.runtime.run_store.load(task_id)

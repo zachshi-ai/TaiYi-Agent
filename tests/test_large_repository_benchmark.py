@@ -12,12 +12,34 @@ from taiyi.benchmark.large_repository import (
 )
 from taiyi.benchmark.schema import (
     DURABLE_INDEX_VALIDATION_SCHEMA,
+    DURABLE_EVENT_VALIDATION_SCHEMA,
     LARGE_REPO_MANIFEST_SCHEMA,
     LARGE_REPO_RECEIPT_SCHEMA,
     LARGE_REPO_REPORT_SCHEMA,
     PARKED_INDEX_VALIDATION_SCHEMA,
     verify_artifact,
 )
+
+
+def test_committed_durable_event_validation_is_signed_and_reconnectable():
+    path = Path(
+        "research/benchmark/results/durable-events-kubernetes-v1/validation.json"
+    )
+    payload = verify_artifact(
+        json.loads(path.read_text(encoding="utf-8")),
+        schema_version=DURABLE_EVENT_VALIDATION_SCHEMA,
+    )
+
+    assert payload["measurement_scope"] == "taiyi_durable_event_delivery"
+    assert payload["source"]["file_count"] == 25_683
+    assert payload["source"]["git_head"] == (
+        "52ba90138eb40cab0987dac73e05c838149bdd1c"
+    )
+    assert payload["assertions"]["no_event_replay_after_reconnect"] is True
+    assert payload["assertions"]["one_authoritative_job_notification"] is True
+    assert payload["assertions"]["same_job_after_wake"] is True
+    assert payload["assertions"]["settled_after_sse_reconnect"] is True
+    assert payload["ranking_eligible"] is False
 
 
 def test_committed_parked_index_validation_is_signed_and_real_scale():

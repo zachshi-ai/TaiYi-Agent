@@ -52,7 +52,10 @@ class RepositoryIndexJobManager:
     ):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self.jobs = JobStore(self.root / "jobs")
+        self.jobs = JobStore(
+            self.root / "jobs",
+            notification_path=self.root / "notifications.jsonl",
+        )
         self.heartbeat_interval = max(0.05, float(heartbeat_interval))
         self.poll_interval = max(0.01, float(poll_interval))
         # Deterministic fault/parking tests use this; production leaves it zero.
@@ -195,6 +198,15 @@ class RepositoryIndexJobManager:
             "consumer_id": consumer_id,
             "cancelled_at": time.time(),
         })
+        current = self.jobs.poll(job_id)
+        self.jobs.append_notification(
+            event="consumer_cancelled",
+            job_id=job_id,
+            operation_id=current.operation_id,
+            status=current.status.value,
+            failure_kind=current.failure_kind,
+            consumer_id=consumer_id,
+        )
         attachment_dir = self.root / "attachments" / job_id
         other_consumers = False
         for path in attachment_dir.glob("*.json"):
@@ -206,7 +218,7 @@ class RepositoryIndexJobManager:
                 other_consumers = True
                 break
         if other_consumers:
-            return self.jobs.poll(job_id), True
+            return current, True
         return self.jobs.cancel(job_id), False
 
     def renew_consumer(self, job_id: str, consumer_id: str) -> None:
@@ -219,11 +231,11 @@ class RepositoryIndexJobManager:
             remaining = 0.0
         if remaining > self.consumer_lease_seconds * 2 / 3:
             return
-        self._write_attachment(
-            job_id,
-            consumer_id,
-            attached_at=float(existing.get("attached_at", now)),
-        )
+        try:
+            attached_at = float(existing.get("attached_at", now))
+        except (TypeError, ValueError):
+            attached_at = now
+        self._write_attachment(job_id, consumer_id, attached_at=attached_at)
 
     def consumer_cancelled(self, job_id: str, consumer_id: str) -> bool:
         return self._cancellation_path(job_id, consumer_id).exists()
@@ -240,6 +252,9 @@ class RepositoryIndexJobManager:
                 path.unlink(missing_ok=True)
                 removed += 1
         return removed
+
+    def read_notifications(self, after_offset: int = 0) -> tuple[tuple[dict, ...], int]:
+        return self.jobs.read_notifications(after_offset)
 
     def _settle(
         self,

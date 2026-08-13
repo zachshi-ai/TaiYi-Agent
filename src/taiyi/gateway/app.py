@@ -8,12 +8,23 @@ why the gateway is testable without binding a socket.
 from __future__ import annotations
 
 import json
+import math
+from dataclasses import dataclass
+from typing import Iterable
 from urllib.parse import parse_qs, urlsplit
 
 from taiyi.gateway.auth import AuthPolicy, RateLimiter
 from taiyi.gateway.core import Gateway
 from taiyi.gateway.openai_compat import last_user_message, to_openai_response
 from taiyi.runtime import TaskContext
+
+
+@dataclass(frozen=True)
+class EventStream:
+    """Transport-neutral server-sent event body."""
+
+    body: Iterable[bytes]
+    content_type: str = "text/event-stream; charset=utf-8"
 
 
 def task_summary(ctx: TaskContext) -> dict:
@@ -92,7 +103,7 @@ class GatewayApp:
             return self._tasks(payload)
         if path.startswith("/v1/tasks/"):
             if method == "GET" and path.endswith("/events"):
-                return self._task_events(path, query)
+                return self._task_events(path, query, headers)
             if method == "POST" and path.endswith("/cancel"):
                 return self._cancel_task(path)
             if method == "POST" and path.endswith("/effects/resolve"):
@@ -197,30 +208,128 @@ class GatewayApp:
             return 404, {"error": f"unknown task: {parts[2]}"}
         return 200, status
 
-    def _task_events(self, path: str, query: dict[str, list[str]]) -> tuple[int, dict]:
+    def _task_events(
+        self,
+        path: str,
+        query: dict[str, list[str]],
+        headers,
+    ) -> tuple[int, dict | EventStream]:
         parts = path.strip("/").split("/")
         if len(parts) != 4 or parts[:2] != ["v1", "tasks"] or parts[3] != "events":
             return 404, {"error": "not found"}
         try:
-            events = self.gateway.task_events(parts[2])
+            supplied_after = query.get("after", [None])[0]
+            if supplied_after is None:
+                supplied_after = self._header(headers, "Last-Event-ID") or "0"
+            after = max(0, int(supplied_after))
+            limit = min(1000, max(1, int(query.get("limit", ["200"])[0])))
+            requested_wait = float(query.get("wait", ["0"])[0])
+            requested_heartbeat = float(query.get("heartbeat", ["15"])[0])
+            if not math.isfinite(requested_wait) or not math.isfinite(
+                requested_heartbeat
+            ):
+                raise ValueError
+            wait_seconds = min(30.0, max(0.0, requested_wait))
+            heartbeat = min(30.0, max(1.0, requested_heartbeat))
+        except ValueError:
+            return 400, {"error": "after, limit, wait, and heartbeat must be numeric"}
+        accept = self._header(headers, "Accept")
+        stream_requested = (
+            "text/event-stream" in accept
+            or query.get("stream", ["false"])[0].lower() in {"1", "true", "yes"}
+        )
+        try:
+            page = self.gateway.task_event_page(
+                parts[2], after=after, limit=limit, wait_seconds=0
+            )
         except (ValueError, RuntimeError) as exc:
             return 409, {"error": str(exc)}
-        if events is None:
+        if page is None:
             return 404, {"error": f"unknown task: {parts[2]}"}
-        try:
-            after = max(0, int(query.get("after", ["0"])[0]))
-            limit = min(1000, max(1, int(query.get("limit", ["200"])[0])))
-        except ValueError:
-            return 400, {"error": "after and limit must be integers"}
-        pending = [event for event in events if int(event.get("revision", 0)) > after]
-        selected = pending[:limit]
-        next_after = int(selected[-1]["revision"]) if selected else after
+        if stream_requested:
+            return 200, EventStream(
+                self._event_stream(parts[2], after=after, limit=limit, heartbeat=heartbeat)
+            )
+        current_status = self.gateway.task_status(parts[2])
+        if (
+            wait_seconds > 0
+            and not page[0]
+            and not (current_status and current_status.get("settled") is True)
+        ):
+            try:
+                page = self.gateway.task_event_page(
+                    parts[2],
+                    after=after,
+                    limit=limit,
+                    wait_seconds=wait_seconds,
+                )
+            except (ValueError, RuntimeError) as exc:
+                return 409, {"error": str(exc)}
+            assert page is not None
+        selected, next_after, has_more = page
         return 200, {
             "task_id": parts[2],
-            "events": selected,
+            "events": list(selected),
             "next_after": next_after,
-            "has_more": len(pending) > len(selected),
+            "has_more": has_more,
         }
+
+    def _event_stream(self, task_id: str, *, after: int, limit: int, heartbeat: float):
+        cursor = after
+        while True:
+            page = self.gateway.task_event_page(
+                task_id,
+                after=cursor,
+                limit=limit,
+                wait_seconds=0,
+            )
+            if page is None:
+                return
+            events, next_after, has_more = page
+            if not events:
+                status = self.gateway.task_status(task_id)
+                if status is None or status.get("settled") is True:
+                    return
+                page = self.gateway.task_event_page(
+                    task_id,
+                    after=cursor,
+                    limit=limit,
+                    wait_seconds=heartbeat,
+                )
+                if page is None:
+                    return
+                events, next_after, has_more = page
+                if not events:
+                    yield b": keep-alive\n\n"
+                    continue
+            for event in events:
+                revision = int(event["revision"])
+                event_name = str(event.get("event") or "message").replace("\n", "_")
+                data = json.dumps(
+                    event,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+                yield (
+                    f"id: {revision}\nevent: {event_name}\ndata: {data}\n\n"
+                ).encode("utf-8")
+                cursor = revision
+                if event.get("phase") == "SETTLED":
+                    return
+            if not has_more:
+                cursor = next_after
+
+    @staticmethod
+    def _header(headers, name: str) -> str:
+        if hasattr(headers, "get"):
+            value = headers.get(name)
+            if value is not None:
+                return str(value)
+        lowered = name.lower()
+        for key, value in (headers.items() if hasattr(headers, "items") else ()):
+            if str(key).lower() == lowered:
+                return str(value)
+        return ""
 
     def _cancel_task(self, path: str) -> tuple[int, dict]:
         parts = path.strip("/").split("/")

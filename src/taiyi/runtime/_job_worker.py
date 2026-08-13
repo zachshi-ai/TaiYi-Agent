@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 JOB_SCHEMA_VERSION = "taiyi.job/v2"
+JOB_NOTIFICATION_SCHEMA = "taiyi.job-notification/v1"
 
 
 def _atomic_json(path: Path, payload: dict) -> None:
@@ -38,6 +39,41 @@ def _atomic_json(path: Path, payload: dict) -> None:
         pass
     finally:
         os.close(descriptor)
+
+
+def _append_terminal_notification(request: dict, result: dict) -> None:
+    """Publish a wake hint only after the authoritative result is durable."""
+
+    raw_path = request.get("notification_path")
+    if not raw_path:
+        return
+    payload = {
+        "schema_version": JOB_NOTIFICATION_SCHEMA,
+        "notification_id": f"n_{os.getpid()}_{time.time_ns()}",
+        "timestamp": time.time(),
+        "event": "job_terminal",
+        "job_id": request.get("job_id"),
+        "operation_id": request.get("operation_id"),
+        "status": result.get("status"),
+        "failure_kind": result.get("failure_kind"),
+        "consumer_id": None,
+    }
+    encoded = (
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+    ).encode("utf-8")
+    try:
+        path = Path(str(raw_path))
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            os.write(descriptor, encoded)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        # Notification is an at-least-once wake hint. A failed hint cannot turn
+        # a successfully persisted result into a supervisor failure.
+        return
 
 
 def _process_token(pid: int) -> str | None:
@@ -252,6 +288,7 @@ def supervise(request_path: Path) -> int:
     termination_reason: str | None = None
     termination_escalated = False
     owned_process_group_settled: bool | None = None
+    request: dict = {}
 
     try:
         request = json.loads(request_path.read_text(encoding="utf-8"))
@@ -424,32 +461,31 @@ def supervise(request_path: Path) -> int:
         else:
             status = "FAILED"
             failure_kind = "TOOL_EXIT_NONZERO"
-        _atomic_json(
-            result_path,
-            {
-                "schema_version": JOB_SCHEMA_VERSION,
-                "status": status,
-                "failure_kind": failure_kind,
-                "timeout_kind": timeout_kind,
-                "returncode": returncode,
-                "signal": signal_number,
-                "started_at": started_at,
-                "finished_at": finished_at,
-                "last_output_at": last_output_at,
-                "stdout_bytes": stdout_bytes,
-                "stderr_bytes": stderr_bytes,
-                "stdout_artifact_bytes": int(stdout_result["artifact_bytes"]),
-                "stderr_artifact_bytes": int(stderr_result["artifact_bytes"]),
-                "stdout_digest": stdout_result["digest"],
-                "stderr_digest": stderr_result["digest"],
-                "stdout_artifact_truncated": bool(stdout_result["artifact_truncated"]),
-                "stderr_artifact_truncated": bool(stderr_result["artifact_truncated"]),
-                "termination_reason": termination_reason,
-                "termination_escalated": termination_escalated,
-                "owned_process_group_settled": owned_process_group_settled,
-                "error": error,
-            },
-        )
+        terminal_result = {
+            "schema_version": JOB_SCHEMA_VERSION,
+            "status": status,
+            "failure_kind": failure_kind,
+            "timeout_kind": timeout_kind,
+            "returncode": returncode,
+            "signal": signal_number,
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "last_output_at": last_output_at,
+            "stdout_bytes": stdout_bytes,
+            "stderr_bytes": stderr_bytes,
+            "stdout_artifact_bytes": int(stdout_result["artifact_bytes"]),
+            "stderr_artifact_bytes": int(stderr_result["artifact_bytes"]),
+            "stdout_digest": stdout_result["digest"],
+            "stderr_digest": stderr_result["digest"],
+            "stdout_artifact_truncated": bool(stdout_result["artifact_truncated"]),
+            "stderr_artifact_truncated": bool(stderr_result["artifact_truncated"]),
+            "termination_reason": termination_reason,
+            "termination_escalated": termination_escalated,
+            "owned_process_group_settled": owned_process_group_settled,
+            "error": error,
+        }
+        _atomic_json(result_path, terminal_result)
+        _append_terminal_notification(request, terminal_result)
         return 0
     except BaseException as exc:  # noqa: BLE001 - the parent needs a durable terminal record
         if proc is not None:
@@ -465,36 +501,35 @@ def supervise(request_path: Path) -> int:
             if isinstance(exc, PermissionError)
             else "TOOL_STARTUP_ERROR"
         )
-        _atomic_json(
-            result_path,
-            {
-                "schema_version": JOB_SCHEMA_VERSION,
-                "status": "FAILED",
-                "failure_kind": failure_kind,
-                "timeout_kind": None,
-                "returncode": None,
-                "signal": None,
-                "started_at": started_at,
-                "finished_at": time.time(),
-                "last_output_at": last_output_at,
-                "stdout_bytes": int(stdout_result.get("bytes", stdout_bytes)),
-                "stderr_bytes": int(stderr_result.get("bytes", stderr_bytes)),
-                "stdout_artifact_bytes": int(stdout_result.get("artifact_bytes", 0)),
-                "stderr_artifact_bytes": int(stderr_result.get("artifact_bytes", 0)),
-                "stdout_digest": stdout_result.get("digest"),
-                "stderr_digest": stderr_result.get("digest"),
-                "stdout_artifact_truncated": bool(
-                    stdout_result.get("artifact_truncated", False)
-                ),
-                "stderr_artifact_truncated": bool(
-                    stderr_result.get("artifact_truncated", False)
-                ),
-                "termination_reason": termination_reason,
-                "termination_escalated": termination_escalated,
-                "owned_process_group_settled": owned_process_group_settled,
-                "error": f"{type(exc).__name__}: {exc}",
-            },
-        )
+        terminal_result = {
+            "schema_version": JOB_SCHEMA_VERSION,
+            "status": "FAILED",
+            "failure_kind": failure_kind,
+            "timeout_kind": None,
+            "returncode": None,
+            "signal": None,
+            "started_at": started_at,
+            "finished_at": time.time(),
+            "last_output_at": last_output_at,
+            "stdout_bytes": int(stdout_result.get("bytes", stdout_bytes)),
+            "stderr_bytes": int(stderr_result.get("bytes", stderr_bytes)),
+            "stdout_artifact_bytes": int(stdout_result.get("artifact_bytes", 0)),
+            "stderr_artifact_bytes": int(stderr_result.get("artifact_bytes", 0)),
+            "stdout_digest": stdout_result.get("digest"),
+            "stderr_digest": stderr_result.get("digest"),
+            "stdout_artifact_truncated": bool(
+                stdout_result.get("artifact_truncated", False)
+            ),
+            "stderr_artifact_truncated": bool(
+                stderr_result.get("artifact_truncated", False)
+            ),
+            "termination_reason": termination_reason,
+            "termination_escalated": termination_escalated,
+            "owned_process_group_settled": owned_process_group_settled,
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+        _atomic_json(result_path, terminal_result)
+        _append_terminal_notification(request, terminal_result)
         return 0
 
 

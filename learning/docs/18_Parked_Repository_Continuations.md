@@ -100,8 +100,9 @@ provider SLA or cross-harness ranking.
 
 ## Remaining boundary
 
-The wake loop currently polls local checkpoint and JobRecord files. The next
-step is a durable event notification mechanism with reconnectable SSE for
-clients, followed by distributed task leases and fencing. Connector-specific
-effect authorities and live-provider network-loss verification remain separate
-M18 workstreams.
+Phase 7B2.6 replaces the 50 ms full checkpoint/JobRecord scan with an incremental
+durable notification journal and adds reconnectable SSE for clients. See
+[`19_Durable_Event_Notifications_and_SSE.md`](./19_Durable_Event_Notifications_and_SSE.md).
+The remaining boundary is parking generic long tool-job continuations, followed
+by distributed task leases and fencing. Connector-specific effect authorities
+and live-provider network-loss verification remain separate M18 workstreams.

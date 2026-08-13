@@ -22,6 +22,7 @@ except ImportError:  # pragma: no cover - Windows keeps the in-process lock only
     fcntl = None
 
 JOB_SCHEMA_VERSION = "taiyi.job/v2"
+JOB_NOTIFICATION_SCHEMA = "taiyi.job-notification/v1"
 _SUPPORTED_JOB_SCHEMAS = {"taiyi.job/v1", JOB_SCHEMA_VERSION}
 
 
@@ -112,9 +113,20 @@ class JobRecord:
 class JobStore:
     """Start, observe, cancel, and reattach durable supervisor jobs."""
 
-    def __init__(self, root: str | Path):
+    def __init__(
+        self,
+        root: str | Path,
+        *,
+        notification_path: str | Path | None = None,
+    ):
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.notification_path = (
+            Path(notification_path).resolve()
+            if notification_path is not None
+            else self.root / "notifications.jsonl"
+        )
+        self.notification_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         self._lock = threading.RLock()
 
     def start(
@@ -174,12 +186,15 @@ class JobStore:
             self._write_operation_index(record)
             request = {
                 "schema_version": JOB_SCHEMA_VERSION,
+                "job_id": record.job_id,
+                "operation_id": record.operation_id,
                 "argv": argv_list,
                 "cwd": record.cwd,
                 "hard_timeout": hard_timeout,
                 "idle_timeout": idle_timeout,
                 "artifact_limit": record.artifact_limit,
                 "heartbeat_interval": record.heartbeat_interval,
+                "notification_path": str(self.notification_path),
             }
             request_path = job_dir / "request.json"
             self._atomic_json(request_path, request)
@@ -208,6 +223,13 @@ class JobStore:
                 record.error = f"{type(exc).__name__}: {exc}"
                 record.finished_at = time.time()
                 self._save(record)
+                self.append_notification(
+                    event="job_terminal",
+                    job_id=record.job_id,
+                    operation_id=record.operation_id,
+                    status=record.status.value,
+                    failure_kind=record.failure_kind,
+                )
                 return JobHandle(job_id, operation_id)
 
             record.status = JobStatus.RUNNING
@@ -294,6 +316,7 @@ class JobStore:
                 record.heartbeat_at is not None
                 and time.time() - record.heartbeat_at > stale_after
             )
+            supervisor_lost = False
             if not worker_alive or heartbeat_stale:
                 if heartbeat_stale:
                     escalated, settled = self._terminate_processes(record)
@@ -307,7 +330,16 @@ class JobStore:
                 record.termination_escalated = escalated
                 record.owned_process_group_settled = settled
                 self._settle_without_worker(record, JobStatus.LOST, "TOOL_LOST", reason)
+                supervisor_lost = True
             self._save(record)
+            if supervisor_lost:
+                self.append_notification(
+                    event="job_terminal",
+                    job_id=record.job_id,
+                    operation_id=record.operation_id,
+                    status=record.status.value,
+                    failure_kind=record.failure_kind,
+                )
             return record
 
     def wait(self, job_id: str, *, poll_interval: float = 0.05) -> JobRecord:
@@ -342,7 +374,91 @@ class JobStore:
             "supervisor did not acknowledge cancellation before the deadline",
         )
         self._save(record)
+        self.append_notification(
+            event="job_terminal",
+            job_id=record.job_id,
+            operation_id=record.operation_id,
+            status=record.status.value,
+            failure_kind=record.failure_kind,
+        )
         return record
+
+    def append_notification(
+        self,
+        *,
+        event: str,
+        job_id: str,
+        operation_id: str,
+        status: str | None = None,
+        failure_kind: str | None = None,
+        consumer_id: str | None = None,
+    ) -> None:
+        """Append one fsync'd wake hint; JobRecord remains authoritative."""
+
+        payload = {
+            "schema_version": JOB_NOTIFICATION_SCHEMA,
+            "notification_id": f"n_{uuid.uuid4().hex}",
+            "timestamp": time.time(),
+            "event": str(event),
+            "job_id": str(job_id),
+            "operation_id": str(operation_id),
+            "status": status,
+            "failure_kind": failure_kind,
+            "consumer_id": consumer_id,
+        }
+        encoded = (
+            json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n"
+        ).encode("utf-8")
+        try:
+            descriptor = os.open(
+                self.notification_path,
+                os.O_WRONLY | os.O_CREAT | os.O_APPEND,
+                0o600,
+            )
+            try:
+                os.write(descriptor, encoded)
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError:
+            # The JobRecord/result is authoritative. Wake delivery failure must
+            # never rewrite or mask the actual terminal job outcome.
+            return
+
+    def read_notifications(
+        self,
+        after_offset: int = 0,
+    ) -> tuple[tuple[dict[str, Any], ...], int]:
+        """Read complete append-only wake records after a durable byte cursor."""
+
+        try:
+            size = self.notification_path.stat().st_size
+        except FileNotFoundError:
+            return (), 0
+        offset = max(0, min(int(after_offset), size))
+        with self.notification_path.open("rb") as handle:
+            handle.seek(offset)
+            raw = handle.read()
+        complete_length = raw.rfind(b"\n") + 1
+        if complete_length <= 0:
+            return (), offset
+        records = []
+        for line in raw[:complete_length].splitlines():
+            try:
+                value = json.loads(line)
+                if value.get("schema_version") != JOB_NOTIFICATION_SCHEMA:
+                    raise ValueError("unsupported durable job notification schema")
+            except (json.JSONDecodeError, ValueError) as exc:
+                # Wake hints are not authoritative. Advance past corruption and
+                # let the Gateway audit it, then use JobRecord lease fallback.
+                value = {
+                    "schema_version": JOB_NOTIFICATION_SCHEMA,
+                    "event": "notification_invalid",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "raw_digest": "sha256:" + hashlib.sha256(line).hexdigest(),
+                }
+            records.append(value)
+        return tuple(records), offset + complete_length
 
     def recover(self) -> list[JobRecord]:
         """Refresh every persisted job and return the authoritative records."""
