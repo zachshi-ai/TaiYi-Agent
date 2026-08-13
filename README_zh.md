@@ -138,6 +138,13 @@ Phase 7B2.5 会在异步 Agent 或 Workflow 连接持久索引作业后停泊 co
 耗时 7.129 秒，随后 attempt 2 从同一作业恢复并完成。详见
 [`learning/docs/18_Parked_Repository_Continuations.md`](./learning/docs/18_Parked_Repository_Continuations.md)。
 
+Phase 7B2.6 让唤醒和客户端进度也具备持久协议：supervisor 在权威终态结果 fsync 后追加终态通知，
+Gateway 按字节 cursor 增量消费，不再每 50ms 全量扫描 parked checkpoint 和 JobRecord。任务事件接口
+新增有界长轮询与 SSE，并使用持久 revision 作为事件 id、用 `Last-Event-ID` 断线续传。真实
+Kubernetes 运行在 parked revision 4 后主动断开，重连从 revision 5 开始且没有重放，最终沿用一个
+7.139 秒索引作业在 revision 12 完成。详见
+[`learning/docs/19_Durable_Event_Notifications_and_SSE.md`](./learning/docs/19_Durable_Event_Notifications_and_SSE.md)。
+
 LLM 请求使用独立的可靠性协议。OpenAI 兼容响应以流式方式读取，并分别约束连接、首 token、
 流空闲和单次硬截止。429、5xx、网络和阶段超时可以在模式预算内重试或切换 provider；鉴权失败和
 无效请求立即停止。上下文溢出不会触发 provider failover，而是进入独立的结构化压缩协议。每次失败、退避、切换和恢复都会持久化，进程重启后仍会遵守剩余

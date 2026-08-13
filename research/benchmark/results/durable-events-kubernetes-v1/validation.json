@@ -1,0 +1,70 @@
+{
+  "digest": "sha256:4aecca8b2523f2a5d695b9db27b259db2fd678dead1f00e09690eb0857759a90",
+  "payload": {
+    "assertions": {
+      "first_stream_closed_after_park": true,
+      "full_suite_collected": 404,
+      "full_suite_passed": true,
+      "no_event_replay_after_reconnect": true,
+      "one_authoritative_job_notification": true,
+      "parked_task_thread_released": true,
+      "reconnected_ids_strictly_increasing": true,
+      "same_job_after_wake": true,
+      "settled_after_sse_reconnect": true,
+      "sse_content_type_on_both_connections": true
+    },
+    "delivery": {
+      "disconnected_after_revision": 4,
+      "final_revision": 12,
+      "first_connection_revisions": [
+        1,
+        2,
+        3,
+        4
+      ],
+      "reconnected_first_revision": 5,
+      "reconnected_last_revision": 12,
+      "reconnected_typed_events": [
+        "run_recovered",
+        "repository_index_started",
+        "repository_index_attached",
+        "repository_index_heartbeat",
+        "repository_index_finished",
+        "llm_request_started",
+        "llm_attempt_succeeded",
+        "run_settled"
+      ]
+    },
+    "job": {
+      "attached_unique_job_count": 1,
+      "duration_seconds": 7.139454,
+      "notification_count": 1,
+      "notification_status": "SUCCEEDED",
+      "status": "SUCCEEDED"
+    },
+    "measurement_scope": "taiyi_durable_event_delivery",
+    "observed_date": "2026-08-13",
+    "ranking_eligible": false,
+    "runtime": {
+      "attempts": 2,
+      "final_phase": "SETTLED",
+      "final_state": "COMPLETED",
+      "notification_cursor_bytes": 367,
+      "notification_reads": 28,
+      "park_latency_seconds": 0.017874,
+      "parked_checkpoint_scans": 8,
+      "total_duration_seconds": 7.33775
+    },
+    "source": {
+      "chunk_count": 59825,
+      "file_count": 25683,
+      "git_head": "52ba90138eb40cab0987dac73e05c838149bdd1c",
+      "kind": "pinned_git_checkout",
+      "origin": "https://github.com/kubernetes/kubernetes.git",
+      "query": "type Kubelet struct",
+      "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+      "unsearchable_files": 1492
+    }
+  },
+  "schema_version": "taiyi.durable-event-validation/v1"
+}

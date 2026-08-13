@@ -305,6 +305,15 @@ the 25,683-file job completed in 7.129 seconds, and attempt 2 settled from the
 same job id. See
 [`learning/docs/18_Parked_Repository_Continuations.md`](./learning/docs/18_Parked_Repository_Continuations.md).
 
+Phase 7B2.6 makes those wakes durable and client-visible. Every supervisor emits
+an fsync'd terminal notification after its authoritative result; the Gateway
+incrementally consumes that journal instead of scanning every parked checkpoint
+and JobRecord at 50 ms intervals. Task events now support bounded long polling
+and SSE with revision ids plus `Last-Event-ID` recovery. A real Kubernetes run
+disconnected after parked revision 4, resumed at revision 5 with no replay, and
+settled at revision 12 from one 7.139-second index job. See
+[`learning/docs/19_Durable_Event_Notifications_and_SSE.md`](./learning/docs/19_Durable_Event_Notifications_and_SSE.md).
+
 ### Run it yourself
 
 One command, straight from GitHub (repo is public, no clone needed). pipx is

@@ -240,6 +240,8 @@ class RunStore:
     def __init__(self, base_dir: str | Path | None = None):
         self.base_dir = Path(base_dir) if base_dir is not None else None
         self._lock = threading.RLock()
+        self._events_changed = threading.Condition(self._lock)
+        self._event_generation = 0
         self._task_leases: dict[str, object] = {}
 
     @property
@@ -288,6 +290,8 @@ class RunStore:
                 "digest": checkpoint_digest(context, continuation),
             }
             self._atomic_json(run_dir / "checkpoint.json", checkpoint)
+            self._event_generation += 1
+            self._events_changed.notify_all()
             if phase in {
                 RunPhase.SETTLED,
                 RunPhase.WAITING_APPROVAL,
@@ -404,6 +408,70 @@ class RunStore:
                 )
             events.append(event)
         return tuple(events)
+
+    @property
+    def event_generation(self) -> int:
+        """Process-local change token used to block without losing durable truth."""
+
+        with self._lock:
+            return self._event_generation
+
+    def event_page(
+        self,
+        task_id: str,
+        *,
+        after: int = 0,
+        limit: int = 200,
+    ) -> tuple[tuple[dict[str, Any], ...], int, bool]:
+        """Read one revision-addressed page from the persisted event journal."""
+
+        cursor = max(0, int(after))
+        page_limit = min(1000, max(1, int(limit)))
+        pending = tuple(
+            event
+            for event in self.read_events(task_id)
+            if int(event.get("revision", 0)) > cursor
+        )
+        selected = pending[:page_limit]
+        next_after = int(selected[-1]["revision"]) if selected else cursor
+        return selected, next_after, len(pending) > len(selected)
+
+    def wait_for_events(
+        self,
+        task_id: str,
+        *,
+        after: int = 0,
+        limit: int = 200,
+        timeout: float = 15.0,
+        cross_process_interval: float = 1.0,
+    ) -> tuple[tuple[dict[str, Any], ...], int, bool]:
+        """Block until a newer durable revision exists or the deadline expires.
+
+        Local writers notify the condition immediately. A bounded fallback read
+        observes writers in a different Gateway process; the JSONL journal, not
+        the condition, remains the authoritative source across restart.
+        """
+
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            with self._lock:
+                observed_generation = self._event_generation
+            page = self.event_page(task_id, after=after, limit=limit)
+            if page[0] or page[2]:
+                return page
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return page
+            with self._events_changed:
+                if self._event_generation != observed_generation:
+                    continue
+                self._events_changed.wait_for(
+                    lambda: self._event_generation != observed_generation,
+                    timeout=min(
+                        remaining,
+                        max(0.05, float(cross_process_interval)),
+                    ),
+                )
 
     @staticmethod
     def _validate_checkpoint(data: dict[str, Any], path: Path) -> None:

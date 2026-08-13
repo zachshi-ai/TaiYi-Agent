@@ -241,6 +241,47 @@ def test_durable_index_generation_coalesces_live_work_then_refreshes_next_task(t
     assert next_result.snapshot_id == results[0].snapshot_id
     assert next_result.changed_files == 0
     assert next_result.reused_files == 600
+    notifications, cursor = manager.read_notifications()
+    terminal = [
+        item for item in notifications if item["event"] == "job_terminal"
+    ]
+    assert {item["job_id"] for item in terminal} == {
+        attachments[0][0].job_id,
+        next_attachments[0].job_id,
+    }
+    assert all(item["status"] == "SUCCEEDED" for item in terminal)
+    assert manager.read_notifications(cursor) == ((), cursor)
+
+    partial = {
+        "schema_version": "taiyi.job-notification/v1",
+        "notification_id": "n_partial",
+        "timestamp": time.time(),
+        "event": "job_terminal",
+        "job_id": next_attachments[0].job_id,
+        "operation_id": next_attachments[0].operation_id,
+        "status": "SUCCEEDED",
+        "failure_kind": None,
+        "consumer_id": None,
+    }
+    encoded = (json.dumps(partial) + "\n").encode("utf-8")
+    notification_path = manager.jobs.notification_path
+    assert notification_path is not None
+    with notification_path.open("ab") as handle:
+        handle.write(encoded[: len(encoded) // 2])
+    assert manager.read_notifications(cursor) == ((), cursor)
+    with notification_path.open("ab") as handle:
+        handle.write(encoded[len(encoded) // 2 :])
+    completed, next_cursor = manager.read_notifications(cursor)
+    assert completed == (partial,)
+    assert next_cursor == cursor + len(encoded)
+    with notification_path.open("ab") as handle:
+        handle.write(b"not-json\n")
+        handle.write(encoded)
+    recovered, recovered_cursor = manager.read_notifications(next_cursor)
+    assert recovered[0]["event"] == "notification_invalid"
+    assert recovered[0]["raw_digest"].startswith("sha256:")
+    assert recovered[1] == partial
+    assert recovered_cursor == next_cursor + len(b"not-json\n") + len(encoded)
 
 
 def test_repository_index_worker_failure_has_repository_specific_failure_kind(tmp_path):
@@ -318,6 +359,8 @@ def test_async_repository_index_is_observable_and_cancellable(tmp_path):
     )
     time.sleep(1.05)
     assert manager.prune_expired_consumers(indexing["job"]["job_id"]) == 0
+    assert gateway._wake_notification_reads >= 2
+    assert gateway._wake_checkpoint_scans <= 8
     cancelled = gateway.cancel_task(task_id)
     assert cancelled["cancelled"] is True
     assert cancelled["job"]["job_kind"] == "repository_index"
@@ -521,6 +564,46 @@ def test_workflow_async_repository_index_parks_without_task_waiter(tmp_path):
     gateway.close()
     assert not wake_thread.is_alive()
     assert gateway._wake_thread is None
+
+
+def test_missing_repository_wake_hint_uses_authoritative_lease_fallback(tmp_path):
+    base = tmp_path / "state"
+    workspace = tmp_path / "workspace"
+    _write_repository(workspace)
+    manager = RepositoryIndexJobManager(
+        base / "context" / "index-runtime",
+        heartbeat_interval=0.05,
+        poll_interval=0.01,
+        worker_progress_delay=0.2,
+        consumer_lease_seconds=1.0,
+    )
+    manager.read_notifications = lambda offset=0: ((), offset)
+    provider = _SequenceProvider([LLMResponse(text="fallback recovered")])
+    gateway = build_gateway(
+        base_dir=base,
+        executor=SandboxExecutor(workspace, job_dir=tmp_path / "jobs"),
+        provider=provider,
+        context_engine=ContextEngine(
+            repository=RepositoryContextIndex(
+                workspace, db_path=base / "context" / "repositories.sqlite3"
+            ),
+            base_dir=base,
+            index_jobs=manager,
+        ),
+        validator=False,
+    )
+
+    task_id = gateway.submit_async("inspect frozen_large_repo_target")
+    settled = _wait_status(
+        gateway,
+        task_id,
+        lambda status: status["phase"] == RunPhase.SETTLED.value,
+    )
+
+    assert settled["state"] == TaskState.COMPLETED.value
+    assert settled["final_output"] == "fallback recovered"
+    assert gateway._wake_checkpoint_scans >= 2
+    gateway.close()
 
 
 def test_expired_repository_consumer_lease_is_reclaimed(tmp_path):

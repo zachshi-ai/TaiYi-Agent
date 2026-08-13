@@ -17,7 +17,7 @@ import mimetypes
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from taiyi.gateway.app import GatewayApp
+from taiyi.gateway.app import EventStream, GatewayApp
 
 # API paths are always handled by app.handle; only non-API GETs may be static.
 _API_PREFIXES = ("/v1/", "/healthz", "/metrics")
@@ -43,15 +43,17 @@ def _make_handler(app: GatewayApp, static_dir: Path | None = None):
 
             length = int(self.headers.get("Content-Length") or 0)
             body = self.rfile.read(length).decode("utf-8") if length else ""
-            path = self.path.split("?", 1)[0]
             try:
-                status, data = app.handle(method, path, self.headers, body)
+                status, data = app.handle(method, self.path, self.headers, body)
             except Exception as exc:  # noqa: BLE001
                 # Never let a handler exception drop the connection with no
                 # response — the browser would show a bare "Failed to fetch"
                 # with no clue. Return a 500 with the error instead.
                 status = 500
                 data = {"error": f"{type(exc).__name__}: {exc}"}
+            if isinstance(data, EventStream):
+                self._respond_stream(status, data)
+                return
             if isinstance(data, str):  # e.g. Prometheus /metrics text
                 payload = data.encode("utf-8")
                 content_type = "text/plain; version=0.0.4"
@@ -66,6 +68,22 @@ def _make_handler(app: GatewayApp, static_dir: Path | None = None):
             self.send_header("Content-Length", str(len(payload)))
             self.end_headers()
             self.wfile.write(payload)
+
+        def _respond_stream(self, status: int, stream: EventStream) -> None:
+            self.send_response(status)
+            self.send_header("Content-Type", stream.content_type)
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.close_connection = True
+            try:
+                for chunk in stream.body:
+                    if chunk:
+                        self.wfile.write(chunk)
+                        self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                pass
 
         def _serve_static(self, raw_path: str) -> bool:
             """Serve a file from static_dir. SPA fallback: unknown paths return

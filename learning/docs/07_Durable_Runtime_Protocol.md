@@ -130,6 +130,9 @@ Clients no longer need to hold a synchronous request for a long task:
 - `GET /v1/tasks/<task_id>` returns phase, state, attempt, continuation, and job heartbeat;
 - `GET /v1/tasks/<task_id>/events?after=<revision>&limit=<n>` returns a bounded,
   cursor-based page of the persisted typed progress stream;
+- `wait=<seconds>` blocks that cursor page until a new durable revision, while
+  `Accept: text/event-stream` streams revision-addressed SSE frames and resumes
+  from `Last-Event-ID`;
 - `POST /v1/tasks/<task_id>/cancel` cancels an attached durable job and its process group.
 
 Fault tests exit the gateway immediately after job attachment, construct a new
@@ -161,9 +164,11 @@ and fault matrix: [`08_LLM_Request_Resilience.md`](./08_LLM_Request_Resilience.m
 
 ### Deliberate Phase 4 boundary
 
-Progress is currently reconnectable polling over persisted events, not SSE or
-WebSocket streaming. Retrying an external effect still requires an explicit effect
-class, idempotency contract, and authority-specific post-crash verification.
+Progress is now reconnectable through cursor paging, bounded long polling, and
+SSE over the persisted event journal. Retrying an external effect still requires
+an explicit effect class, idempotency contract, and authority-specific post-crash
+verification. See
+[`19_Durable_Event_Notifications_and_SSE.md`](./19_Durable_Event_Notifications_and_SSE.md).
 
 ## Invariants
 
@@ -179,9 +184,9 @@ class, idempotency contract, and authority-specific post-crash verification.
 
 1. Add connector-specific effect authorities and compensation protocols on top
    of the delivered generic effect ledger.
-2. Add SSE progress streaming on top of the persisted event cursor.
-3. Replace the delivered local polling wake loop with durable event notification
-   and distributed fenced task/consumer leases.
+2. Park generic long tool-job continuations using the delivered durable terminal
+   notification journal.
+3. Add distributed fenced task/consumer leases and shared event fan-out.
 4. Combine the delivered tool-output/process-tree matrix with real-provider
    network loss and a frozen large-repository/context-overflow workload.
 
