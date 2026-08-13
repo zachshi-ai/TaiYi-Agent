@@ -248,6 +248,7 @@ def test_taiyi_comparative_cell_uses_live_http_and_independent_acceptance(tmp_pa
         "file:read",
         "file:write",
     ]
+    assert receipt.evidence["repository_index_enabled"] is False
     assert receipt.evidence["tool_surface_matches"] is True
     assert "failure_phase" not in receipt.to_dict()
     assert "failure_kind" not in receipt.to_dict()

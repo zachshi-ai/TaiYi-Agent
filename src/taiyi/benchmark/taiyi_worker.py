@@ -31,6 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         "effect_statuses": [],
         "model_visible_tools": list(allowed_tools),
         "executor_allowed_tools": list(allowed_tools),
+        "repository_index_enabled": False,
         "error": None,
     }
     try:
@@ -57,6 +58,10 @@ def main(argv: list[str] | None = None) -> int:
             provider=provider,
             validator=False,
             tool_names=list(allowed_tools),
+            # This cell measures model transport and the frozen read/write tool
+            # loop. Repository indexing has its own large-repository matrix and
+            # must not consume this cell's first-token/startup fault budget.
+            repository_index_enabled=False,
             llm_sleep=lambda _delay: None,
         )
         ctx = gateway.submit(args.prompt, operating_mode="balanced")
