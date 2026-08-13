@@ -1,0 +1,27 @@
+{
+  "digest": "sha256:8bc23285d8e05ee3d1b29a108754f94b4c24a2a3ce897c590778722f6a4c5d1b",
+  "payload": {
+    "case_id": "index_process_restart",
+    "claimed_complete": true,
+    "duplicate_effects": 0,
+    "duration_seconds": 6.199604915978853,
+    "error": null,
+    "evidence": {
+      "duplicate_effects": 0,
+      "heartbeat_processed_files": 250,
+      "interrupted_phase": "INDEXING",
+      "partial_snapshot_published": false,
+      "recovered_snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+      "run_recovered_count": 1,
+      "state": "COMPLETED"
+    },
+    "false_completion": false,
+    "manifest_case_digest": "sha256:a9930560e4d8b6f603c22629c067fcd30258cb504d6bcb0a754a8cce00f8ecb5",
+    "measurement_status": "MEASURED",
+    "operating_mode": "efficiency",
+    "protocol_passed": true,
+    "reported_state": "COMPLETED",
+    "run_id": "taiyi-index_process_restart-efficiency-f0bf9504f50e"
+  },
+  "schema_version": "taiyi.large-repo-fault-receipt/v1"
+}

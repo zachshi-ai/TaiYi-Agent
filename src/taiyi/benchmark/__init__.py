@@ -21,6 +21,9 @@ from taiyi.benchmark.schema import (
     TOOL_FAULT_MANIFEST_SCHEMA,
     TOOL_FAULT_RECEIPT_SCHEMA,
     TOOL_FAULT_REPORT_SCHEMA,
+    LARGE_REPO_MANIFEST_SCHEMA,
+    LARGE_REPO_RECEIPT_SCHEMA,
+    LARGE_REPO_REPORT_SCHEMA,
     BenchmarkCase,
     ComparativeReceipt,
     ExpectedOutcome,
@@ -28,6 +31,10 @@ from taiyi.benchmark.schema import (
     MeasurementStatus,
     RunReceipt,
     verify_artifact,
+)
+from taiyi.benchmark.large_repository import (
+    large_repository_manifest,
+    run_large_repository_matrix,
 )
 from taiyi.benchmark.tool_faults import run_tool_fault_matrix, tool_fault_manifest
 
@@ -41,6 +48,9 @@ __all__ = [
     "TOOL_FAULT_MANIFEST_SCHEMA",
     "TOOL_FAULT_RECEIPT_SCHEMA",
     "TOOL_FAULT_REPORT_SCHEMA",
+    "LARGE_REPO_MANIFEST_SCHEMA",
+    "LARGE_REPO_RECEIPT_SCHEMA",
+    "LARGE_REPO_REPORT_SCHEMA",
     "BenchmarkCase",
     "CommandHarnessAdapter",
     "ComparativeReceipt",
@@ -55,6 +65,8 @@ __all__ = [
     "run_protocol_matrix",
     "run_comparative_smoke",
     "run_tool_fault_matrix",
+    "large_repository_manifest",
+    "run_large_repository_matrix",
     "tool_fault_manifest",
     "verify_artifact",
     "write_probe_report",

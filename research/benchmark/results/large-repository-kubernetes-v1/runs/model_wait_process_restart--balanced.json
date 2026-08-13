@@ -1,0 +1,26 @@
+{
+  "digest": "sha256:64e03d7194ef0cf5b761b3adfcb86f770bf63a5a089b543a6d77fdf0d9b4cb8a",
+  "payload": {
+    "case_id": "model_wait_process_restart",
+    "claimed_complete": true,
+    "duplicate_effects": 0,
+    "duration_seconds": 0.7923997920006514,
+    "error": null,
+    "evidence": {
+      "duplicate_effects": 0,
+      "frozen_projection_replayed": true,
+      "interrupted_phase": "LLM_WAITING",
+      "run_recovered_count": 1,
+      "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+      "state": "COMPLETED"
+    },
+    "false_completion": false,
+    "manifest_case_digest": "sha256:48184b426d1f6c0c654a77cf4d7698ff0a7fe39bacfd3cd1930aad9fc59de22a",
+    "measurement_status": "MEASURED",
+    "operating_mode": "balanced",
+    "protocol_passed": true,
+    "reported_state": "COMPLETED",
+    "run_id": "taiyi-model_wait_process_restart-balanced-9f5cd22f34fa"
+  },
+  "schema_version": "taiyi.large-repo-fault-receipt/v1"
+}

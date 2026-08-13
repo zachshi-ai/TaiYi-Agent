@@ -45,7 +45,9 @@ contains:
 - Git `HEAD` when present;
 - the sorted path/content-digest set, including tracked and non-ignored
   untracked files;
-- file, chunk, skipped, and omitted counts plus a `complete` flag.
+- file, chunk, skipped, and omitted counts; `inventory_complete` says whether the
+  bounded path inventory was truncated, while `searchable_complete` separately
+  says whether every inventoried file was text-indexable.
 
 The snapshot id changes if Git `HEAD` changes, including an empty commit, or if
 any indexed file digest changes. Refresh uses size, mtime, and ctime to reuse
@@ -58,6 +60,16 @@ Inventory is bounded and explicit. Binary files, unsupported formats, symlinks,
 oversized files, and build/vendor directories do not silently enter prompts.
 Crossing `repository_index_max_files` records the omitted count and marks the
 snapshot partial instead of claiming complete coverage.
+Binary, oversized, unsupported, or transiently unreadable files are counted as
+`unsearchable_files`. The model receives an explicit coverage warning and is
+forbidden to infer that a path, symbol, or behavior is absent from that content.
+
+Index refresh emits persisted progress heartbeats every bounded file batch. A
+process exit rolls back the unpublished SQLite transaction, and restart rebuilds
+from the last atomic snapshot rather than exposing half an index. Directory FTS
+chunks are rebuilt only when the path set changes; ordinary content refreshes
+reuse them. This distinction removed a large-monorepo path where unchanged
+directory chunks were needlessly deleted and rebuilt before every model turn.
 
 ## Hierarchical, source-traceable retrieval
 
@@ -152,6 +164,9 @@ recovery cannot duplicate a side effect.
 - source path/line/digest retrieval and mode budgets;
 - bounded partial inventories;
 - a 1,200-file index with one-file incremental refresh and database reopen;
+- persisted index heartbeats, transaction rollback, and gateway recovery after
+  process exit during a 600-file refresh;
+- independent inventory/searchability coverage and absence warnings;
 - Git-HEAD-only snapshot changes;
 - artifact-backed compaction, atomic tool pairs, and large-result projection;
 - Agent and Workflow repository injection with the untrusted-user-role boundary;
@@ -185,8 +200,9 @@ specific internal mechanism.
 
 Current deliberate boundaries:
 
-- indexing is synchronous but bounded and observable; a future phase should move
-  refresh to the durable job scheduler for very large monorepos;
+- indexing is synchronous, heartbeat-observable, and restart-safe; a future
+  phase should move refresh to the durable job scheduler so requests can park
+  instead of occupying one gateway worker for very large monorepos;
 - retrieval is lexical/structural, not an embedding claim;
 - token counts are conservative estimates rather than provider tokenizers;
 - the index stores the current snapshot, while the exact per-turn repository

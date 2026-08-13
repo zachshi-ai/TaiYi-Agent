@@ -186,6 +186,7 @@ def _benchmark(args) -> int:
         run_protocol_matrix,
         write_probe_report,
     )
+    from taiyi.benchmark.large_repository import run_large_repository_matrix
     from taiyi.benchmark.tool_faults import run_tool_fault_matrix
 
     if args.action == "protocol":
@@ -251,6 +252,25 @@ def _benchmark(args) -> int:
             "all_protocol_passed": report["all_protocol_passed"],
             "false_completions": report["false_completions"],
             "duplicate_effects": report["duplicate_effects"],
+            "output": str(args.output),
+        }, ensure_ascii=False, indent=2))
+        return 0 if report["all_protocol_passed"] else 1
+
+    if args.action == "large-repo-faults":
+        report = run_large_repository_matrix(
+            args.output,
+            repository=args.repository,
+            query=args.repository_query,
+        )
+        print(json.dumps({
+            "measurement_scope": report["measurement_scope"],
+            "case_count": report["case_count"],
+            "run_count": report["run_count"],
+            "protocol_passed_count": report["protocol_passed_count"],
+            "all_protocol_passed": report["all_protocol_passed"],
+            "false_completions": report["false_completions"],
+            "duplicate_effects": report["duplicate_effects"],
+            "source": report["source"],
             "output": str(args.output),
         }, ensure_ascii=False, indent=2))
         return 0 if report["all_protocol_passed"] else 1
@@ -461,7 +481,10 @@ def main(argv=None) -> int:
     )
     benchmark.add_argument(
         "action",
-        choices=["protocol", "comparative", "faults", "tool-faults", "probe"],
+        choices=[
+            "protocol", "comparative", "faults", "tool-faults",
+            "large-repo-faults", "probe",
+        ],
         help="run TaiYi faults, cross-harness comparisons, or capability probes",
     )
     benchmark.add_argument(
@@ -478,6 +501,16 @@ def main(argv=None) -> int:
         "--openclaw-executable",
         default=None,
         help="explicit OpenClaw CLI path for comparative/fault actions",
+    )
+    benchmark.add_argument(
+        "--repository",
+        default=None,
+        help="pinned real checkout for large-repo-faults (default: deterministic fixture)",
+    )
+    benchmark.add_argument(
+        "--repository-query",
+        default=None,
+        help="known source symbol/path to retrieve in the large repository",
     )
     benchmark.set_defaults(func=_benchmark)
 

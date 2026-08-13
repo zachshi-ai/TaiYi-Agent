@@ -1,0 +1,327 @@
+{
+  "digest": "sha256:71bd66e2d364784ad53aa983b9e6bdf46a8a4854fa2c0fca1392f2b9711f7058",
+  "payload": {
+    "all_protocol_passed": true,
+    "by_mode": {
+      "balanced": {
+        "passed": 4,
+        "runs": 4
+      },
+      "efficiency": {
+        "passed": 4,
+        "runs": 4
+      },
+      "quality": {
+        "passed": 4,
+        "runs": 4
+      }
+    },
+    "case_count": 4,
+    "duplicate_effects": 0,
+    "external_comparison": {
+      "reason": "Pi, OpenClaw, and ZCode are not scored until the same pinned checkout, model transport, context budget, fault boundary, and authoritative checkpoint/effect receipt can be observed.",
+      "status": "NOT_COMPARABLE"
+    },
+    "false_completions": 0,
+    "generated_at": 1786630927.042824,
+    "manifest_digest": "sha256:5d8bb91058f81a2138ccbc8a2a3b37000d49674bd6a0a3b7133e2c207e5c991e",
+    "measurement_scope": "taiyi_large_repository_combined_resilience",
+    "protocol_passed_count": 12,
+    "ranking_eligible": false,
+    "run_count": 12,
+    "runs": [
+      {
+        "case_id": "index_process_restart",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 5.997679958993103,
+        "error": null,
+        "evidence": {
+          "duplicate_effects": 0,
+          "heartbeat_processed_files": 250,
+          "interrupted_phase": "INDEXING",
+          "partial_snapshot_published": false,
+          "recovered_snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+          "run_recovered_count": 1,
+          "state": "COMPLETED"
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:a9930560e4d8b6f603c22629c067fcd30258cb504d6bcb0a754a8cce00f8ecb5",
+        "measurement_status": "MEASURED",
+        "operating_mode": "quality",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-index_process_restart-quality-b556a6bd9068"
+      },
+      {
+        "case_id": "index_process_restart",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 5.962530917022377,
+        "error": null,
+        "evidence": {
+          "duplicate_effects": 0,
+          "heartbeat_processed_files": 250,
+          "interrupted_phase": "INDEXING",
+          "partial_snapshot_published": false,
+          "recovered_snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+          "run_recovered_count": 1,
+          "state": "COMPLETED"
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:a9930560e4d8b6f603c22629c067fcd30258cb504d6bcb0a754a8cce00f8ecb5",
+        "measurement_status": "MEASURED",
+        "operating_mode": "balanced",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-index_process_restart-balanced-eab71edfaa24"
+      },
+      {
+        "case_id": "index_process_restart",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 6.199604915978853,
+        "error": null,
+        "evidence": {
+          "duplicate_effects": 0,
+          "heartbeat_processed_files": 250,
+          "interrupted_phase": "INDEXING",
+          "partial_snapshot_published": false,
+          "recovered_snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+          "run_recovered_count": 1,
+          "state": "COMPLETED"
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:a9930560e4d8b6f603c22629c067fcd30258cb504d6bcb0a754a8cce00f8ecb5",
+        "measurement_status": "MEASURED",
+        "operating_mode": "efficiency",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-index_process_restart-efficiency-f0bf9504f50e"
+      },
+      {
+        "case_id": "frozen_snapshot_first_token_timeout",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 1.357329749967903,
+        "error": null,
+        "evidence": {
+          "directory_chunks_rebuilt": false,
+          "duplicate_effects": 0,
+          "failure_kind": "LLM_FIRST_TOKEN_TIMEOUT",
+          "frozen_projection_reused": true,
+          "llm_calls": 2,
+          "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+          "state": "COMPLETED"
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:d6df5e333ff358f16e5cfa24dcc11bbb4febbf768832d323c9245dd009f54a8c",
+        "measurement_status": "MEASURED",
+        "operating_mode": "quality",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-frozen_snapshot_first_token_timeout-quality-8ccfa0ed1242"
+      },
+      {
+        "case_id": "frozen_snapshot_first_token_timeout",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 0.7264994580182247,
+        "error": null,
+        "evidence": {
+          "directory_chunks_rebuilt": false,
+          "duplicate_effects": 0,
+          "failure_kind": "LLM_FIRST_TOKEN_TIMEOUT",
+          "frozen_projection_reused": true,
+          "llm_calls": 2,
+          "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+          "state": "COMPLETED"
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:d6df5e333ff358f16e5cfa24dcc11bbb4febbf768832d323c9245dd009f54a8c",
+        "measurement_status": "MEASURED",
+        "operating_mode": "balanced",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-frozen_snapshot_first_token_timeout-balanced-feb6ccae68b6"
+      },
+      {
+        "case_id": "frozen_snapshot_first_token_timeout",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 0.7542584170005284,
+        "error": null,
+        "evidence": {
+          "directory_chunks_rebuilt": false,
+          "duplicate_effects": 0,
+          "failure_kind": "LLM_FIRST_TOKEN_TIMEOUT",
+          "frozen_projection_reused": true,
+          "llm_calls": 2,
+          "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+          "state": "COMPLETED"
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:d6df5e333ff358f16e5cfa24dcc11bbb4febbf768832d323c9245dd009f54a8c",
+        "measurement_status": "MEASURED",
+        "operating_mode": "efficiency",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-frozen_snapshot_first_token_timeout-efficiency-6c0e1df96e5d"
+      },
+      {
+        "case_id": "large_tool_output_context_overflow",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 2.7653822079882957,
+        "error": null,
+        "evidence": {
+          "context_compaction_count": 1,
+          "duplicate_effects": 0,
+          "marker_line_count": 1,
+          "output_truncated": true,
+          "overflow_recoveries": 1,
+          "state": "COMPLETED",
+          "stdout_bytes": 100023,
+          "tool_started_count": 1
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:4faf09e4e521e65e98f508a76fba9e71ad99cd0c9b1cbd4282b1c8a1121da2bd",
+        "measurement_status": "MEASURED",
+        "operating_mode": "quality",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-large_tool_output_context_overflow-quality-1fdb0881b81f"
+      },
+      {
+        "case_id": "large_tool_output_context_overflow",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 2.4534568749950267,
+        "error": null,
+        "evidence": {
+          "context_compaction_count": 1,
+          "duplicate_effects": 0,
+          "marker_line_count": 1,
+          "output_truncated": true,
+          "overflow_recoveries": 1,
+          "state": "COMPLETED",
+          "stdout_bytes": 100023,
+          "tool_started_count": 1
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:4faf09e4e521e65e98f508a76fba9e71ad99cd0c9b1cbd4282b1c8a1121da2bd",
+        "measurement_status": "MEASURED",
+        "operating_mode": "balanced",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-large_tool_output_context_overflow-balanced-1f659c4f9a1a"
+      },
+      {
+        "case_id": "large_tool_output_context_overflow",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 2.2925434169592336,
+        "error": null,
+        "evidence": {
+          "context_compaction_count": 1,
+          "duplicate_effects": 0,
+          "marker_line_count": 1,
+          "output_truncated": true,
+          "overflow_recoveries": 1,
+          "state": "COMPLETED",
+          "stdout_bytes": 100023,
+          "tool_started_count": 1
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:4faf09e4e521e65e98f508a76fba9e71ad99cd0c9b1cbd4282b1c8a1121da2bd",
+        "measurement_status": "MEASURED",
+        "operating_mode": "efficiency",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-large_tool_output_context_overflow-efficiency-2595724e75bc"
+      },
+      {
+        "case_id": "model_wait_process_restart",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 0.8333808750030585,
+        "error": null,
+        "evidence": {
+          "duplicate_effects": 0,
+          "frozen_projection_replayed": true,
+          "interrupted_phase": "LLM_WAITING",
+          "run_recovered_count": 1,
+          "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+          "state": "COMPLETED"
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:48184b426d1f6c0c654a77cf4d7698ff0a7fe39bacfd3cd1930aad9fc59de22a",
+        "measurement_status": "MEASURED",
+        "operating_mode": "quality",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-model_wait_process_restart-quality-908a86646d1c"
+      },
+      {
+        "case_id": "model_wait_process_restart",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 0.7923997920006514,
+        "error": null,
+        "evidence": {
+          "duplicate_effects": 0,
+          "frozen_projection_replayed": true,
+          "interrupted_phase": "LLM_WAITING",
+          "run_recovered_count": 1,
+          "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+          "state": "COMPLETED"
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:48184b426d1f6c0c654a77cf4d7698ff0a7fe39bacfd3cd1930aad9fc59de22a",
+        "measurement_status": "MEASURED",
+        "operating_mode": "balanced",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-model_wait_process_restart-balanced-9f5cd22f34fa"
+      },
+      {
+        "case_id": "model_wait_process_restart",
+        "claimed_complete": true,
+        "duplicate_effects": 0,
+        "duration_seconds": 0.7358754170127213,
+        "error": null,
+        "evidence": {
+          "duplicate_effects": 0,
+          "frozen_projection_replayed": true,
+          "interrupted_phase": "LLM_WAITING",
+          "run_recovered_count": 1,
+          "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+          "state": "COMPLETED"
+        },
+        "false_completion": false,
+        "manifest_case_digest": "sha256:48184b426d1f6c0c654a77cf4d7698ff0a7fe39bacfd3cd1930aad9fc59de22a",
+        "measurement_status": "MEASURED",
+        "operating_mode": "efficiency",
+        "protocol_passed": true,
+        "reported_state": "COMPLETED",
+        "run_id": "taiyi-model_wait_process_restart-efficiency-4d90efaabaa1"
+      }
+    ],
+    "source": {
+      "chunk_count": 59825,
+      "complete": true,
+      "file_count": 25683,
+      "git_head": "52ba90138eb40cab0987dac73e05c838149bdd1c",
+      "inventory_complete": true,
+      "kind": "pinned_git_checkout",
+      "omitted_files": 0,
+      "origin": "https://github.com/kubernetes/kubernetes.git",
+      "query": "type Kubelet struct",
+      "searchable_complete": false,
+      "skipped_files": 1492,
+      "snapshot_id": "sha256:0c8150939370149dc60c8c15cb4a03dc09380c9913a42c551c2544f2cc6f7d72",
+      "unsearchable_files": 1492
+    }
+  },
+  "schema_version": "taiyi.large-repo-fault-report/v1"
+}

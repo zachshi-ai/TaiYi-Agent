@@ -70,13 +70,23 @@ class ContextEngine:
     def prompt_budget_tokens(self) -> int:
         return self.context_window_tokens - self.response_reserve_tokens
 
-    def ensure_repository(self, ctx, *, force: bool = False) -> RepositoryIndexResult | None:
+    def ensure_repository(
+        self,
+        ctx,
+        *,
+        force: bool = False,
+        progress=None,
+    ) -> RepositoryIndexResult | None:
         if self.repository is None:
             return None
         state = dict(ctx.repository_context or {})
         latest = self.repository.latest()
         needs_refresh = force or state.get("needs_refresh", latest is None)
-        result = self.repository.refresh() if needs_refresh or latest is None else latest
+        result = (
+            self.repository.refresh(progress=progress)
+            if needs_refresh or latest is None
+            else latest
+        )
         state.update(result.to_dict())
         state["needs_refresh"] = False
         state["status"] = "ready" if result.complete else "partial"
@@ -152,6 +162,15 @@ class ContextEngine:
             "response_reserve_tokens": self.response_reserve_tokens,
             "repository_tokens": repository_context.estimated_tokens if repository_context else 0,
             "repository_snippets": len(repository_context.snippets) if repository_context else 0,
+            "repository_inventory_complete": (
+                repository_context.inventory_complete if repository_context else None
+            ),
+            "repository_unsearchable_files": (
+                repository_context.unsearchable_files if repository_context else 0
+            ),
+            "repository_omitted_files": (
+                repository_context.omitted_files if repository_context else 0
+            ),
         })
         if compaction:
             state["compaction_count"] = int(state.get("compaction_count", 0)) + 1
@@ -190,7 +209,7 @@ class ContextEngine:
 
     @staticmethod
     def _repository_message(context: RepositoryContext | None) -> LLMMessage | None:
-        if context is None or not context.snippets:
+        if context is None or not context.render():
             return None
         # Repository bytes are evidence supplied to the task, never trusted
         # instructions. Keeping them out of the system role is a hard boundary.
