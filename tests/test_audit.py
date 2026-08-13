@@ -1,7 +1,13 @@
 """Tamper-evident audit log."""
 from __future__ import annotations
 
+import multiprocessing
+
 from taiyi.core.audit import AuditLog
+
+
+def _append_from_process(path: str, worker: int) -> None:
+    AuditLog(path).append("worker_event", worker=worker)
 
 
 def test_chain_verifies_when_intact():
@@ -49,3 +55,39 @@ def test_persists_and_reloads_jsonl(tmp_path):
     ok, broken = reloaded.verify()
     assert ok and broken is None
     assert reloaded.records[0].payload["verdict"] == "DENY"
+
+
+def test_stale_audit_instance_reloads_latest_chain_head_before_append(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    first = AuditLog(path)
+    stale = AuditLog(path)
+
+    first.append("first_owner")
+    stale.append("later_owner")
+
+    reloaded = AuditLog(path)
+    assert [record.event for record in reloaded.records] == [
+        "first_owner",
+        "later_owner",
+    ]
+    assert reloaded.verify() == (True, None)
+
+
+def test_concurrent_processes_preserve_one_audit_hash_chain(tmp_path):
+    path = tmp_path / "audit.jsonl"
+    context = multiprocessing.get_context("spawn")
+    processes = [
+        context.Process(target=_append_from_process, args=(str(path), worker))
+        for worker in range(8)
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+
+    assert [process.exitcode for process in processes] == [0] * len(processes)
+    reloaded = AuditLog(path)
+    assert len(reloaded.records) == len(processes)
+    assert sorted(record.payload["worker"] for record in reloaded.records) == list(range(8))
+    assert reloaded.verify() == (True, None)

@@ -58,6 +58,7 @@ from taiyi.runtime.executor import (
 from taiyi.runtime.llm_retry import task_resilient_provider
 from taiyi.runtime.persistence import (
     RunStore,
+    TaskLeaseLostError,
     continuation_steps,
     restore_context,
     workflow_continuation,
@@ -200,6 +201,7 @@ class TaskRuntime:
             self.obs.tasks_total.inc()
 
         parked = False
+        fenced = False
         self._execution_options.park_background_jobs = bool(park_background_jobs)
         try:
             with self._span(trace, "task"):
@@ -207,12 +209,20 @@ class TaskRuntime:
                 self._execute_rounds(ctx, trace)
         except (RepositoryIndexParked, DurableToolParked):
             parked = True
+        except TaskLeaseLostError as exc:
+            fenced = True
+            self.audit.append(
+                "run_fenced",
+                task_id=ctx.task_id,
+                attempt_id=ctx.attempt_id,
+                error=str(exc),
+            )
         except Exception as e:  # noqa: BLE001 — convert any failure into a terminal state
             self._fail(ctx, e)
         finally:
             self._execution_options.park_background_jobs = False
 
-        if parked:
+        if parked or fenced:
             self.run_store.release_task_lease(ctx.task_id)
             return ctx
         self._finish(ctx, start)
@@ -1639,6 +1649,8 @@ class TaskRuntime:
                 error=f"{type(exc).__name__}: {exc}",
             )
             return False
+        if not self.run_store.acquire_task_lease(ctx.task_id, blocking=False):
+            return False
         previous_attempt = ctx.attempt_id
         ctx.attempt_id += 1
         reason = ctx.step_results[-1].reason if ctx.step_results else "restored pending approval"
@@ -1741,6 +1753,7 @@ class TaskRuntime:
         start = time.time()
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         parked = False
+        fenced = False
         self._execution_options.park_background_jobs = bool(
             continuation.get("parked") is True
         )
@@ -1797,11 +1810,19 @@ class TaskRuntime:
                 self._execute_rounds(ctx, trace, start_round=ctx.round + 1)
         except (RepositoryIndexParked, DurableToolParked):
             parked = True
+        except TaskLeaseLostError as exc:
+            fenced = True
+            self.audit.append(
+                "run_fenced",
+                task_id=ctx.task_id,
+                attempt_id=ctx.attempt_id,
+                error=str(exc),
+            )
         except Exception as exc:  # noqa: BLE001 — recovery failures must settle visibly
             self._fail(ctx, exc)
         finally:
             self._execution_options.park_background_jobs = False
-            if not parked:
+            if not parked and not fenced:
                 self._finish(ctx, start)
             self.run_store.release_task_lease(ctx.task_id)
             self._recovery_threads.pop(ctx.task_id, None)

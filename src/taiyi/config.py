@@ -28,6 +28,7 @@ class TaiyiConfig:
     tool_hard_timeout: float = 1800.0    # absolute wall-clock limit per shell job
     tool_idle_timeout: float | None = None # optional no-output deadline per shell job
     job_heartbeat_interval: float = 1.0  # durable supervisor heartbeat cadence
+    task_lease_seconds: float = 30.0     # fenced task ownership expiry
     tool_output_limit: int = 16_384      # model-visible tail
     tool_artifact_limit: int = 8_388_608 # retained bytes per stdout/stderr artifact
     external_git_validation: bool = True # sandbox Git tasks get independent read-only verification
@@ -155,6 +156,8 @@ def _apply_env(cfg: TaiyiConfig) -> TaiyiConfig:
         over["tool_idle_timeout"] = float(env["TAIYI_TOOL_IDLE_TIMEOUT"])
     if env.get("TAIYI_JOB_HEARTBEAT_INTERVAL"):
         over["job_heartbeat_interval"] = float(env["TAIYI_JOB_HEARTBEAT_INTERVAL"])
+    if env.get("TAIYI_TASK_LEASE_SECONDS"):
+        over["task_lease_seconds"] = float(env["TAIYI_TASK_LEASE_SECONDS"])
     if env.get("TAIYI_TOOL_OUTPUT_LIMIT"):
         over["tool_output_limit"] = int(env["TAIYI_TOOL_OUTPUT_LIMIT"])
     if env.get("TAIYI_TOOL_ARTIFACT_LIMIT"):

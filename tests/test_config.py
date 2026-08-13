@@ -72,6 +72,7 @@ def test_operating_mode_env_override(tmp_path, monkeypatch):
     monkeypatch.setenv("TAIYI_TOOL_HARD_TIMEOUT", "900")
     monkeypatch.setenv("TAIYI_TOOL_IDLE_TIMEOUT", "45")
     monkeypatch.setenv("TAIYI_JOB_HEARTBEAT_INTERVAL", "0.5")
+    monkeypatch.setenv("TAIYI_TASK_LEASE_SECONDS", "15")
     monkeypatch.setenv("TAIYI_TOOL_OUTPUT_LIMIT", "8192")
     monkeypatch.setenv("TAIYI_TOOL_ARTIFACT_LIMIT", "1048576")
     monkeypatch.setenv("TAIYI_LLM_CONNECT_TIMEOUT", "5")
@@ -96,6 +97,7 @@ def test_operating_mode_env_override(tmp_path, monkeypatch):
     assert cfg.tool_hard_timeout == 900
     assert cfg.tool_idle_timeout == 45
     assert cfg.job_heartbeat_interval == 0.5
+    assert cfg.task_lease_seconds == 15
     assert cfg.tool_output_limit == 8192
     assert cfg.tool_artifact_limit == 1048576
     assert cfg.llm_connect_timeout == 5
@@ -165,6 +167,7 @@ def test_sandbox_job_settings_are_wired_from_config(tmp_path):
         tool_hard_timeout=321,
         tool_idle_timeout=17,
         job_heartbeat_interval=0.25,
+        task_lease_seconds=12.0,
         tool_output_limit=4096,
         tool_artifact_limit=65536,
         context_window_tokens=64_000,
@@ -182,6 +185,7 @@ def test_sandbox_job_settings_are_wired_from_config(tmp_path):
     assert executor.output_limit == 4096
     assert executor.artifact_limit == 65536
     assert executor.jobs.root == (tmp_path / "state" / "jobs").resolve()
+    assert gw.runtime.run_store.task_lease_seconds == 12.0
     context_engine = gw.runtime.context_engine
     assert context_engine.context_window_tokens == 64_000
     assert context_engine.response_reserve_tokens == 8_000

@@ -30,6 +30,7 @@ DURABLE_INDEX_VALIDATION_SCHEMA = "taiyi.durable-index-validation/v1"
 PARKED_INDEX_VALIDATION_SCHEMA = "taiyi.parked-index-validation/v1"
 DURABLE_EVENT_VALIDATION_SCHEMA = "taiyi.durable-event-validation/v1"
 PARKED_TOOL_VALIDATION_SCHEMA = "taiyi.parked-tool-validation/v1"
+FENCED_TASK_VALIDATION_SCHEMA = "taiyi.fenced-task-validation/v1"
 
 
 class MeasurementStatus(str, Enum):
@@ -226,6 +227,7 @@ __all__ = [
     "COMPARATIVE_WORKER_SCHEMA",
     "DURABLE_INDEX_VALIDATION_SCHEMA",
     "DURABLE_EVENT_VALIDATION_SCHEMA",
+    "FENCED_TASK_VALIDATION_SCHEMA",
     "PARKED_INDEX_VALIDATION_SCHEMA",
     "PARKED_TOOL_VALIDATION_SCHEMA",
     "REPORT_SCHEMA",

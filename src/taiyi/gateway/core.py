@@ -180,12 +180,13 @@ class Gateway:
             if isinstance(self.runtime.executor, EventedExecutor)
             else None
         )
-        if (
-            not self.runtime.run_store.persistent
-            or (repository_jobs is None and tool_jobs is None)
-        ):
+        if not self.runtime.run_store.persistent:
             return
-        if not force and not self._has_parked_durable_task():
+        if (
+            not force
+            and not self._has_parked_durable_task()
+            and not self._has_recoverable_unsettled_task()
+        ):
             return
         with self._task_lock:
             if self._wake_thread is not None:
@@ -221,6 +222,7 @@ class Gateway:
         terminal_jobs: set[tuple[str, str]] = set()
         cancelled_consumers: set[tuple[str, str]] = set()
         parked: dict[str, tuple[str, str]] = {}
+        recoverable: set[str] = set()
         observed_generation = -1
         next_checkpoint_refresh = 0.0
         refresh_interval = (
@@ -277,6 +279,7 @@ class Gateway:
                 )
                 if refresh_due:
                     parked = self._parked_durable_tasks()
+                    recoverable = self._recoverable_unsettled_tasks()
                     active_jobs = set(parked.values())
                     terminal_jobs.intersection_update(active_jobs)
                     cancelled_consumers.intersection_update(
@@ -319,12 +322,19 @@ class Gateway:
                                 job_kind=kind,
                                 error=f"{type(exc).__name__}: {exc}",
                             )
+                    if not ready:
+                        ready = any(
+                            self.runtime.run_store.task_lease(task_id) is None
+                            and self.runtime.run_store.shared_task_lease(task_id) is None
+                            for task_id in recoverable
+                        )
                 if ready:
                     self.runtime.audit.append(
                         "durable_wake_notification",
                         parked_tasks=len(parked),
                         terminal_notifications=len(terminal_jobs),
                         cancellation_notifications=len(cancelled_consumers),
+                        lease_expiry_candidates=len(recoverable),
                     )
                     self.runtime.recover_pending()
                     # Recovery writes checkpoints and may settle several tasks;
@@ -337,6 +347,9 @@ class Gateway:
 
     def _has_parked_durable_task(self) -> bool:
         return bool(self._parked_durable_tasks())
+
+    def _has_recoverable_unsettled_task(self) -> bool:
+        return bool(self._recoverable_unsettled_tasks())
 
     def _parked_durable_tasks(self) -> dict[str, tuple[str, str]]:
         parked: dict[str, tuple[str, str]] = {}
@@ -361,6 +374,31 @@ class Gateway:
                 if task_id and job_id:
                     parked[task_id] = ("tool", job_id)
         return parked
+
+    def _recoverable_unsettled_tasks(self) -> set[str]:
+        """Tasks whose next recovery attempt may be waiting for lease expiry."""
+
+        recoverable: set[str] = set()
+        self._wake_checkpoint_scans += 1
+        for checkpoint in self.runtime.run_store.iter_checkpoints():
+            snapshot = checkpoint.get("context") or {}
+            continuation = checkpoint.get("continuation") or {}
+            phase = snapshot.get("phase")
+            if phase in {
+                RunPhase.SETTLED.value,
+                RunPhase.WAITING_APPROVAL.value,
+                RunPhase.WAITING_INPUT.value,
+            }:
+                continue
+            if (
+                continuation.get("parked") is True
+                and phase in {RunPhase.INDEXING.value, RunPhase.TOOL_RUNNING.value}
+            ):
+                continue
+            task_id = str(snapshot.get("task_id", ""))
+            if task_id and continuation:
+                recoverable.add(task_id)
+        return recoverable
 
     def task_status(self, task_id: str) -> dict | None:
         """Read the authoritative persisted checkpoint for a submitted task."""
@@ -405,6 +443,7 @@ class Gateway:
                     )
                     if key in continuation
                 } or None,
+                "write_fence": checkpoint.get("write_fence"),
             }
             job_id = continuation.get("job_id")
             executor = self.runtime.executor
@@ -598,10 +637,11 @@ def build_gateway(
     tool_names: list[str] | None = None,
     llm_sleep=time.sleep,
     llm_clock=time.time,
+    task_lease_seconds: float = 30.0,
 ) -> Gateway:
     base = Path(base_dir) if base_dir else None
     audit = AuditLog(base / "audit.jsonl") if base else AuditLog()
-    run_store = RunStore(base)
+    run_store = RunStore(base, task_lease_seconds=task_lease_seconds)
     resolved_executor = executor if executor is not None else MockExecutor()
     if context_engine is None:
         repository = None
@@ -821,4 +861,5 @@ def build_gateway_from_config(config) -> Gateway:
         repository_index_enabled=config.repository_index_enabled,
         repository_index_max_files=config.repository_index_max_files,
         repository_file_max_bytes=config.repository_file_max_bytes,
+        task_lease_seconds=config.task_lease_seconds,
     )

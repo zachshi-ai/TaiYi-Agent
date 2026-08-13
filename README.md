@@ -325,6 +325,15 @@ checkout, parked in 0.023 seconds, resumed SSE at the next revision, and settled
 from one 2.147-second Job. See
 [`learning/docs/20_Parked_Tool_Continuations.md`](./learning/docs/20_Parked_Tool_Continuations.md).
 
+Phase 7B2.8 replaces process-local task ownership with renewable, monotonically
+fenced leases. Every event and checkpoint records its write token; an owner must
+renew and validate that token inside the lease transaction before it can publish
+another transition. A delayed model response from an expired owner is therefore
+stopped before governance or tool dispatch rather than misreported as a task
+failure. A controlled two-process run advanced ownership from token 1 to 2,
+settled once through the replacement Gateway, and produced no stale file effect.
+See [`learning/docs/21_Fenced_Task_Ownership.md`](./learning/docs/21_Fenced_Task_Ownership.md).
+
 ### Run it yourself
 
 One command, straight from GitHub (repo is public, no clone needed). pipx is
