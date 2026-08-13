@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.1 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.2 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 7B2.1 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 7B2.2 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -434,8 +434,8 @@ writes `SETTLED`, preventing duplicate re-enqueue on another restart.
 
 **Delivered in Phase 2.** Shell tools now run under a persistent supervisor with
 heartbeats, process-group cancellation, separate idle/hard deadlines, exact
-exit/signal attribution, bounded model output, and complete stdout/stderr
-artifacts. Deterministic operation ids are claimed before spawn; the same id
+exit/signal attribution, bounded model output, and stdout/stderr artifacts.
+Deterministic operation ids are claimed before spawn; the same id
 reattaches to the existing job and cannot be rebound to different work. Both
 Workflow and ReAct record the job attachment and typed terminal receipt.
 Fault-oriented tests cover long commands, both timeout classes, cancellation,
@@ -527,11 +527,28 @@ start from masquerading as an LLM failure. The committed baseline has a complete
 `learning/docs/14_Cross_Harness_Fault_Attribution.md` and
 `research/benchmark/results/comparative-faults-v1/`.
 
+**Delivered in Phase 7B2.2.** Production shell jobs now use `taiyi.job/v2` with
+v1 migration, a configurable per-stream artifact limit, continuously drained
+stdout/stderr, complete-stream byte counts and SHA-256 digests, bounded head/tail
+artifacts, and typed output-capture failure. Terminal receipts persist the
+termination reason, TERM-to-KILL escalation, and owned-process-group settlement
+through `JobRecord`, `ExecResult`, events, `StepResult`, and checkpoints. The
+full Runtime preserves both layers when an arbitrary shell fails: the exact
+executor failure remains `original_failure_kind`, while an unprovable external
+effect safely becomes `EFFECT_OUTCOME_UNKNOWN / NEEDS_INPUT`. Five production
+fault cases across all three modes produced 15/15 passing signed receipts, zero
+false completions, and zero duplicate effects. External harnesses remain
+`NOT_COMPARABLE` until they expose the same authoritative controlled-tool
+lifecycle. See `learning/docs/15_Tool_Process_Reliability.md` and
+`research/benchmark/results/tool-faults-v1/`.
+
 **Remaining before M18 is complete.** Connector-specific refund/notification
 authorities and compensation; SSE event streaming; durable/background index
 maintenance for very large monorepos; provider-specific tokenizers; distributed
-leases; and Phase 7B2.2's isolated, same-model real-provider/Pi/OpenClaw/ZCode
-context/huge-output/process-tree/restart/duplicate-effect comparison.
+leases; and Phase 7B2.3's frozen large-repository combination of indexing,
+context growth/compaction, provider interruption, process-tree execution,
+restart, and duplicate-effect checks. Cross-harness cells require a portable
+controlled-tool interface before they can be scored.
 Ambiguous effects remain human-owned until those connector proofs exist. See
 `learning/docs/07_Durable_Runtime_Protocol.md`. **Depends on.** M3–M6, M17.
 

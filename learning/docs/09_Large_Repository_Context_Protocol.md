@@ -95,10 +95,11 @@ context_window_tokens - context_response_reserve_tokens
 ```
 
 Repository retrieval is reduced before any invariant is removed. A large tool
-result is clipped only in the provider projection; the canonical conversation
-stays intact, and the complete stdout/stderr paths remain attached to the typed
-`StepResult`, event, and model observation. This preserves diagnosis and
-independent validation without repeatedly paying to send megabytes to a model.
+result is clipped in the provider projection; the canonical conversation stays
+intact, and bounded stdout/stderr artifact paths plus complete-stream byte
+counts/digests remain attached to the typed `StepResult` and event. This
+preserves diagnosis and identity checks without repeatedly paying to send—or
+indefinitely storing—megabytes of tool output.
 
 If frozen system/contract/goal material alone cannot fit, TaiYi fails with
 `CONTEXT_OVERFLOW`. It does not discard the acceptance contract to keep the run

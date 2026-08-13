@@ -114,8 +114,10 @@ Sandbox shell tools now run under a persistent supervisor rather than a
 30-second blocking subprocess. Each operation gets a stable id before launch;
 repeating that id reattaches to the same job instead of replaying its side
 effect. Heartbeats, process-group cancellation, distinct idle/hard timeouts,
-exact exit/signal status, and full stdout/stderr artifacts make long commands
-observable while only a bounded tail enters model context. A new executor can
+exact exit/signal status, and bounded stdout/stderr artifacts make long commands
+observable while only a smaller tail enters model context. The worker keeps
+draining after the artifact cap and records complete-stream byte counts and
+SHA-256 digests, so storage stays bounded without inventing an idle timeout. A new executor can
 reattach to running work, and a restarted gateway now claims a per-task lease,
 reattaches the existing operation, restores the frozen Workflow plan or ReAct
 conversation, and continues from the exact next step. `POST /v1/tasks` also
@@ -255,6 +257,17 @@ overall timeout can expire before OpenClaw has contacted the model; they are
 diagnostic evidence, not a productivity ranking. See
 [`learning/docs/14_Cross_Harness_Fault_Attribution.md`](./learning/docs/14_Cross_Harness_Fault_Attribution.md).
 
+Phase 7B2.2 moves that diagnosis into the production tool runtime. Five real
+process faults run under all three operating modes: a SIGTERM-resistant process
+tree, a silent idle timeout, stdout/stderr flood, a lingering descendant, and a
+gateway restart after job attach. The signed 15-cell baseline has 15/15 protocol
+passes, zero false completions, and zero duplicate effects. Arbitrary shell
+timeouts keep their exact executor failure while safely escalating an unknown
+external effect to `NEEDS_INPUT`. Pi, OpenClaw, and ZCode remain
+`NOT_COMPARABLE` for this layer until they expose the same authoritative
+controlled-tool lifecycle. See
+[`learning/docs/15_Tool_Process_Reliability.md`](./learning/docs/15_Tool_Process_Reliability.md).
+
 ### Run it yourself
 
 One command, straight from GitHub (repo is public, no clone needed). pipx is
@@ -357,6 +370,8 @@ taiyi benchmark faults \
   --pi-executable /path/to/pinned/pi \
   --openclaw-executable /path/to/pinned/openclaw \
   --output research/benchmark/results/comparative-faults-v1
+taiyi benchmark tool-faults \
+  --output research/benchmark/results/tool-faults-v1
 ```
 
 Expected from the example:

@@ -21,7 +21,8 @@ try:
 except ImportError:  # pragma: no cover - Windows keeps the in-process lock only
     fcntl = None
 
-JOB_SCHEMA_VERSION = "taiyi.job/v1"
+JOB_SCHEMA_VERSION = "taiyi.job/v2"
+_SUPPORTED_JOB_SCHEMAS = {"taiyi.job/v1", JOB_SCHEMA_VERSION}
 
 
 class JobStatus(str, Enum):
@@ -67,6 +68,7 @@ class JobRecord:
     child_pgid: int | None = None
     hard_timeout: float | None = None
     idle_timeout: float | None = None
+    artifact_limit: int = 8_388_608
     heartbeat_interval: float = 1.0
     created_at: float = 0.0
     started_at: float | None = None
@@ -75,8 +77,17 @@ class JobRecord:
     finished_at: float | None = None
     stdout_bytes: int = 0
     stderr_bytes: int = 0
+    stdout_artifact_bytes: int = 0
+    stderr_artifact_bytes: int = 0
+    stdout_digest: str | None = None
+    stderr_digest: str | None = None
+    stdout_artifact_truncated: bool = False
+    stderr_artifact_truncated: bool = False
     returncode: int | None = None
     signal: int | None = None
+    termination_reason: str | None = None
+    termination_escalated: bool = False
+    owned_process_group_settled: bool | None = None
     failure_kind: str | None = None
     timeout_kind: str | None = None
     error: str | None = None
@@ -89,9 +100,13 @@ class JobRecord:
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "JobRecord":
         version = data.get("schema_version", JOB_SCHEMA_VERSION)
-        if version != JOB_SCHEMA_VERSION:
+        if version not in _SUPPORTED_JOB_SCHEMAS:
             raise ValueError(f"unsupported job schema: {version!r}")
-        return cls(**{**data, "status": JobStatus(data["status"])})
+        known = cls.__dataclass_fields__
+        migrated = {key: value for key, value in data.items() if key in known}
+        migrated["schema_version"] = JOB_SCHEMA_VERSION
+        migrated["status"] = JobStatus(data["status"])
+        return cls(**migrated)
 
 
 class JobStore:
@@ -112,6 +127,7 @@ class JobStore:
         tool: str,
         hard_timeout: float | None,
         idle_timeout: float | None,
+        artifact_limit: int = 8_388_608,
         heartbeat_interval: float = 1.0,
     ) -> JobHandle:
         """Start once per operation id; repeated calls attach to the same job."""
@@ -147,6 +163,7 @@ class JobStore:
                 environment_digest=environment_digest,
                 hard_timeout=hard_timeout,
                 idle_timeout=idle_timeout,
+                artifact_limit=max(256, int(artifact_limit)),
                 heartbeat_interval=max(0.05, heartbeat_interval),
                 created_at=created_at,
             )
@@ -161,6 +178,7 @@ class JobStore:
                 "cwd": record.cwd,
                 "hard_timeout": hard_timeout,
                 "idle_timeout": idle_timeout,
+                "artifact_limit": record.artifact_limit,
                 "heartbeat_interval": record.heartbeat_interval,
             }
             request_path = job_dir / "request.json"
@@ -220,6 +238,23 @@ class JobStore:
                 record.last_output_at = result.get("last_output_at", record.last_output_at)
                 record.stdout_bytes = int(result.get("stdout_bytes", 0))
                 record.stderr_bytes = int(result.get("stderr_bytes", 0))
+                record.stdout_artifact_bytes = int(result.get("stdout_artifact_bytes", 0))
+                record.stderr_artifact_bytes = int(result.get("stderr_artifact_bytes", 0))
+                record.stdout_digest = result.get("stdout_digest")
+                record.stderr_digest = result.get("stderr_digest")
+                record.stdout_artifact_truncated = bool(
+                    result.get("stdout_artifact_truncated", False)
+                )
+                record.stderr_artifact_truncated = bool(
+                    result.get("stderr_artifact_truncated", False)
+                )
+                record.termination_reason = result.get("termination_reason")
+                record.termination_escalated = bool(
+                    result.get("termination_escalated", False)
+                )
+                record.owned_process_group_settled = result.get(
+                    "owned_process_group_settled"
+                )
                 record.error = result.get("error")
                 self._save(record)
                 return record
@@ -238,6 +273,12 @@ class JobStore:
                 record.child_pgid = heartbeat.get("child_pgid")
                 record.stdout_bytes = int(heartbeat.get("stdout_bytes", 0))
                 record.stderr_bytes = int(heartbeat.get("stderr_bytes", 0))
+                record.stdout_artifact_bytes = int(
+                    heartbeat.get("stdout_artifact_bytes", 0)
+                )
+                record.stderr_artifact_bytes = int(
+                    heartbeat.get("stderr_artifact_bytes", 0)
+                )
 
             startup_grace = max(5.0, record.heartbeat_interval * 5)
             if (
@@ -255,13 +296,16 @@ class JobStore:
             )
             if not worker_alive or heartbeat_stale:
                 if heartbeat_stale:
-                    self._terminate_processes(record)
+                    escalated, settled = self._terminate_processes(record)
                     reason = "durable job supervisor heartbeat became stale"
                 else:
                     # The supervisor owns cancellation in the normal path. If it
                     # vanished first, clean up its independently-sessioned child.
-                    self._terminate_processes(record)
+                    escalated, settled = self._terminate_processes(record)
                     reason = "durable job supervisor exited without a terminal result"
+                record.termination_reason = "supervisor_lost"
+                record.termination_escalated = escalated
+                record.owned_process_group_settled = settled
                 self._settle_without_worker(record, JobStatus.LOST, "TOOL_LOST", reason)
             self._save(record)
             return record
@@ -287,7 +331,10 @@ class JobStore:
 
         # A healthy supervisor acknowledges cancel itself. This is the bounded
         # fail-safe for a wedged supervisor; process tokens prevent PID-reuse kills.
-        self._terminate_processes(record)
+        escalated, settled = self._terminate_processes(record)
+        record.termination_reason = "cancel_failsafe"
+        record.termination_escalated = escalated
+        record.owned_process_group_settled = settled
         self._settle_without_worker(
             record,
             JobStatus.CANCELLED,
@@ -400,12 +447,16 @@ class JobStore:
         record.error = error
         record.finished_at = time.time()
 
-    def _terminate_processes(self, record: JobRecord, grace_seconds: float = 0.5) -> None:
+    def _terminate_processes(
+        self, record: JobRecord, grace_seconds: float = 0.5
+    ) -> tuple[bool, bool]:
         targets = [
             (record.child_pid, record.child_process_token, True),
             (record.worker_pid, record.worker_process_token, True),
         ]
+        escalated = False
         for sig in (signal.SIGTERM, signal.SIGKILL):
+            signalled = False
             for pid, token, process_group in targets:
                 # Never signal an unverified pid: a restarted machine can reuse it.
                 if pid is None or token is None or not self._process_matches(pid, token):
@@ -415,8 +466,11 @@ class JobStore:
                         os.killpg(pid, sig)
                     else:
                         os.kill(pid, sig)
+                    signalled = True
                 except ProcessLookupError:
                     pass
+            if sig == signal.SIGKILL and signalled:
+                escalated = True
             if sig == signal.SIGTERM:
                 deadline = time.monotonic() + grace_seconds
                 while time.monotonic() < deadline:
@@ -426,8 +480,15 @@ class JobStore:
                         and self._process_matches(pid, token)
                         for pid, token, _ in targets
                     ):
-                        return
+                        return escalated, True
                     time.sleep(0.05)
+        settled = not any(
+            pid is not None
+            and token is not None
+            and self._process_matches(pid, token)
+            for pid, token, _ in targets
+        )
+        return escalated, settled
 
     @staticmethod
     def _argv_digest(argv: list[str]) -> str:
@@ -442,7 +503,7 @@ class JobStore:
     @staticmethod
     def _require_schema(payload: dict[str, Any], artifact: str) -> None:
         version = payload.get("schema_version")
-        if version != JOB_SCHEMA_VERSION:
+        if version not in _SUPPORTED_JOB_SCHEMAS:
             raise ValueError(f"unsupported {artifact} schema: {version!r}")
 
     @staticmethod

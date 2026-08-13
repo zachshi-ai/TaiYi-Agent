@@ -1,0 +1,31 @@
+{
+  "digest": "sha256:af8c77e5b29a015a8cd57529ed9e279cf11f0c767c37cb00f00ca49de70c6727",
+  "payload": {
+    "case_evidence_passed": true,
+    "case_id": "gateway_restart_reattach_once",
+    "claimed_complete": true,
+    "duplicate_effects": 0,
+    "duration_seconds": 0.44315999996615574,
+    "error": null,
+    "evidence": {
+      "attempt_id": 2,
+      "job_reattached_count": 1,
+      "marker_line_count": 1,
+      "run_recovered_count": 1,
+      "settled": true,
+      "tool_started_count": 1
+    },
+    "expected_executor_failure_kind": null,
+    "expected_failure_kind": null,
+    "expected_state": "COMPLETED",
+    "failure_kind": null,
+    "false_completion": false,
+    "manifest_case_digest": "sha256:675cfcb807117d3a4ed07bf9b97c4e7a092922cc2757c1c9afeeb623be1bbec6",
+    "measurement_status": "MEASURED",
+    "operating_mode": "quality",
+    "protocol_passed": true,
+    "reported_state": "COMPLETED",
+    "run_id": "taiyi-gateway_restart_reattach_once-quality-cfbceaf80fdf"
+  },
+  "schema_version": "taiyi.tool-fault-receipt/v1"
+}

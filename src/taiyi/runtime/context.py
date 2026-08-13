@@ -29,7 +29,25 @@ class StepResult:
     executed: bool = False
     stdout_artifact: str | None = None
     stderr_artifact: str | None = None
+    job_id: str | None = None
+    exit_code: int | None = None
+    signal: int | None = None
+    failure_kind: str | None = None
+    timeout_kind: str | None = None
+    stdout_bytes: int = 0
+    stderr_bytes: int = 0
+    stdout_artifact_bytes: int = 0
+    stderr_artifact_bytes: int = 0
+    stdout_digest: str | None = None
+    stderr_digest: str | None = None
+    stdout_artifact_truncated: bool = False
+    stderr_artifact_truncated: bool = False
     output_truncated: bool = False
+    termination_reason: str | None = None
+    termination_escalated: bool = False
+    owned_process_group_settled: bool | None = None
+    duration_seconds: float | None = None
+    error: str | None = None
     operation_id: str | None = None
     effect_status: str | None = None
     effect_evidence: str | None = None
@@ -46,7 +64,25 @@ class StepResult:
             "output": self.output,
             "stdout_artifact": self.stdout_artifact,
             "stderr_artifact": self.stderr_artifact,
+            "job_id": self.job_id,
+            "exit_code": self.exit_code,
+            "signal": self.signal,
+            "failure_kind": self.failure_kind,
+            "timeout_kind": self.timeout_kind,
+            "stdout_bytes": self.stdout_bytes,
+            "stderr_bytes": self.stderr_bytes,
+            "stdout_artifact_bytes": self.stdout_artifact_bytes,
+            "stderr_artifact_bytes": self.stderr_artifact_bytes,
+            "stdout_digest": self.stdout_digest,
+            "stderr_digest": self.stderr_digest,
+            "stdout_artifact_truncated": self.stdout_artifact_truncated,
+            "stderr_artifact_truncated": self.stderr_artifact_truncated,
             "output_truncated": self.output_truncated,
+            "termination_reason": self.termination_reason,
+            "termination_escalated": self.termination_escalated,
+            "owned_process_group_settled": self.owned_process_group_settled,
+            "duration_seconds": self.duration_seconds,
+            "error": self.error,
             "operation_id": self.operation_id,
             "effect_status": self.effect_status,
             "effect_evidence": self.effect_evidence,

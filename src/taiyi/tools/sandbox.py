@@ -54,6 +54,7 @@ class SandboxExecutor:
         heartbeat_interval: float = 1.0,
         job_dir: str | Path | None = None,
         output_limit: int = 16_384,
+        artifact_limit: int = 8_388_608,
         backend: str = "local",
         allowed_tools: tuple[str, ...] | None = None,
     ):
@@ -69,6 +70,7 @@ class SandboxExecutor:
             raise ValueError("idle_timeout must be positive")
         self.heartbeat_interval = max(0.05, heartbeat_interval)
         self.output_limit = max(256, output_limit)
+        self.artifact_limit = max(256, artifact_limit)
         self.allowed_tools = (
             frozenset(allowed_tools) if allowed_tools is not None else None
         )
@@ -146,6 +148,7 @@ class SandboxExecutor:
             tool=step.tool,
             hard_timeout=self.hard_timeout,
             idle_timeout=self.idle_timeout,
+            artifact_limit=self.artifact_limit,
             heartbeat_interval=self.heartbeat_interval,
         )
 
@@ -161,7 +164,9 @@ class SandboxExecutor:
 
     def wait(self, job_id: str) -> ExecResult:
         record = self.jobs.wait(job_id)
-        output, truncated = self.jobs.output_tail(job_id, max_bytes=self.output_limit)
+        output, model_tail_truncated = self.jobs.output_tail(
+            job_id, max_bytes=self.output_limit
+        )
         stdout_path, stderr_path = self.jobs.output_paths(job_id)
         if not output:
             output = self._empty_output(record)
@@ -179,7 +184,22 @@ class SandboxExecutor:
             timeout_kind=record.timeout_kind,
             stdout_artifact=str(stdout_path),
             stderr_artifact=str(stderr_path),
-            output_truncated=truncated,
+            stdout_bytes=record.stdout_bytes,
+            stderr_bytes=record.stderr_bytes,
+            stdout_artifact_bytes=record.stdout_artifact_bytes,
+            stderr_artifact_bytes=record.stderr_artifact_bytes,
+            stdout_digest=record.stdout_digest,
+            stderr_digest=record.stderr_digest,
+            stdout_artifact_truncated=record.stdout_artifact_truncated,
+            stderr_artifact_truncated=record.stderr_artifact_truncated,
+            output_truncated=(
+                model_tail_truncated
+                or record.stdout_artifact_truncated
+                or record.stderr_artifact_truncated
+            ),
+            termination_reason=record.termination_reason,
+            termination_escalated=record.termination_escalated,
+            owned_process_group_settled=record.owned_process_group_settled,
             duration_seconds=duration,
             error=record.error,
         )

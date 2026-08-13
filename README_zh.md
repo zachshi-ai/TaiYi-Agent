@@ -67,8 +67,9 @@ Workflow 与 ReAct Agent 在等待人工审批时都会保存计划/对话、已
 
 Sandbox 的 shell 工具现在由独立持久 supervisor 执行，不再受一次 30 秒阻塞调用限制。
 每次操作会在启动前获得稳定 operation id；重复 id 只会重连同一个 job，不会重放副作用。
-心跳、进程组取消、空闲/硬超时、精确退出码或信号、完整 stdout/stderr artifact 共同让
-长命令可观察，同时只把有上限的输出尾部送进模型上下文。新 executor 已可重连运行中的
+心跳、进程组取消、空闲/硬超时、精确退出码或信号、有硬上限的 stdout/stderr artifact 共同让
+长命令可观察，同时只把更小的输出尾部送进模型上下文。artifact 达上限后 worker 仍持续排空，
+并记录完整原始流的字节数和 SHA-256，因此既不会撑满磁盘，也不会把持续输出误判成 idle。新 executor 已可重连运行中的
 job；重启后的网关会先取得任务级 lease，再重连原 operation，恢复冻结的 Workflow 计划或
 ReAct 对话，并从精确的下一步继续。`POST /v1/tasks` 支持 `async=true`，客户端可以查询任务
 状态、类型化事件、job 心跳并取消，不必一直占用原 HTTP 请求。太一不会自动重跑结果不确定的非持久外部副作用。详细设计见
@@ -106,6 +107,13 @@ Phase 7B2.1 进一步注入确定性的首 token 停顿和流中途停顿。TaiY
 Pi 约 0.4 秒。这说明过短的总超时可能在 OpenClaw 尚未接触模型时就到期；该数据用于诊断，
 不是生产效率排名。详见
 [`learning/docs/14_Cross_Harness_Fault_Attribution.md`](./learning/docs/14_Cross_Harness_Fault_Attribution.md)。
+
+Phase 7B2.2 把诊断推进到生产工具执行链：三种模式分别运行了抗拒 SIGTERM 的父子进程树、静默
+idle timeout、stdout/stderr 洪泛、父进程退出后的残留后代，以及 job attach 后网关退出并重启。
+签名基线 15/15 通过，虚假完成与重复副作用均为 0。任意 shell 超时时，底层仍保留精确 executor
+故障；如果无法独立排除外部副作用，顶层会安全升级到 `EFFECT_OUTCOME_UNKNOWN / NEEDS_INPUT`。
+Pi、OpenClaw、ZCode 在没有同一权威受控工具生命周期接口前均标为 `NOT_COMPARABLE`。详见
+[`learning/docs/15_Tool_Process_Reliability.md`](./learning/docs/15_Tool_Process_Reliability.md)。
 
 LLM 请求使用独立的可靠性协议。OpenAI 兼容响应以流式方式读取，并分别约束连接、首 token、
 流空闲和单次硬截止。429、5xx、网络和阶段超时可以在模式预算内重试或切换 provider；鉴权失败和
@@ -188,8 +196,9 @@ api_key: sk-...
 ### 运行测试与示例
 
 ```bash
-python -m pytest                            # 349 测试
+python -m pytest                            # 完整自动化测试
 taiyi verify-skills                        # 执行 3 个内置 Skill 的 9 个质量门案例
+taiyi benchmark tool-faults --output research/benchmark/results/tool-faults-v1
 python3 research/examples/agent_demo.py     # 演示 ReAct loop + 治理拦截
 python3 research/demo/src/main.py           # Phase 0 demo
 ```

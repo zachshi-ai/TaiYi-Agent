@@ -1,6 +1,7 @@
 """Fault-oriented tests for durable, reattachable tool processes."""
 from __future__ import annotations
 
+import hashlib
 import json
 import shlex
 import sys
@@ -11,7 +12,7 @@ import pytest
 
 from taiyi.gateway import build_gateway
 from taiyi.llm import LLMResponse, ScriptedProvider, ToolCall
-from taiyi.runtime import FailureKind, JobStatus, RunPhase, TaskState
+from taiyi.runtime import FailureKind, JobRecord, JobStatus, RunPhase, TaskState
 from taiyi.scheduler import PlanStep
 from taiyi.tools import SandboxExecutor
 
@@ -22,6 +23,7 @@ def _executor(
     hard_timeout: float = 2.0,
     idle_timeout: float | None = None,
     output_limit: int = 16_384,
+    artifact_limit: int = 8_388_608,
 ) -> SandboxExecutor:
     return SandboxExecutor(
         tmp_path / "sandbox",
@@ -30,6 +32,7 @@ def _executor(
         idle_timeout=idle_timeout,
         heartbeat_interval=0.05,
         output_limit=output_limit,
+        artifact_limit=artifact_limit,
     )
 
 
@@ -40,6 +43,23 @@ def _python(code: str) -> PlanStep:
 def _events(base_dir: Path, task_id: str) -> list[dict]:
     path = base_dir / "runs" / task_id / "events.jsonl"
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()]
+
+
+def test_v1_job_record_migrates_with_safe_v2_defaults():
+    record = JobRecord.from_dict({
+        "schema_version": "taiyi.job/v1",
+        "job_id": "j_" + ("a" * 32),
+        "operation_id": "legacy-operation",
+        "tool": "shell:echo",
+        "argv_digest": "sha256:legacy",
+        "cwd": "/workspace",
+        "status": "SUCCEEDED",
+    })
+
+    assert record.schema_version == "taiyi.job/v2"
+    assert record.artifact_limit == 8_388_608
+    assert record.stdout_artifact_truncated is False
+    assert record.owned_process_group_settled is None
 
 
 def test_long_command_runs_under_durable_supervisor(tmp_path):
@@ -133,6 +153,94 @@ def test_large_output_is_bounded_for_model_but_preserved_as_artifact(tmp_path):
     assert result.output_truncated
     assert len(result.output.encode("utf-8")) <= 1024
     assert Path(result.stdout_artifact).stat().st_size == 100000
+    assert result.stdout_bytes == 100000
+    assert result.stdout_digest == "sha256:" + hashlib.sha256(b"x" * 100000).hexdigest()
+
+
+def test_output_flood_keeps_a_bounded_head_tail_artifact_and_full_stream_digest(tmp_path):
+    executor = _executor(
+        tmp_path,
+        output_limit=1024,
+        artifact_limit=4096,
+    )
+    stdout = b"HEAD" + (b"x" * 200_000) + b"TAIL"
+    stderr = b"ERR-HEAD" + (b"y" * 150_000) + b"ERR-TAIL"
+    code = (
+        "import os; "
+        f"os.write(1, {stdout!r}); "
+        f"os.write(2, {stderr!r})"
+    )
+
+    result = executor.execute(_python(code))
+
+    assert result.ok
+    assert result.output_truncated
+    assert result.stdout_artifact_truncated
+    assert result.stderr_artifact_truncated
+    assert result.stdout_bytes == len(stdout)
+    assert result.stderr_bytes == len(stderr)
+    assert result.stdout_digest == "sha256:" + hashlib.sha256(stdout).hexdigest()
+    assert result.stderr_digest == "sha256:" + hashlib.sha256(stderr).hexdigest()
+    stdout_artifact = Path(result.stdout_artifact).read_bytes()
+    stderr_artifact = Path(result.stderr_artifact).read_bytes()
+    assert len(stdout_artifact) <= 4096
+    assert len(stderr_artifact) <= 4096
+    assert stdout_artifact.startswith(b"HEAD") and stdout_artifact.endswith(b"TAIL")
+    assert stderr_artifact.startswith(b"ERR-HEAD") and stderr_artifact.endswith(b"ERR-TAIL")
+    assert b"TAIYI OUTPUT TRUNCATED" in stdout_artifact
+    assert result.stdout_artifact_bytes == len(stdout_artifact)
+    assert result.stderr_artifact_bytes == len(stderr_artifact)
+
+
+def test_continuous_output_after_artifact_cap_does_not_trigger_idle_timeout(tmp_path):
+    executor = _executor(
+        tmp_path,
+        hard_timeout=0.45,
+        idle_timeout=0.15,
+        output_limit=512,
+        artifact_limit=512,
+    )
+    code = (
+        "import os,time\n"
+        "end=time.monotonic()+2\n"
+        "while time.monotonic()<end:\n"
+        " os.write(1,b'x'*65536)\n"
+        " time.sleep(0.02)\n"
+    )
+
+    result = executor.execute(_python(code))
+
+    assert not result.ok
+    assert result.failure_kind == FailureKind.TOOL_HARD_TIMEOUT.value
+    assert result.timeout_kind == "hard"
+    assert result.stdout_artifact_truncated
+    assert result.stdout_bytes > result.stdout_artifact_bytes
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal semantics")
+def test_sigterm_resistant_process_tree_escalates_to_kill_and_settles(tmp_path):
+    executor = _executor(tmp_path, hard_timeout=0.25, idle_timeout=2)
+    child = (
+        "import signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        "time.sleep(10)"
+    )
+    code = (
+        "import signal,subprocess,sys,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"subprocess.Popen([sys.executable, '-c', {child!r}]); "
+        "print('tree-ready', flush=True); "
+        "time.sleep(10)"
+    )
+
+    result = executor.execute(_python(code))
+
+    assert not result.ok
+    assert result.failure_kind == FailureKind.TOOL_HARD_TIMEOUT.value
+    assert result.termination_reason == "hard_timeout"
+    assert result.termination_escalated
+    assert result.owned_process_group_settled is True
+    assert result.signal == 9
 
 
 def test_new_executor_instance_reattaches_to_running_job(tmp_path):
@@ -226,6 +334,8 @@ def test_background_descendant_cannot_escape_the_job_boundary(tmp_path):
     assert result.failure_kind == FailureKind.TOOL_LOST.value
     assert "descendants remained" in result.error
     assert "parent exited" in result.output
+    assert result.termination_reason == "lingering_descendants"
+    assert result.owned_process_group_settled is True
 
 
 @pytest.mark.parametrize("runtime_mode", ["workflow", "agent"])
@@ -259,3 +369,11 @@ def test_runtime_records_job_attachment_and_typed_result(tmp_path, runtime_mode)
     assert finished[-1]["payload"]["job_id"] == attached[-1]["payload"]["job_id"]
     assert finished[-1]["payload"]["exit_code"] == 0
     assert finished[-1]["payload"]["stdout_artifact"]
+    assert finished[-1]["payload"]["stdout_bytes"] == len("durable\n")
+    assert finished[-1]["payload"]["stdout_digest"].startswith("sha256:")
+    checkpoint = json.loads(
+        (base / "runs" / ctx.task_id / "checkpoint.json").read_text(encoding="utf-8")
+    )
+    step = checkpoint["context"]["step_results"][0]
+    assert step["stdout_bytes"] == len("durable\n")
+    assert step["stdout_digest"] == finished[-1]["payload"]["stdout_digest"]

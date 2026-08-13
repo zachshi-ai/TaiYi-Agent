@@ -41,7 +41,6 @@ from taiyi.runtime.effects import (
     ReplayPolicy,
 )
 from taiyi.runtime.executor import (
-    DurableExecutor,
     ExecResult,
     Executor,
     IdempotentExecutor,
@@ -774,7 +773,25 @@ class TaskRuntime:
             sr.output = result.output
             sr.stdout_artifact = result.stdout_artifact
             sr.stderr_artifact = result.stderr_artifact
+            sr.job_id = result.job_id
+            sr.exit_code = result.exit_code
+            sr.signal = result.signal
+            sr.failure_kind = result.failure_kind
+            sr.timeout_kind = result.timeout_kind
+            sr.stdout_bytes = result.stdout_bytes
+            sr.stderr_bytes = result.stderr_bytes
+            sr.stdout_artifact_bytes = result.stdout_artifact_bytes
+            sr.stderr_artifact_bytes = result.stderr_artifact_bytes
+            sr.stdout_digest = result.stdout_digest
+            sr.stderr_digest = result.stderr_digest
+            sr.stdout_artifact_truncated = result.stdout_artifact_truncated
+            sr.stderr_artifact_truncated = result.stderr_artifact_truncated
             sr.output_truncated = result.output_truncated
+            sr.termination_reason = result.termination_reason
+            sr.termination_escalated = result.termination_escalated
+            sr.owned_process_group_settled = result.owned_process_group_settled
+            sr.duration_seconds = result.duration_seconds
+            sr.error = result.error
             sr.operation_id = result.operation_id
             sr.effect_status = result.effect_status
             sr.effect_evidence = result.effect_evidence
@@ -818,7 +835,25 @@ class TaskRuntime:
             sr.output = result.output
             sr.stdout_artifact = result.stdout_artifact
             sr.stderr_artifact = result.stderr_artifact
+            sr.job_id = result.job_id
+            sr.exit_code = result.exit_code
+            sr.signal = result.signal
+            sr.failure_kind = result.failure_kind
+            sr.timeout_kind = result.timeout_kind
+            sr.stdout_bytes = result.stdout_bytes
+            sr.stderr_bytes = result.stderr_bytes
+            sr.stdout_artifact_bytes = result.stdout_artifact_bytes
+            sr.stderr_artifact_bytes = result.stderr_artifact_bytes
+            sr.stdout_digest = result.stdout_digest
+            sr.stderr_digest = result.stderr_digest
+            sr.stdout_artifact_truncated = result.stdout_artifact_truncated
+            sr.stderr_artifact_truncated = result.stderr_artifact_truncated
             sr.output_truncated = result.output_truncated
+            sr.termination_reason = result.termination_reason
+            sr.termination_escalated = result.termination_escalated
+            sr.owned_process_group_settled = result.owned_process_group_settled
+            sr.duration_seconds = result.duration_seconds
+            sr.error = result.error
             sr.operation_id = result.operation_id
             sr.effect_status = result.effect_status
             sr.effect_evidence = result.effect_evidence
@@ -858,7 +893,18 @@ class TaskRuntime:
             timeout_kind=result.timeout_kind,
             stdout_artifact=result.stdout_artifact,
             stderr_artifact=result.stderr_artifact,
+            stdout_bytes=result.stdout_bytes,
+            stderr_bytes=result.stderr_bytes,
+            stdout_artifact_bytes=result.stdout_artifact_bytes,
+            stderr_artifact_bytes=result.stderr_artifact_bytes,
+            stdout_digest=result.stdout_digest,
+            stderr_digest=result.stderr_digest,
+            stdout_artifact_truncated=result.stdout_artifact_truncated,
+            stderr_artifact_truncated=result.stderr_artifact_truncated,
             output_truncated=result.output_truncated,
+            termination_reason=result.termination_reason,
+            termination_escalated=result.termination_escalated,
+            owned_process_group_settled=result.owned_process_group_settled,
             duration_seconds=result.duration_seconds,
             error=result.error,
             recovered=recovered,
@@ -881,6 +927,9 @@ class TaskRuntime:
             failure_kind=result.failure_kind,
             timeout_kind=result.timeout_kind,
             duration_seconds=result.duration_seconds,
+            termination_reason=result.termination_reason,
+            termination_escalated=result.termination_escalated,
+            owned_process_group_settled=result.owned_process_group_settled,
         )
         if result.ok:
             return True

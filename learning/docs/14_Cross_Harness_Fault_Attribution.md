@@ -93,15 +93,18 @@ The output includes two signed manifests, eight signed cell receipts, one signed
 aggregate report, a Markdown report, and sanitized per-cell logs. This layer is
 not a productivity ranking and does not reproduce the user's private repository.
 
-## Next fault layer
+## Following fault layers
 
-Phase 7B2.2 should add the other half of the observed problem:
+Phase 7B2.2 now delivers the production tool-process half:
 
 - a tool process that stalls, exits by signal, or leaves a process tree;
 - bounded stdout/stderr when a command produces very large output;
-- repository indexing and context overflow on a frozen large-repo image;
 - restart/reattach after a tool has started;
 - ambiguous and duplicate-effect traps.
 
-Those cases must preserve the same rule: the owning phase—not an error-message
-substring—decides retry, reattachment, cancellation, or human handoff.
+The 15-cell signed baseline is described in
+[`15_Tool_Process_Reliability.md`](./15_Tool_Process_Reliability.md). Phase
+7B2.3 should combine it with repository indexing, context overflow, and provider
+interruption on a frozen large-repository image. Every layer preserves the same
+rule: the owning phase—not an error-message substring—decides retry,
+reattachment, cancellation, or human handoff.
