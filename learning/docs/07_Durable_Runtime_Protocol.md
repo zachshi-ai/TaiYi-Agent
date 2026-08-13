@@ -173,8 +173,8 @@ class, idempotency contract, and authority-specific post-crash verification.
 1. Add connector-specific effect authorities and compensation protocols on top
    of the delivered generic effect ledger.
 2. Add SSE progress streaming on top of the persisted event cursor.
-3. Move the now-delivered synchronous repository refresh onto the durable job
-   scheduler for very large monorepos.
+3. Replace the delivered lightweight repository-job waiter thread with an
+   event-driven parked continuation and expiring distributed consumer leases.
 4. Combine the delivered tool-output/process-tree matrix with real-provider
    network loss and a frozen large-repository/context-overflow workload.
 

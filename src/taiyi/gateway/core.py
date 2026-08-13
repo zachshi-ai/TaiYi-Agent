@@ -16,7 +16,7 @@ import time
 import uuid
 from pathlib import Path
 
-from taiyi.context import ContextEngine, RepositoryContextIndex
+from taiyi.context import ContextEngine, RepositoryContextIndex, RepositoryIndexJobManager
 from taiyi.core.audit import AuditLog
 from taiyi.governance import GovernanceEngine, LocalPermitClient
 from taiyi.approvals import ApprovalStore
@@ -189,7 +189,16 @@ class Gateway:
             }
             job_id = continuation.get("job_id")
             executor = self.runtime.executor
-            if job_id and hasattr(executor, "poll"):
+            context_engine = self.runtime.context_engine
+            if (
+                job_id
+                and context.get("phase") == "INDEXING"
+                and context_engine is not None
+                and context_engine.index_jobs is not None
+            ):
+                status["job"] = context_engine.poll_repository_job(str(job_id)).to_dict()
+                status["job"]["job_kind"] = "repository_index"
+            elif job_id and hasattr(executor, "poll"):
                 status["job"] = executor.poll(str(job_id)).to_dict()
             return status
 
@@ -238,6 +247,19 @@ class Gateway:
         job_id = continuation.get("job_id")
         if not job_id:
             raise RuntimeError("task has no cancellable durable job attached")
+        if context.get("phase") == "INDEXING":
+            context_engine = self.runtime.context_engine
+            if context_engine is None or context_engine.index_jobs is None:
+                raise RuntimeError("repository index job manager is unavailable")
+            record, shared_job_continues = context_engine.cancel_repository_job(
+                str(job_id), consumer_id=task_id
+            )
+            return {
+                "task_id": task_id,
+                "cancelled": True,
+                "shared_job_continues": shared_job_continues,
+                "job": {**record.to_dict(), "job_kind": "repository_index"},
+            }
         executor = self.runtime.executor
         if not isinstance(executor, RecoverableExecutor):
             raise RuntimeError("executor does not support durable cancellation")
@@ -336,6 +358,11 @@ def build_gateway(
         context_engine = ContextEngine(
             repository=repository,
             base_dir=base,
+            index_jobs=(
+                RepositoryIndexJobManager(base / "context" / "index-runtime")
+                if base is not None and repository is not None
+                else None
+            ),
             context_window_tokens=context_window_tokens,
             response_reserve_tokens=context_response_reserve_tokens,
             tool_result_max_tokens=context_tool_result_max_tokens,

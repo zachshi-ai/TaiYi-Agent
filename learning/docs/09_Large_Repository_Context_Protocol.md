@@ -71,6 +71,13 @@ chunks are rebuilt only when the path set changes; ordinary content refreshes
 reuse them. This distinction removed a large-monorepo path where unchanged
 directory chunks were needlessly deleted and rebuilt before every model turn.
 
+Phase 7B2.4 runs refresh under the durable job supervisor. Concurrent tasks
+coalesce on one live repository generation, a later task advances to a fresh
+generation, and recovery reuses the generation and job id frozen in its
+checkpoint. Subscriber-level cancellation does not terminate a shared index
+needed by another task. See
+[`17_Durable_Repository_Index_Jobs.md`](./17_Durable_Repository_Index_Jobs.md).
+
 ## Hierarchical, source-traceable retrieval
 
 The first implementation is deterministic lexical retrieval:
@@ -200,9 +207,9 @@ specific internal mechanism.
 
 Current deliberate boundaries:
 
-- indexing is synchronous, heartbeat-observable, and restart-safe; a future
-  phase should move refresh to the durable job scheduler so requests can park
-  instead of occupying one gateway worker for very large monorepos;
+- index execution is a durable background process and async HTTP submission can
+  return immediately; one lightweight in-process task waiter still polls it and
+  should become an event-driven parked continuation in a later phase;
 - retrieval is lexical/structural, not an embedding claim;
 - token counts are conservative estimates rather than provider tokenizers;
 - the index stores the current snapshot, while the exact per-turn repository

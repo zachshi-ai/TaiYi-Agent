@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from taiyi.benchmark.large_repository import (
     CASES,
@@ -10,11 +11,31 @@ from taiyi.benchmark.large_repository import (
     run_large_repository_matrix,
 )
 from taiyi.benchmark.schema import (
+    DURABLE_INDEX_VALIDATION_SCHEMA,
     LARGE_REPO_MANIFEST_SCHEMA,
     LARGE_REPO_RECEIPT_SCHEMA,
     LARGE_REPO_REPORT_SCHEMA,
     verify_artifact,
 )
+
+
+def test_committed_durable_index_validation_is_signed_and_real_scale():
+    path = Path(
+        "research/benchmark/results/durable-index-kubernetes-v1/validation.json"
+    )
+    payload = verify_artifact(
+        json.loads(path.read_text(encoding="utf-8")),
+        schema_version=DURABLE_INDEX_VALIDATION_SCHEMA,
+    )
+
+    assert payload["measurement_scope"] == "taiyi_durable_repository_index_jobs"
+    assert payload["source"]["file_count"] == 25_683
+    assert payload["source"]["git_head"] == (
+        "52ba90138eb40cab0987dac73e05c838149bdd1c"
+    )
+    assert payload["assertions"]["distinct_generation_job_ids"] is True
+    assert payload["assertions"]["fresh_scan_after_terminal_generation"] is True
+    assert payload["ranking_eligible"] is False
 
 
 def test_large_repository_manifest_freezes_combined_reliability_floor():

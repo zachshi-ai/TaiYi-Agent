@@ -204,10 +204,12 @@ class RepositoryContextIndex:
         self.repository_id = _sha256(str(self.root).encode("utf-8"))
         if db_path is None:
             db = ":memory:"
+            self.db_path = None
         else:
             db_file = Path(db_path)
             db_file.parent.mkdir(parents=True, exist_ok=True)
             db = str(db_file)
+            self.db_path = db_file.resolve()
         self.conn = sqlite3.connect(db, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()

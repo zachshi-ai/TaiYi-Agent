@@ -20,7 +20,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
 | `src/taiyi/` | **Production code** — reliable runtime, context, governance, execution, and validation modules |
-| `tests/` | 380 passing tests (+ 5 platform skips) covering governance, operating modes, durable jobs/effect recovery, repository context, LLM faults, benchmark contracts, and executable Skill gates |
+| `tests/` | 391 collected tests covering governance, operating modes, durable jobs/effect recovery, repository context, LLM faults, benchmark contracts, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -284,6 +284,16 @@ per refresh; equivalent post-fix cells completed in roughly 1.0–2.5 seconds.
 External harnesses remain `NOT_COMPARABLE` until the same source/model/fault and
 authoritative receipt boundary is observable. See
 [`learning/docs/16_Large_Repository_Combined_Resilience.md`](./learning/docs/16_Large_Repository_Combined_Resilience.md).
+
+Phase 7B2.4 moves repository refresh into the durable supervisor. Concurrent
+tasks share one live generation, later tasks perform a fresh generation, and a
+restarted Gateway reattaches the checkpointed job instead of creating another
+SQLite writer. Cancellation is per task subscriber: it terminates a sole index
+job but cannot break another task sharing the same generation. Status exposes
+the repository JobRecord separately from tool jobs. The production path indexed
+the same pinned 25,683-file Kubernetes checkout in 7.190 seconds and completed
+an unchanged second-generation scan in 0.551 seconds. See
+[`learning/docs/17_Durable_Repository_Index_Jobs.md`](./learning/docs/17_Durable_Repository_Index_Jobs.md).
 
 ### Run it yourself
 
