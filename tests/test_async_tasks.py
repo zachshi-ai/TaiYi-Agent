@@ -6,6 +6,8 @@ import threading
 import time
 import urllib.request
 
+import pytest
+
 from taiyi.gateway import EventStream, GatewayApp, build_gateway
 from taiyi.gateway.server import make_server
 from taiyi.llm import LLMResponse, ScriptedProvider, ToolCall
@@ -125,6 +127,284 @@ def test_async_task_returns_immediately_exposes_progress_and_cancels(tmp_path):
     assert settled["state"] == TaskState.FAILED.value
     assert settled["failure_kind"] == FailureKind.EFFECT_OUTCOME_UNKNOWN.value
     assert settled["settled"] is True
+
+
+@pytest.mark.parametrize("runtime_mode", ["workflow", "agent"])
+def test_async_long_tool_parks_without_a_waiter_and_resumes_same_job_once(
+    tmp_path, runtime_mode
+):
+    base = tmp_path / runtime_mode
+    workspace = base / "workspace"
+    marker = workspace / "marker.txt"
+    executor = SandboxExecutor(
+        workspace,
+        job_dir=base / "jobs",
+        heartbeat_interval=0.05,
+        hard_timeout=10,
+    )
+    code = (
+        "import pathlib,time; time.sleep(0.8); "
+        "p=pathlib.Path('marker.txt'); "
+        "p.write_text((p.read_text() if p.exists() else '')+'once\\n'); "
+        "print('completed')"
+    )
+    responses = [
+        LLMResponse(tool_calls=[ToolCall("shell:python3", ["-c", code])]),
+    ]
+    if runtime_mode == "agent":
+        responses.append(LLMResponse(text="marker verified"))
+    provider = ScriptedProvider(responses)
+    app = GatewayApp(build_gateway(
+        base_dir=base,
+        mode=runtime_mode,
+        executor=executor,
+        provider=provider,
+        validator=False,
+        repository_index_enabled=False,
+    ))
+
+    _, accepted = app.handle(
+        "POST",
+        "/v1/tasks/async",
+        {},
+        json.dumps({"prompt": "write the marker once"}),
+    )
+    task_id = accepted["task_id"]
+    running = _wait_for(
+        app,
+        accepted["status_url"],
+        lambda item: (
+            item["phase"] == RunPhase.TOOL_RUNNING.value
+            and item.get("job", {}).get("status") == "RUNNING"
+            and item.get("continuation", {}).get("parked") is True
+        ),
+    )
+    job_id = running["job"]["job_id"]
+
+    deadline = time.monotonic() + 0.5
+    while task_id in app.gateway._task_threads and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert task_id not in app.gateway._task_threads
+    assert task_id not in app.gateway.runtime._recovery_threads
+    assert executor.poll(job_id).status.value == "RUNNING"
+
+    settled = _wait_for(
+        app,
+        accepted["status_url"],
+        lambda item: item["phase"] == RunPhase.SETTLED.value,
+    )
+    assert settled["state"] == TaskState.COMPLETED.value
+    assert marker.read_text(encoding="utf-8") == "once\n"
+    _, events = app.handle("GET", accepted["events_url"], {}, "")
+    names = [event["event"] for event in events["events"]]
+    assert names.count("tool_job_parked") == 1
+    assert names.count("run_recovered") == 1
+    attached_job_ids = {
+        event["payload"].get("job_id")
+        for event in events["events"]
+        if event["event"] in {"job_attached", "job_reattached"}
+    }
+    assert attached_job_ids == {job_id}
+
+
+def test_missing_tool_wake_hint_falls_back_to_authoritative_job_record(tmp_path):
+    workspace = tmp_path / "workspace"
+    executor = SandboxExecutor(
+        workspace,
+        job_dir=tmp_path / "jobs",
+        heartbeat_interval=0.05,
+    )
+    executor.read_notifications = lambda after_offset=0: ((), after_offset)
+    provider = ScriptedProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "shell:python3",
+            ["-c", "import time; time.sleep(0.2); print('done')"],
+        )]),
+        LLMResponse(text="done"),
+    ])
+    app = GatewayApp(build_gateway(
+        base_dir=tmp_path,
+        mode="agent",
+        executor=executor,
+        provider=provider,
+        validator=False,
+        repository_index_enabled=False,
+    ))
+
+    _, accepted = app.handle(
+        "POST", "/v1/tasks/async", {}, json.dumps({"prompt": "run once"})
+    )
+    settled = _wait_for(
+        app,
+        accepted["status_url"],
+        lambda item: item["phase"] == RunPhase.SETTLED.value,
+        timeout=3,
+    )
+
+    assert settled["state"] == TaskState.COMPLETED.value
+    _, events = app.handle("GET", accepted["events_url"], {}, "")
+    assert [event["event"] for event in events["events"]].count("run_recovered") == 1
+
+
+def test_gateway_restart_wakes_a_parked_tool_without_reexecution(tmp_path):
+    workspace = tmp_path / "workspace"
+    jobs = tmp_path / "jobs"
+    marker = workspace / "restart-marker.txt"
+    code = (
+        "import pathlib,time; time.sleep(0.6); "
+        "p=pathlib.Path('restart-marker.txt'); "
+        "p.write_text((p.read_text() if p.exists() else '')+'once\\n')"
+    )
+    first_executor = SandboxExecutor(
+        workspace,
+        job_dir=jobs,
+        heartbeat_interval=0.05,
+    )
+    first_provider = ScriptedProvider([
+        LLMResponse(tool_calls=[ToolCall("shell:python3", ["-c", code])]),
+    ])
+    first = GatewayApp(build_gateway(
+        base_dir=tmp_path,
+        mode="agent",
+        executor=first_executor,
+        provider=first_provider,
+        validator=False,
+        repository_index_enabled=False,
+    ))
+    _, accepted = first.handle(
+        "POST", "/v1/tasks/async", {}, json.dumps({"prompt": "write once"})
+    )
+    running = _wait_for(
+        first,
+        accepted["status_url"],
+        lambda item: (
+            item["phase"] == RunPhase.TOOL_RUNNING.value
+            and item.get("job", {}).get("status") == "RUNNING"
+            and item.get("continuation", {}).get("parked") is True
+        ),
+    )
+    job_id = running["job"]["job_id"]
+    task_id = accepted["task_id"]
+    deadline = time.monotonic() + 0.5
+    while task_id in first.gateway._task_threads and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert task_id not in first.gateway._task_threads
+    first.gateway.close()
+
+    restarted = GatewayApp(build_gateway(
+        base_dir=tmp_path,
+        mode="agent",
+        executor=SandboxExecutor(
+            workspace,
+            job_dir=jobs,
+            heartbeat_interval=0.05,
+        ),
+        provider=ScriptedProvider([LLMResponse(text="restart marker verified")]),
+        validator=False,
+        repository_index_enabled=False,
+    ))
+    settled = _wait_for(
+        restarted,
+        accepted["status_url"],
+        lambda item: item["phase"] == RunPhase.SETTLED.value,
+    )
+
+    assert settled["state"] == TaskState.COMPLETED.value
+    assert marker.read_text(encoding="utf-8") == "once\n"
+    _, events = restarted.handle("GET", accepted["events_url"], {}, "")
+    attached_job_ids = {
+        event["payload"].get("job_id")
+        for event in events["events"]
+        if event["event"] in {"job_attached", "job_reattached"}
+    }
+    assert attached_job_ids == {job_id}
+    restarted.gateway.close()
+
+
+def test_recovered_agent_reparks_each_later_durable_tool(tmp_path):
+    executor = SandboxExecutor(
+        tmp_path / "workspace",
+        job_dir=tmp_path / "jobs",
+        heartbeat_interval=0.05,
+    )
+    provider = ScriptedProvider([
+        LLMResponse(tool_calls=[ToolCall(
+            "shell:python3", ["-c", "import time; time.sleep(0.2); print('one')"]
+        )]),
+        LLMResponse(tool_calls=[ToolCall(
+            "shell:python3", ["-c", "import time; time.sleep(0.2); print('two')"]
+        )]),
+        LLMResponse(text="both jobs verified"),
+    ])
+    app = GatewayApp(build_gateway(
+        base_dir=tmp_path,
+        mode="agent",
+        executor=executor,
+        provider=provider,
+        validator=False,
+        repository_index_enabled=False,
+    ))
+
+    _, accepted = app.handle(
+        "POST", "/v1/tasks/async", {}, json.dumps({"prompt": "run two jobs"})
+    )
+    settled = _wait_for(
+        app,
+        accepted["status_url"],
+        lambda item: item["phase"] == RunPhase.SETTLED.value,
+    )
+    _, events = app.handle("GET", accepted["events_url"], {}, "")
+    names = [event["event"] for event in events["events"]]
+    job_ids = {
+        event["payload"].get("job_id")
+        for event in events["events"]
+        if event["event"] == "tool_job_parked"
+    }
+
+    assert settled["state"] == TaskState.COMPLETED.value
+    assert names.count("tool_job_parked") == 2
+    assert names.count("run_recovered") == 2
+    assert len(job_ids) == 2
+    assert accepted["task_id"] not in app.gateway._task_threads
+
+
+def test_recovered_workflow_reparks_each_later_durable_tool(tmp_path):
+    executor = SandboxExecutor(
+        tmp_path / "workspace",
+        job_dir=tmp_path / "jobs",
+        heartbeat_interval=0.05,
+    )
+    provider = ScriptedProvider([LLMResponse(tool_calls=[
+        ToolCall(
+            "shell:python3", ["-c", "import time; time.sleep(0.2); print('one')"]
+        ),
+        ToolCall(
+            "shell:python3", ["-c", "import time; time.sleep(0.2); print('two')"]
+        ),
+    ])])
+    app = GatewayApp(build_gateway(
+        base_dir=tmp_path,
+        mode="workflow",
+        executor=executor,
+        provider=provider,
+        validator=False,
+        repository_index_enabled=False,
+    ))
+
+    _, accepted = app.handle(
+        "POST", "/v1/tasks/async", {}, json.dumps({"prompt": "run two jobs"})
+    )
+    settled = _wait_for(
+        app,
+        accepted["status_url"],
+        lambda item: item["phase"] == RunPhase.SETTLED.value,
+    )
+    _, events = app.handle("GET", accepted["events_url"], {}, "")
+    names = [event["event"] for event in events["events"]]
+
+    assert settled["state"] == TaskState.COMPLETED.value
+    assert names.count("tool_job_parked") == 2
+    assert names.count("run_recovered") == 2
 
 
 def test_explicit_async_endpoint_and_unknown_task_status(tmp_path):

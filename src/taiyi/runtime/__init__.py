@@ -21,7 +21,9 @@ from taiyi.runtime.effects import (
     SideEffectClass,
 )
 from taiyi.runtime.executor import (
+    DurableToolParked,
     DurableExecutor,
+    EventedExecutor,
     ExecResult,
     Executor,
     IdempotentExecutor,
@@ -49,6 +51,8 @@ __all__ = [
     "SideEffectClass",
     "Executor",
     "DurableExecutor",
+    "DurableToolParked",
+    "EventedExecutor",
     "IdempotentExecutor",
     "RecoverableExecutor",
     "MockExecutor",

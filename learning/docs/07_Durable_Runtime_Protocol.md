@@ -148,6 +148,12 @@ durable receipt becomes terminal. The same loop renews expiring task-consumer
 attachments; closing the Gateway leaves the worker alive for restart recovery.
 See [`18_Parked_Repository_Continuations.md`](./18_Parked_Repository_Continuations.md).
 
+Phase 7B2.7 applies the same rule to ordinary durable shell tools. Parking is
+allowed only after governance, Effect Ledger dispatch, stable operation id, and
+job attachment are persisted. The shared wake loop resumes a terminal JobRecord;
+it never turns a notification into truth and never launches the command again.
+See [`20_Parked_Tool_Continuations.md`](./20_Parked_Tool_Continuations.md).
+
 ## Phase 4: LLM request resilience
 
 Model requests now continue the same durable protocol. OpenAI-compatible

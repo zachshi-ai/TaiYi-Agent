@@ -29,6 +29,7 @@ LARGE_REPO_REPORT_SCHEMA = "taiyi.large-repo-fault-report/v1"
 DURABLE_INDEX_VALIDATION_SCHEMA = "taiyi.durable-index-validation/v1"
 PARKED_INDEX_VALIDATION_SCHEMA = "taiyi.parked-index-validation/v1"
 DURABLE_EVENT_VALIDATION_SCHEMA = "taiyi.durable-event-validation/v1"
+PARKED_TOOL_VALIDATION_SCHEMA = "taiyi.parked-tool-validation/v1"
 
 
 class MeasurementStatus(str, Enum):
@@ -226,6 +227,7 @@ __all__ = [
     "DURABLE_INDEX_VALIDATION_SCHEMA",
     "DURABLE_EVENT_VALIDATION_SCHEMA",
     "PARKED_INDEX_VALIDATION_SCHEMA",
+    "PARKED_TOOL_VALIDATION_SCHEMA",
     "REPORT_SCHEMA",
     "RECEIPT_SCHEMA",
     "TOOL_FAULT_MANIFEST_SCHEMA",
