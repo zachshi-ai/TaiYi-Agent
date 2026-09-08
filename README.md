@@ -1,5 +1,7 @@
 # 太一 / The One (Taiyi)
 
+> © 2026 zachshi-ai · 保留所有权利 · 仅限学术研究与非商业性使用,禁止任何商业用途;商业授权需作者书面许可。
+
 > An Agent harness / Agent OS prototype for *deterministic* production tasks
 > (code, transactions, compliance, process execution). Its reason to exist is one design
 > decision: **governance authority and scheduling authority are physically
