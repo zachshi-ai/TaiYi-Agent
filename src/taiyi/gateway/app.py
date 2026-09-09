@@ -572,6 +572,7 @@ class GatewayApp:
             "llm_first_token_timeout": getattr(prov, "_first_token_timeout", 60.0),
             "llm_stream_idle_timeout": getattr(prov, "_stream_idle_timeout", 30.0),
             "llm_hard_timeout": getattr(prov, "_hard_timeout", 180.0),
+            "task_lease_seconds": self.gateway.runtime.run_store.task_lease_seconds,
             "context_window_tokens": getattr(context_engine, "context_window_tokens", None),
             "context_response_reserve_tokens": getattr(
                 context_engine, "response_reserve_tokens", None

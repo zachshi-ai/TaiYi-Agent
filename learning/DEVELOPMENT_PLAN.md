@@ -54,7 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
-| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.7 delivered** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 7B2.8 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -409,7 +409,7 @@ flow works over the gateway endpoints.
 objects only while the process runs, with checkpoints as the persistence
 authority. **Depends on.** M3, M9, M18.
 
-### M18 — Durable Runtime Protocol 🟡 Phase 7B2.7 delivered
+### M18 — Durable Runtime Protocol 🟡 Phase 7B2.8 delivered
 **Goal.** Make long-running tasks observable and recoverable without conflating
 model, tool, validation, approval, and overall task lifecycles.
 
@@ -604,10 +604,40 @@ survived Gateway replacement, and settled from one 2.147-second Job with one
 terminal notification. See
 `learning/docs/20_Parked_Tool_Continuations.md`.
 
+**Delivered in Phase 7B2.8.** RunStore task ownership now uses renewable,
+monotonically increasing fencing tokens from a transactional lease authority.
+One heartbeat per active RunStore renews all locally owned tasks, while every
+event/checkpoint write validates and renews its exact owner/token inside a
+database write transaction. Expired or replaced owners raise
+`TaskLeaseLostError`, emit `run_fenced` to the independent audit chain, and stop
+without writing a false task failure. The default SQLite authority supplies one
+database clock and a replaceable backend seam. Tests cover concurrent claims,
+expiry takeover, token monotonicity after release, crash recovery, heartbeat
+renewal during long model waits, write-fence observability, and a delayed model
+response that cannot dispatch its proposed file effect after another Gateway
+takes ownership. Persistent audit appends now lock and reload the latest chain
+head before fsync, so stale owners cannot fork the audit chain. See
+`learning/docs/21_Fenced_Task_Ownership.md`.
+
+**Phase 7B2.8 CI follow-up.** Durable-job result classification now distinguishes
+capture EOF from artifact finalization and keeps the original cancellation or
+deadline after successful cleanup. An unsettled process/capture is `TOOL_LOST`
+with its observed timeout and exit facts intact; post-start supervisor errors
+are no longer mislabeled as startup failures. Deterministic delay and cleanup
+faults complement the existing real-process matrix. See
+`learning/docs/15_Tool_Process_Reliability.md`.
+The follow-up CI run also exposed old recovery cleanup revoking a newly acquired
+local lease during operator effect resolution. Runtime cleanup now releases its
+captured receipt only, contexts retain their execution write authority, and
+recovery revalidates each scanned checkpoint after claiming ownership. Controlled
+Agent/Workflow interleavings verify that stale cleanup and stale scans cannot
+disrupt a successor. See `learning/docs/21_Fenced_Task_Ownership.md`.
+
 **Remaining before M18 is complete.** Connector-specific refund/notification
-authorities and compensation; distributed fenced task/consumer leases and event
-fan-out; provider-specific
-tokenizers; and live-provider/network verification.
+authorities and compensation; fenced repository-consumer leases; a production
+PostgreSQL/etcd lease backend and multi-host event fan-out; provider-specific
+tokenizers; verified process-group liveness beyond output-pipe closure; and
+live-provider/network verification.
 Cross-harness cells require a portable
 controlled-tool interface before they can be scored.
 Ambiguous effects remain human-owned until those connector proofs exist. See

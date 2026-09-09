@@ -55,6 +55,7 @@ from taiyi.runtime.executor import (
 )
 from taiyi.runtime.persistence import (
     RunStore,
+    TaskLeaseLostError,
     agent_continuation,
     deserialize_messages,
     restore_context,
@@ -148,6 +149,7 @@ class AgentRuntime:
         self._llm_sleep = llm_sleep
         self._llm_clock = llm_clock
         self._recovery_threads: dict[str, threading.Thread] = {}
+        self._recovery_lock = threading.Lock()
         self._execution_options = threading.local()
         # Build the system prompt the model actually sees. The default prompt
         # alone is too vague for a real model — it must know the tool-call syntax
@@ -208,6 +210,7 @@ class AgentRuntime:
             contract=contract.to_dict(),
         )
         self._record(ctx, RunPhase.READY, "run_created")
+        lease = ctx._write_lease
 
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         if self.obs is not None:
@@ -265,19 +268,28 @@ class AgentRuntime:
         if self.value_stream is not None:
             ctx.goal = self.value_stream.anchor(prompt, scenario)
         parked = False
+        fenced = False
         self._execution_options.park_background_jobs = bool(park_background_jobs)
         try:
             with self._span(trace, "agent_task"):
                 self._loop(ctx, messages, trace)
         except (RepositoryIndexParked, DurableToolParked):
             parked = True
+        except TaskLeaseLostError as exc:
+            fenced = True
+            self.audit.append(
+                "run_fenced",
+                task_id=ctx.task_id,
+                attempt_id=ctx.attempt_id,
+                error=str(exc),
+            )
         except Exception as e:  # noqa: BLE001
             self._fail(ctx, e)
         finally:
             self._execution_options.park_background_jobs = False
 
-        if parked:
-            self.run_store.release_task_lease(ctx.task_id)
+        if parked or fenced:
+            self.run_store.release_task_lease(ctx.task_id, expected=lease)
             return ctx
         self._finish(ctx, start)
         return ctx
@@ -887,6 +899,7 @@ class AgentRuntime:
         ctx: TaskContext = pending.ctx
         if not self.run_store.acquire_task_lease(ctx.task_id, blocking=False):
             raise RuntimeError(f"task {ctx.task_id} is already being advanced by another runtime")
+        lease = self.run_store.task_lease(ctx.task_id)
         checkpoint = self.run_store.load(ctx.task_id)
         if checkpoint is not None:
             continuation = checkpoint.get("continuation") or {}
@@ -894,9 +907,13 @@ class AgentRuntime:
                 checkpoint["context"].get("phase") != RunPhase.WAITING_APPROVAL.value
                 or continuation.get("approval_id") != approval_id
             ):
-                self.run_store.release_task_lease(ctx.task_id)
+                self.run_store.release_task_lease(ctx.task_id, expected=lease)
                 self.approvals.remove(approval_id)
                 raise RuntimeError(f"approval {approval_id} is stale or already resolved")
+            ctx = restore_context(
+                checkpoint["context"], validator=self.validator, value_stream=self.value_stream
+            )
+        self.run_store.bind_task_context(ctx, expected=lease)
         self.approvals.remove(approval_id)
 
         if not approve:
@@ -910,7 +927,7 @@ class AgentRuntime:
             )
             self.audit.append("human_rejected", task_id=ctx.task_id, approval_id=approval_id)
             self._finish(ctx, time.time())
-            self.run_store.release_task_lease(ctx.task_id)
+            self.run_store.release_task_lease(ctx.task_id, expected=lease)
             return ctx
 
         # Human approved — but governance gets the final word on the held step.
@@ -949,7 +966,7 @@ class AgentRuntime:
             self.audit.append("task_rejected", task_id=ctx.task_id, tool=held_step.tool,
                               reason=repermit.reason)
             self._finish(ctx, time.time())
-            self.run_store.release_task_lease(ctx.task_id)
+            self.run_store.release_task_lease(ctx.task_id, expected=lease)
             return ctx
 
         # Re-check passed (ALLOW or still NEEDS_REVIEW-but-human-overrode). Execute
@@ -976,7 +993,7 @@ class AgentRuntime:
             approved_by="human",
         ):
             self._finish(ctx, time.time())
-            self.run_store.release_task_lease(ctx.task_id)
+            self.run_store.release_task_lease(ctx.task_id, expected=lease)
             return ctx
 
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
@@ -996,7 +1013,7 @@ class AgentRuntime:
             self._fail(ctx, e)
 
         self._finish(ctx, time.time())
-        self.run_store.release_task_lease(ctx.task_id)
+        self.run_store.release_task_lease(ctx.task_id, expected=lease)
         return ctx
 
     def _approval_is_effect_recovery(self, ctx: TaskContext, step_index: int) -> bool:
@@ -1025,6 +1042,7 @@ class AgentRuntime:
             raise KeyError(task_id)
         if not self.run_store.acquire_task_lease(task_id, blocking=False):
             raise RuntimeError(f"task {task_id} is already being advanced by another runtime")
+        lease = self.run_store.task_lease(task_id)
 
         start = time.time()
         try:
@@ -1042,6 +1060,7 @@ class AgentRuntime:
                 validator=self.validator,
                 value_stream=self.value_stream,
             )
+            self.run_store.bind_task_context(ctx, expected=lease)
             messages = deserialize_messages(continuation.get("messages", []))
             step_index = int(continuation["step_index"])
             if not 0 <= step_index < len(ctx.step_results):
@@ -1173,7 +1192,7 @@ class AgentRuntime:
         finally:
             if "ctx" in locals():
                 self._finish(ctx, start)
-            self.run_store.release_task_lease(task_id)
+            self.run_store.release_task_lease(task_id, expected=lease)
 
     # --- shared helpers ------------------------------------------------------
     @staticmethod
@@ -1631,16 +1650,26 @@ class AgentRuntime:
                     continue
             if not task_id or not self.run_store.acquire_task_lease(task_id, blocking=False):
                 continue
+            lease = self.run_store.task_lease(task_id)
             try:
+                current = self.run_store.load(task_id)
+                if current is None or current.get("digest") != checkpoint.get("digest"):
+                    self.run_store.release_task_lease(task_id, expected=lease)
+                    continue
+                snapshot = current["context"]
+                continuation = current.get("continuation") or {}
                 ctx, messages = self._restore_agent_continuation(snapshot, continuation)
+                self.run_store.bind_task_context(ctx, expected=lease)
             except (
                 CheckpointIncompatibleError,
+                TaskLeaseLostError,
                 KeyError,
                 IndexError,
                 TypeError,
                 ValueError,
+                OSError,
             ) as exc:
-                self.run_store.release_task_lease(task_id)
+                self.run_store.release_task_lease(task_id, expected=lease)
                 self.audit.append(
                     "run_recovery_failed",
                     task_id=task_id,
@@ -1663,7 +1692,8 @@ class AgentRuntime:
                 name=f"taiyi-recover-{ctx.task_id}",
                 daemon=True,
             )
-            self._recovery_threads[ctx.task_id] = thread
+            with self._recovery_lock:
+                self._recovery_threads[ctx.task_id] = thread
             thread.start()
             recovered += 1
         return recovered
@@ -1702,28 +1732,41 @@ class AgentRuntime:
                 error=f"{type(exc).__name__}: {exc}",
             )
             return False
-        previous_attempt = ctx.attempt_id
-        ctx.attempt_id += 1
-        self.approvals.add(PendingApproval(
-            approval_id=approval_id,
-            task_id=ctx.task_id,
-            tool=held.tool,
-            reason=ctx.step_results[held_index].reason,
-            scenario=ctx.scenario,
-            ctx=ctx,
-            held_index=held_index,
-            steps=[],
-            messages=messages,
-        ))
-        self._record(
-            ctx,
-            RunPhase.WAITING_APPROVAL,
-            "run_recovered",
-            state=TaskState.NEEDS_REVIEW,
-            continuation=continuation,
-            previous_attempt=previous_attempt,
-        )
-        return True
+        if not self.run_store.acquire_task_lease(ctx.task_id, blocking=False):
+            return False
+        lease = self.run_store.task_lease(ctx.task_id)
+        try:
+            current = self.run_store.load(ctx.task_id)
+            if current is None or (
+                current.get("context") != snapshot
+                or (current.get("continuation") or {}) != continuation
+            ):
+                return False
+            previous_attempt = ctx.attempt_id
+            ctx.attempt_id += 1
+            self.run_store.bind_task_context(ctx, expected=lease)
+            self.approvals.add(PendingApproval(
+                approval_id=approval_id,
+                task_id=ctx.task_id,
+                tool=held.tool,
+                reason=ctx.step_results[held_index].reason,
+                scenario=ctx.scenario,
+                ctx=ctx,
+                held_index=held_index,
+                steps=[],
+                messages=messages,
+            ))
+            self._record(
+                ctx,
+                RunPhase.WAITING_APPROVAL,
+                "run_recovered",
+                state=TaskState.NEEDS_REVIEW,
+                continuation=continuation,
+                previous_attempt=previous_attempt,
+            )
+            return True
+        finally:
+            self.run_store.release_task_lease(ctx.task_id, expected=lease)
 
     def _restore_agent_continuation(
         self,
@@ -1801,9 +1844,11 @@ class AgentRuntime:
         continuation: dict,
         messages: list[LLMMessage],
     ) -> None:
+        lease = ctx._write_lease
         start = time.time()
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         parked = False
+        fenced = False
         self._execution_options.park_background_jobs = bool(
             continuation.get("parked") is True
         )
@@ -1869,14 +1914,24 @@ class AgentRuntime:
                 )
         except (RepositoryIndexParked, DurableToolParked):
             parked = True
+        except TaskLeaseLostError as exc:
+            fenced = True
+            self.audit.append(
+                "run_fenced",
+                task_id=ctx.task_id,
+                attempt_id=ctx.attempt_id,
+                error=str(exc),
+            )
         except Exception as exc:  # noqa: BLE001 — recovery failures must settle visibly
             self._fail(ctx, exc)
         finally:
             self._execution_options.park_background_jobs = False
-            if not parked:
+            if not parked and not fenced:
                 self._finish(ctx, start)
-            self.run_store.release_task_lease(ctx.task_id)
-            self._recovery_threads.pop(ctx.task_id, None)
+            self.run_store.release_task_lease(ctx.task_id, expected=lease)
+            with self._recovery_lock:
+                if self._recovery_threads.get(ctx.task_id) is threading.current_thread():
+                    self._recovery_threads.pop(ctx.task_id, None)
 
     def _resume_pending_tool(
         self,

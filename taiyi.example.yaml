@@ -20,6 +20,9 @@ sandbox_dir: ./state/sandbox
 tool_hard_timeout: 1800
 tool_idle_timeout: null
 job_heartbeat_interval: 1
+# One Gateway-wide heartbeat renews monotonic task fencing tokens. A replacement
+# owner may take over only after this interval expires or the owner releases it.
+task_lease_seconds: 30
 # Model-visible tail and retained per-stream artifact are separate budgets. The
 # receipt always keeps complete-stream byte counts and SHA-256 digests.
 tool_output_limit: 16384

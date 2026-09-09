@@ -164,6 +164,7 @@ class _BoundedCapture:
         self.artifact_bytes = 0
         self.last_output_at: float | None = None
         self.truncated = False
+        self.eof = False
         self.error: str | None = None
         self._tail = bytearray()
         self._hasher = hashlib.sha256()
@@ -179,6 +180,8 @@ class _BoundedCapture:
             while True:
                 chunk = pipe.read(65_536)
                 if not chunk:
+                    with self._lock:
+                        self.eof = True
                     break
                 with self._lock:
                     self.total_bytes += len(chunk)
@@ -218,6 +221,7 @@ class _BoundedCapture:
                 "artifact_truncated": self.truncated,
                 "last_output_at": self.last_output_at,
                 "error": self.error,
+                "eof": self.eof,
             }
 
     def _finalize_artifact(self) -> None:
@@ -288,6 +292,9 @@ def supervise(request_path: Path) -> int:
     termination_reason: str | None = None
     termination_escalated = False
     owned_process_group_settled: bool | None = None
+    timeout_kind: str | None = None
+    returncode: int | None = None
+    cancelled = False
     request: dict = {}
 
     try:
@@ -345,8 +352,6 @@ def supervise(request_path: Path) -> int:
         for drain in drains:
             drain.start()
         child_token = _process_token(proc.pid)
-        timeout_kind = None
-        cancelled = False
         while True:
             now = time.time()
             stdout_progress = captures[0].snapshot()
@@ -407,19 +412,21 @@ def supervise(request_path: Path) -> int:
             time.sleep(interval)
         for drain in drains:
             drain.join(timeout=0.5)
-        lingering_descendants = any(drain.is_alive() for drain in drains)
+        # A thread may still be fsyncing an artifact after EOF. Only an open
+        # output boundary is evidence of a lingering descendant, not a slow
+        # finalizer. Keep this observation separate from final settlement.
+        lingering_descendants = any(not capture.snapshot()["eof"] for capture in captures)
         if lingering_descendants:
             termination_reason = termination_reason or "lingering_descendants"
             termination_escalated = (
                 _terminate_lingering_group(proc.pid) or termination_escalated
             )
-            for drain in drains:
-                drain.join(timeout=2.0)
-        owned_process_group_settled = not any(drain.is_alive() for drain in drains)
-        if not owned_process_group_settled:
-            raise RuntimeError(
-                "job descendants kept output pipes open after termination"
-            )
+        for drain in drains:
+            drain.join(timeout=2.0)
+        returncode = proc.poll()
+        owned_process_group_settled = (
+            returncode is not None and not any(drain.is_alive() for drain in drains)
+        )
 
         finished_at = time.time()
         stdout_result = captures[0].snapshot()
@@ -435,14 +442,16 @@ def supervise(request_path: Path) -> int:
             for value in (stdout_result["error"], stderr_result["error"])
             if value
         ]
-        if capture_errors:
+        if not owned_process_group_settled:
+            status = "LOST"
+            failure_kind = "TOOL_LOST"
+            error = "job process or output capture did not settle after termination"
+            if capture_errors:
+                error += "; " + "; ".join(capture_errors)
+        elif capture_errors:
             status = "FAILED"
             failure_kind = "TOOL_OUTPUT_CAPTURE_ERROR"
             error = "; ".join(capture_errors)
-        elif lingering_descendants:
-            status = "FAILED"
-            failure_kind = "TOOL_LOST"
-            error = "job descendants remained after the main process exited and were terminated"
         elif cancelled:
             status = "CANCELLED"
             failure_kind = "TOOL_CANCELLED"
@@ -452,6 +461,10 @@ def supervise(request_path: Path) -> int:
         elif timeout_kind == "hard":
             status = "TIMED_OUT"
             failure_kind = "TOOL_HARD_TIMEOUT"
+        elif lingering_descendants:
+            status = "FAILED"
+            failure_kind = "TOOL_LOST"
+            error = "job descendants remained after the main process exited and were terminated"
         elif returncode == 0:
             status = "SUCCEEDED"
             failure_kind = None
@@ -493,21 +506,27 @@ def supervise(request_path: Path) -> int:
             termination_escalated = _terminate_group(proc) or termination_escalated
         for drain in drains:
             drain.join(timeout=2.0)
-        owned_process_group_settled = not any(drain.is_alive() for drain in drains)
+        returncode = proc.poll() if proc is not None else None
+        owned_process_group_settled = (
+            (proc is None or returncode is not None)
+            and not any(drain.is_alive() for drain in drains)
+        )
         stdout_result = captures[0].snapshot() if captures else {}
         stderr_result = captures[1].snapshot() if captures else {}
         failure_kind = (
-            "PERMISSION_DENIED"
+            "TOOL_LOST"
+            if proc is not None
+            else "PERMISSION_DENIED"
             if isinstance(exc, PermissionError)
             else "TOOL_STARTUP_ERROR"
         )
         terminal_result = {
             "schema_version": JOB_SCHEMA_VERSION,
-            "status": "FAILED",
+            "status": "LOST" if proc is not None else "FAILED",
             "failure_kind": failure_kind,
-            "timeout_kind": None,
-            "returncode": None,
-            "signal": None,
+            "timeout_kind": timeout_kind,
+            "returncode": returncode,
+            "signal": -returncode if returncode is not None and returncode < 0 else None,
             "started_at": started_at,
             "finished_at": time.time(),
             "last_output_at": last_output_at,

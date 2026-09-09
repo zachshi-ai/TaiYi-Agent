@@ -39,11 +39,43 @@ The same fields flow through `JobRecord`, `ExecResult`, the runtime event,
 `StepResult`, and the checkpoint. A restart therefore does not have to infer the
 old process result from log text.
 
-`owned_process_group_settled` is intentionally narrow. It proves that the
-supervisor-owned process group closed its output boundary after bounded
-termination. It does not claim that a hostile program that successfully escaped
-into another OS session was contained. Strong multi-tenant containment still
-requires a container/cgroup, VM, or equivalent platform authority.
+`owned_process_group_settled` is intentionally narrow. It records that the main
+process exited and the output capture threads finished after bounded termination.
+It is not a census of every descendant: a child that redirects its output or
+escapes into another OS session can fall outside this observation. Full process
+containment still requires a container/cgroup, VM, or equivalent platform
+authority, and a verified process-group liveness probe remains runtime work.
+
+## CI regression: preserve termination cause through output cleanup
+
+The Python 3.12 PR run for commit `15877bf` exposed a real race: an already
+recognized hard timeout became `TOOL_LOST` because a capture thread was still
+finishing after the first bounded join. The worker retained that observation
+even after successful cleanup. The same race affected idle timeout and cancel.
+
+Capture EOF and artifact finalization are now distinct facts. A slow fsync after
+EOF does not imply a living descendant. The supervisor checks the final process
+and capture-thread state, then classifies the result:
+
+| Observation after cleanup | Result |
+| --- | --- |
+| Main process or capture still running | `LOST / TOOL_LOST`, settled false; retain timeout/reason/observed exit facts |
+| Capture failed | `TOOL_OUTPUT_CAPTURE_ERROR`, with the capture error |
+| Cancel or deadline initiated termination and cleanup settled | Preserve `TOOL_CANCELLED`, `TOOL_IDLE_TIMEOUT`, or `TOOL_HARD_TIMEOUT` |
+| Natural parent exit left output pipes open and descendants needed termination | `TOOL_LOST`, even if subsequent cleanup succeeded |
+| Natural exit, EOF observed, artifact finalization completed | Use the actual exit code/signal |
+
+An exception after process startup is a lost supervision outcome, not a startup
+failure; its receipt preserves known timeout, return code and signal. Startup
+and permission failure classifications still apply when no child was launched.
+These process facts do not resolve an external side effect: the Effect Ledger
+continues to hold ambiguous writes for independent observation or human input.
+
+`tests/test_durable_jobs.py` deterministically holds artifact finalization past
+the initial grace period for hard timeout, idle timeout, cancellation and normal
+exit. `tests/test_job_settlement_faults.py` injects incomplete cleanup and a late
+supervisor persistence failure. Both use real child processes with controlled
+faults, alongside the existing process-tree and three-mode matrix tests.
 
 ## Output remains drainable but storage is bounded
 

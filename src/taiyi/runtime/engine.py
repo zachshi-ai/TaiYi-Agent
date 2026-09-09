@@ -58,6 +58,7 @@ from taiyi.runtime.executor import (
 from taiyi.runtime.llm_retry import task_resilient_provider
 from taiyi.runtime.persistence import (
     RunStore,
+    TaskLeaseLostError,
     continuation_steps,
     restore_context,
     workflow_continuation,
@@ -119,6 +120,7 @@ class TaskRuntime:
         self._llm_sleep = llm_sleep
         self._llm_clock = llm_clock
         self._recovery_threads: dict[str, threading.Thread] = {}
+        self._recovery_lock = threading.Lock()
         self._execution_options = threading.local()
 
     def run(
@@ -171,6 +173,7 @@ class TaskRuntime:
             contract=contract.to_dict(),
         )
         self._record(ctx, RunPhase.READY, "run_created")
+        execution_lease = self.run_store.task_lease(ctx.task_id)
         if self.memory is not None:
             self.memory.add_message(session_id, "user", prompt)
         if self.value_stream is not None:
@@ -200,6 +203,7 @@ class TaskRuntime:
             self.obs.tasks_total.inc()
 
         parked = False
+        fenced = False
         self._execution_options.park_background_jobs = bool(park_background_jobs)
         try:
             with self._span(trace, "task"):
@@ -207,13 +211,21 @@ class TaskRuntime:
                 self._execute_rounds(ctx, trace)
         except (RepositoryIndexParked, DurableToolParked):
             parked = True
+        except TaskLeaseLostError as exc:
+            fenced = True
+            self.audit.append(
+                "run_fenced",
+                task_id=ctx.task_id,
+                attempt_id=ctx.attempt_id,
+                error=str(exc),
+            )
         except Exception as e:  # noqa: BLE001 — convert any failure into a terminal state
             self._fail(ctx, e)
         finally:
             self._execution_options.park_background_jobs = False
 
-        if parked:
-            self.run_store.release_task_lease(ctx.task_id)
+        if parked or fenced:
+            self.run_store.release_task_lease(ctx.task_id, expected=execution_lease)
             return ctx
         self._finish(ctx, start)
         return ctx
@@ -1045,6 +1057,7 @@ class TaskRuntime:
         ctx: TaskContext = pending.ctx
         if not self.run_store.acquire_task_lease(ctx.task_id, blocking=False):
             raise RuntimeError(f"task {ctx.task_id} is already being advanced by another runtime")
+        execution_lease = self.run_store.task_lease(ctx.task_id)
         checkpoint = self.run_store.load(ctx.task_id)
         if checkpoint is not None:
             continuation = checkpoint.get("continuation") or {}
@@ -1052,9 +1065,13 @@ class TaskRuntime:
                 checkpoint["context"].get("phase") != RunPhase.WAITING_APPROVAL.value
                 or continuation.get("approval_id") != approval_id
             ):
-                self.run_store.release_task_lease(ctx.task_id)
+                self.run_store.release_task_lease(ctx.task_id, expected=execution_lease)
                 self.approvals.remove(approval_id)
                 raise RuntimeError(f"approval {approval_id} is stale or already resolved")
+            ctx = restore_context(
+                checkpoint["context"], validator=self.validator, value_stream=self.value_stream
+            )
+        self.run_store.bind_task_context(ctx, expected=execution_lease)
         self.approvals.remove(approval_id)
 
         if not approve:
@@ -1067,7 +1084,7 @@ class TaskRuntime:
                 approval_id=approval_id,
             )
             self.audit.append("human_rejected", task_id=ctx.task_id, approval_id=approval_id)
-            self.run_store.release_task_lease(ctx.task_id)
+            self.run_store.release_task_lease(ctx.task_id, expected=execution_lease)
             return ctx
 
         # Approved: re-check the held step against governance before executing.
@@ -1110,7 +1127,7 @@ class TaskRuntime:
             )
             self.audit.append("task_rejected", task_id=ctx.task_id, tool=held_step.tool,
                               reason=repermit.reason)
-            self.run_store.release_task_lease(ctx.task_id)
+            self.run_store.release_task_lease(ctx.task_id, expected=execution_lease)
             return ctx
 
         result = self._execute_tool(
@@ -1131,17 +1148,17 @@ class TaskRuntime:
             next_step_index=pending.held_index + 1,
             approved_by="human",
         ):
-            self.run_store.release_task_lease(ctx.task_id)
+            self.run_store.release_task_lease(ctx.task_id, expected=execution_lease)
             return ctx
 
         if not self._execute_steps(ctx, pending.steps, pending.held_index + 1):
-            self.run_store.release_task_lease(ctx.task_id)
+            self.run_store.release_task_lease(ctx.task_id, expected=execution_lease)
             return ctx  # re-suspended / rejected / failed downstream
 
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         if not self._finish_round(ctx, trace, ctx.round):
             self._execute_rounds(ctx, trace, start_round=ctx.round + 1)
-        self.run_store.release_task_lease(ctx.task_id)
+        self.run_store.release_task_lease(ctx.task_id, expected=execution_lease)
         return ctx
 
     def _approval_is_effect_recovery(self, ctx: TaskContext, step_index: int) -> bool:
@@ -1170,6 +1187,7 @@ class TaskRuntime:
             raise KeyError(task_id)
         if not self.run_store.acquire_task_lease(task_id, blocking=False):
             raise RuntimeError(f"task {task_id} is already being advanced by another runtime")
+        execution_lease = self.run_store.task_lease(task_id)
 
         start = time.time()
         try:
@@ -1187,6 +1205,7 @@ class TaskRuntime:
                 validator=self.validator,
                 value_stream=self.value_stream,
             )
+            self.run_store.bind_task_context(ctx, expected=execution_lease)
             if ctx.plan is None:
                 raise CheckpointIncompatibleError("effect resolution has no frozen plan")
             step_index = int(continuation["step_index"])
@@ -1323,7 +1342,7 @@ class TaskRuntime:
         finally:
             if "ctx" in locals():
                 self._finish(ctx, start)
-            self.run_store.release_task_lease(task_id)
+            self.run_store.release_task_lease(task_id, expected=execution_lease)
 
     def _execute_tool(
         self,
@@ -1566,16 +1585,28 @@ class TaskRuntime:
                     continue
             if not task_id or not self.run_store.acquire_task_lease(task_id, blocking=False):
                 continue
+            execution_lease = self.run_store.task_lease(task_id)
             try:
+                current = self.run_store.load(task_id)
+                if current is None or current.get("digest") != checkpoint.get("digest"):
+                    # A scan is only a recovery candidate. Its former owner may
+                    # have suspended or settled the task before this claim won.
+                    self.run_store.release_task_lease(task_id, expected=execution_lease)
+                    continue
+                snapshot = current["context"]
+                continuation = current.get("continuation") or {}
                 ctx = self._restore_workflow_continuation(snapshot, continuation)
+                self.run_store.bind_task_context(ctx, expected=execution_lease)
             except (
                 CheckpointIncompatibleError,
+                TaskLeaseLostError,
                 KeyError,
                 IndexError,
                 TypeError,
                 ValueError,
+                OSError,
             ) as exc:
-                self.run_store.release_task_lease(task_id)
+                self.run_store.release_task_lease(task_id, expected=execution_lease)
                 self.audit.append(
                     "run_recovery_failed",
                     task_id=task_id,
@@ -1598,7 +1629,8 @@ class TaskRuntime:
                 name=f"taiyi-recover-{ctx.task_id}",
                 daemon=True,
             )
-            self._recovery_threads[ctx.task_id] = thread
+            with self._recovery_lock:
+                self._recovery_threads[ctx.task_id] = thread
             thread.start()
             recovered += 1
         return recovered
@@ -1639,28 +1671,42 @@ class TaskRuntime:
                 error=f"{type(exc).__name__}: {exc}",
             )
             return False
-        previous_attempt = ctx.attempt_id
-        ctx.attempt_id += 1
-        reason = ctx.step_results[-1].reason if ctx.step_results else "restored pending approval"
-        self.approvals.add(PendingApproval(
-            approval_id=approval_id,
-            task_id=ctx.task_id,
-            tool=held.tool,
-            reason=reason,
-            scenario=ctx.scenario,
-            ctx=ctx,
-            held_index=held_index,
-            steps=steps,
-        ))
-        self._record(
-            ctx,
-            RunPhase.WAITING_APPROVAL,
-            "run_recovered",
-            state=TaskState.NEEDS_REVIEW,
-            continuation=continuation,
-            previous_attempt=previous_attempt,
-        )
-        return True
+        if not self.run_store.acquire_task_lease(ctx.task_id, blocking=False):
+            return False
+        execution_lease = self.run_store.task_lease(ctx.task_id)
+        try:
+            current = self.run_store.load(ctx.task_id)
+            if (
+                current is None
+                or current.get("context") != snapshot
+                or (current.get("continuation") or {}) != continuation
+            ):
+                return False
+            previous_attempt = ctx.attempt_id
+            ctx.attempt_id += 1
+            self.run_store.bind_task_context(ctx, expected=execution_lease)
+            reason = ctx.step_results[-1].reason if ctx.step_results else "restored pending approval"
+            self.approvals.add(PendingApproval(
+                approval_id=approval_id,
+                task_id=ctx.task_id,
+                tool=held.tool,
+                reason=reason,
+                scenario=ctx.scenario,
+                ctx=ctx,
+                held_index=held_index,
+                steps=steps,
+            ))
+            self._record(
+                ctx,
+                RunPhase.WAITING_APPROVAL,
+                "run_recovered",
+                state=TaskState.NEEDS_REVIEW,
+                continuation=continuation,
+                previous_attempt=previous_attempt,
+            )
+            return True
+        finally:
+            self.run_store.release_task_lease(ctx.task_id, expected=execution_lease)
 
     def _restore_workflow_continuation(
         self,
@@ -1738,9 +1784,11 @@ class TaskRuntime:
         return ctx
 
     def _resume_workflow_continuation(self, ctx: TaskContext, continuation: dict) -> None:
+        execution_lease = ctx._write_lease
         start = time.time()
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         parked = False
+        fenced = False
         self._execution_options.park_background_jobs = bool(
             continuation.get("parked") is True
         )
@@ -1797,14 +1845,24 @@ class TaskRuntime:
                 self._execute_rounds(ctx, trace, start_round=ctx.round + 1)
         except (RepositoryIndexParked, DurableToolParked):
             parked = True
+        except TaskLeaseLostError as exc:
+            fenced = True
+            self.audit.append(
+                "run_fenced",
+                task_id=ctx.task_id,
+                attempt_id=ctx.attempt_id,
+                error=str(exc),
+            )
         except Exception as exc:  # noqa: BLE001 — recovery failures must settle visibly
             self._fail(ctx, exc)
         finally:
             self._execution_options.park_background_jobs = False
-            if not parked:
+            if not parked and not fenced:
                 self._finish(ctx, start)
-            self.run_store.release_task_lease(ctx.task_id)
-            self._recovery_threads.pop(ctx.task_id, None)
+            self.run_store.release_task_lease(ctx.task_id, expected=execution_lease)
+            with self._recovery_lock:
+                if self._recovery_threads.get(ctx.task_id) is threading.current_thread():
+                    self._recovery_threads.pop(ctx.task_id, None)
 
     def _recover_tool_job(
         self,

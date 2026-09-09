@@ -31,7 +31,8 @@ from taiyi.runtime.executor import (
     RecoverableExecutor,
 )
 from taiyi.runtime.jobs import JobHandle, JobRecord, JobStatus, JobStore
-from taiyi.runtime.persistence import RunStore
+from taiyi.runtime.leases import FencedLease, FencedLeaseLost, FencedLeaseStore
+from taiyi.runtime.persistence import RunStore, TaskLeaseLostError
 from taiyi.runtime.protocol import FailureKind, RunPhase
 
 __all__ = [
@@ -66,6 +67,10 @@ __all__ = [
     "JobRecord",
     "JobStatus",
     "JobStore",
+    "FencedLease",
+    "FencedLeaseLost",
+    "FencedLeaseStore",
+    "TaskLeaseLostError",
 ]
 
 

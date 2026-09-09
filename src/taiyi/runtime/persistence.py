@@ -14,17 +14,13 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Iterable
-
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - Windows falls back to process-local claims
-    fcntl = None
+from typing import Any, Callable, Iterable
 
 from taiyi.llm.base import LLMMessage
 from taiyi.policy import EvidenceLedger, EvidenceRecord
 from taiyi.runtime.context import StepResult, TaskContext
 from taiyi.runtime.effects import EffectRecord
+from taiyi.runtime.leases import FencedLease, FencedLeaseLost, FencedLeaseStore
 from taiyi.runtime.protocol import CheckpointIncompatibleError, RunPhase
 from taiyi.runtime.quality import prepare_quality_contract
 from taiyi.runtime.state import TaskState
@@ -34,8 +30,8 @@ from taiyi.policy import resolve_policy
 CHECKPOINT_SCHEMA = "taiyi.run-checkpoint/v1"
 EVENT_SCHEMA = "taiyi.run-event/v1"
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
-_PROCESS_LEASE_LOCK = threading.RLock()
-_PROCESS_LEASES: set[str] = set()
+TASK_LEASE_NAMESPACE = "task"
+_UNSCOPED_RELEASE = object()
 
 
 def _step_to_dict(step: PlanStep) -> dict[str, Any]:
@@ -234,19 +230,49 @@ def restore_context(snapshot: dict[str, Any], *, validator=None, value_stream=No
     return ctx
 
 
+class TaskLeaseLostError(FencedLeaseLost):
+    """A stale Runtime attempted to advance a task after ownership changed."""
+
+
 class RunStore:
     """Persist typed transitions and the latest recoverable checkpoint per task."""
 
-    def __init__(self, base_dir: str | Path | None = None):
+    def __init__(
+        self,
+        base_dir: str | Path | None = None,
+        *,
+        task_lease_seconds: float = 30.0,
+        task_lease_owner_id: str | None = None,
+        task_lease_clock: Callable[[], float] | None = None,
+        task_lease_heartbeat: bool = True,
+    ):
         self.base_dir = Path(base_dir) if base_dir is not None else None
         self._lock = threading.RLock()
         self._events_changed = threading.Condition(self._lock)
         self._event_generation = 0
-        self._task_leases: dict[str, object] = {}
+        self._task_lease_seconds = max(0.1, float(task_lease_seconds))
+        self._task_lease_heartbeat_enabled = bool(task_lease_heartbeat)
+        self._task_leases: dict[str, FencedLease] = {}
+        self._lease_stop = threading.Event()
+        self._lease_thread: threading.Thread | None = None
+        self._lease_store = (
+            FencedLeaseStore(
+                self.base_dir / "runs" / "task-leases.sqlite3",
+                lease_seconds=self._task_lease_seconds,
+                owner_id=task_lease_owner_id,
+                clock=task_lease_clock,
+            )
+            if self.base_dir is not None
+            else None
+        )
 
     @property
     def persistent(self) -> bool:
         return self.base_dir is not None
+
+    @property
+    def task_lease_seconds(self) -> float:
+        return self._task_lease_seconds
 
     def record(
         self,
@@ -261,104 +287,208 @@ class RunStore:
             if event == "run_created":
                 if not self.acquire_task_lease(ctx.task_id, blocking=False):
                     raise RuntimeError(f"task {ctx.task_id} is already owned by another runtime")
-            ctx.phase = phase
-            ctx.updated_at = time.time()
-            ctx.checkpoint_revision += 1
+                ctx._write_lease = self._task_leases.get(ctx.task_id)
             if not self.persistent:
+                ctx.phase = phase
+                ctx.updated_at = time.time()
+                ctx.checkpoint_revision += 1
                 return
-            run_dir = self._run_dir(ctx.task_id)
-            run_dir.mkdir(parents=True, exist_ok=True)
-            event_doc = {
-                "schema_version": EVENT_SCHEMA,
-                "task_id": ctx.task_id,
-                "attempt_id": ctx.attempt_id,
-                "revision": ctx.checkpoint_revision,
-                "timestamp": ctx.updated_at,
-                "event": event,
-                "phase": phase.value,
-                "state": ctx.state.value,
-                "failure_kind": ctx.failure_kind,
-                "payload": payload,
-            }
-            self._append_jsonl(run_dir / "events.jsonl", event_doc)
-            context = serialize_context(ctx)
-            checkpoint = {
-                "schema_version": CHECKPOINT_SCHEMA,
-                "saved_at": ctx.updated_at,
-                "context": context,
-                "continuation": continuation,
-                "digest": checkpoint_digest(context, continuation),
-            }
-            self._atomic_json(run_dir / "checkpoint.json", checkpoint)
-            self._event_generation += 1
-            self._events_changed.notify_all()
-            if phase in {
+            lease = self._task_leases.get(ctx.task_id)
+            if lease is None or self._lease_store is None:
+                raise TaskLeaseLostError(
+                    f"task {ctx.task_id} has no active fenced write lease"
+                )
+            if ctx._write_lease is None:
+                raise TaskLeaseLostError(f"task {ctx.task_id} context has no bound write lease")
+            elif (ctx._write_lease.namespace, ctx._write_lease.key,
+                  ctx._write_lease.owner_id, ctx._write_lease.token) != (
+                lease.namespace, lease.key, lease.owner_id, lease.token
+            ):
+                raise TaskLeaseLostError(
+                    f"task {ctx.task_id} context belongs to an earlier lease"
+                )
+            try:
+                with self._lease_store.guard(lease) as refreshed:
+                    self._task_leases[ctx.task_id] = refreshed
+                    ctx.phase = phase
+                    ctx.updated_at = time.time()
+                    ctx.checkpoint_revision += 1
+                    run_dir = self._run_dir(ctx.task_id)
+                    run_dir.mkdir(parents=True, exist_ok=True)
+                    event_doc = {
+                        "schema_version": EVENT_SCHEMA,
+                        "task_id": ctx.task_id,
+                        "attempt_id": ctx.attempt_id,
+                        "revision": ctx.checkpoint_revision,
+                        "timestamp": ctx.updated_at,
+                        "event": event,
+                        "phase": phase.value,
+                        "state": ctx.state.value,
+                        "failure_kind": ctx.failure_kind,
+                        "fencing_token": refreshed.token,
+                        "lease_owner_id": refreshed.owner_id,
+                        "payload": payload,
+                    }
+                    self._append_jsonl(run_dir / "events.jsonl", event_doc)
+                    context = serialize_context(ctx)
+                    checkpoint = {
+                        "schema_version": CHECKPOINT_SCHEMA,
+                        "saved_at": ctx.updated_at,
+                        "context": context,
+                        "continuation": continuation,
+                        "write_fence": refreshed.to_dict(),
+                        "digest": checkpoint_digest(context, continuation),
+                    }
+                    self._atomic_json(run_dir / "checkpoint.json", checkpoint)
+                    self._event_generation += 1
+                    self._events_changed.notify_all()
+            except FencedLeaseLost as exc:
+                self._task_leases.pop(ctx.task_id, None)
+                raise TaskLeaseLostError(str(exc)) from exc
+            release_after = phase in {
                 RunPhase.SETTLED,
                 RunPhase.WAITING_APPROVAL,
                 RunPhase.WAITING_INPUT,
-            }:
-                self.release_task_lease(ctx.task_id)
+            }
+            if release_after:
+                self.release_task_lease(ctx.task_id, expected=lease)
 
     def acquire_task_lease(self, task_id: str, *, blocking: bool = True) -> bool:
         """Claim the sole right to advance a persisted task.
 
-        The open file descriptor owns the POSIX lock, so a process crash releases
-        it automatically. The process-local map also prevents duplicate recovery
-        threads when file locking is unavailable.
+        The shared lease carries a monotonically increasing fencing token. A
+        process-local map prevents duplicate recovery threads, while the shared
+        store rejects concurrent owners and stale writers across processes.
         """
 
         if not self.persistent:
             return True
-        with self._lock:
-            if task_id in self._task_leases:
-                return False
-            run_dir = self._run_dir(task_id)
-            run_dir.mkdir(parents=True, exist_ok=True)
-            handle = (run_dir / ".task.lock").open("a+b")
-            if fcntl is not None:
-                flags = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
-                try:
-                    fcntl.flock(handle.fileno(), flags)
-                except BlockingIOError:
-                    handle.close()
+        assert self._lease_store is not None
+        while True:
+            with self._lock:
+                if task_id in self._task_leases:
                     return False
-            else:  # pragma: no cover - exercised only on platforms without flock
-                key = str((run_dir / ".task.lock").resolve())
-                with _PROCESS_LEASE_LOCK:
-                    if key in _PROCESS_LEASES:
-                        handle.close()
-                        return False
-                    _PROCESS_LEASES.add(key)
-            self._task_leases[task_id] = handle
-            return True
+                lease = self._lease_store.acquire(TASK_LEASE_NAMESPACE, task_id)
+                if lease is not None:
+                    self._task_leases[task_id] = lease
+                    self._ensure_lease_heartbeat()
+                    return True
+            if not blocking:
+                return False
+            time.sleep(min(0.1, self._task_lease_seconds / 3))
 
-    def release_task_lease(self, task_id: str) -> None:
+    def bind_task_context(self, ctx: TaskContext, *, expected: FencedLease | None) -> None:
+        """Bind restored state to the receipt this execution actually acquired."""
+
+        with self._lock:
+            lease = self._task_leases.get(ctx.task_id)
+            if self.persistent and (lease is None or expected is None or (
+                expected.namespace, expected.key, expected.owner_id, expected.token
+            ) != (lease.namespace, lease.key, lease.owner_id, lease.token)):
+                raise TaskLeaseLostError(f"task {ctx.task_id} acquired lease was replaced before binding")
+            ctx._write_lease = expected
+
+    def release_task_lease(
+        self, task_id: str, *, expected: FencedLease | None | object = _UNSCOPED_RELEASE
+    ) -> None:
+        """Release a claim, without letting old execution cleanup revoke its successor.
+
+        Runtime cleanup must pass its captured receipt. Omitting it is reserved
+        for store-wide administrative close and explicit claim management.
+        """
         if not self.persistent:
             return
         with self._lock:
-            handle = self._task_leases.pop(task_id, None)
-            if handle is None:
+            lease = self._task_leases.get(task_id)
+            if lease is None or self._lease_store is None:
                 return
-            if fcntl is not None:
-                try:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-                except OSError:
-                    pass
-            else:  # pragma: no cover - exercised only on platforms without flock
-                key = str((self._run_dir(task_id) / ".task.lock").resolve())
-                with _PROCESS_LEASE_LOCK:
-                    _PROCESS_LEASES.discard(key)
-            handle.close()
+            if expected is not _UNSCOPED_RELEASE:
+                if not isinstance(expected, FencedLease) or (
+                    expected.namespace, expected.key, expected.owner_id, expected.token
+                ) != (lease.namespace, lease.key, lease.owner_id, lease.token):
+                    return
+            self._task_leases.pop(task_id, None)
+            self._lease_store.release(lease)
+            if not self._task_leases:
+                self._lease_stop.set()
+
+    def task_lease(self, task_id: str) -> FencedLease | None:
+        """Return this RunStore's active local ownership receipt, if any."""
+
+        with self._lock:
+            return self._task_leases.get(task_id)
+
+    def shared_task_lease(self, task_id: str) -> FencedLease | None:
+        """Read the current authority row without claiming task ownership."""
+
+        if self._lease_store is None:
+            return None
+        return self._lease_store.current(TASK_LEASE_NAMESPACE, task_id)
+
+    def close(self) -> None:
+        """Stop the shared heartbeat and relinquish all local task ownership."""
+
+        self._lease_stop.set()
+        thread = self._lease_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=2)
+        with self._lock:
+            for task_id in tuple(self._task_leases):
+                self.release_task_lease(task_id)
+            self._lease_thread = None
+
+    def _ensure_lease_heartbeat(self) -> None:
+        if self._lease_thread is not None and self._lease_stop.is_set():
+            # The previous heartbeat is already signalled to exit but may still
+            # be unwinding. Give the new generation its own stop event; the old
+            # thread retains the signalled object for its current wait call.
+            self._lease_thread = None
+            self._lease_stop = threading.Event()
+        elif self._lease_thread is not None and not self._lease_thread.is_alive():
+            self._lease_thread = None
+        if not self._task_lease_heartbeat_enabled or self._lease_thread is not None:
+            return
+        self._lease_stop.clear()
+        thread = threading.Thread(
+            target=self._heartbeat_task_leases,
+            name="taiyi-task-lease-heartbeat",
+            daemon=True,
+        )
+        self._lease_thread = thread
+        thread.start()
+
+    def _heartbeat_task_leases(self) -> None:
+        interval = max(0.05, self._task_lease_seconds / 3)
+        try:
+            while not self._lease_stop.wait(interval):
+                with self._lock:
+                    if self._lease_store is None:
+                        return
+                    if not self._task_leases:
+                        return
+                    for task_id, lease in tuple(self._task_leases.items()):
+                        try:
+                            self._task_leases[task_id] = self._lease_store.renew(lease)
+                        except FencedLeaseLost:
+                            self._task_leases.pop(task_id, None)
+        finally:
+            with self._lock:
+                if self._lease_thread is threading.current_thread():
+                    self._lease_thread = None
 
     def load(self, task_id: str) -> dict[str, Any] | None:
         if not self.persistent:
             return None
         path = self._run_dir(task_id) / "checkpoint.json"
-        if not path.is_file():
-            return None
-        data = json.loads(path.read_text(encoding="utf-8"))
-        self._validate_checkpoint(data, path)
-        return data
+        # A local reader must not observe a suspended/settled checkpoint before
+        # the writer has completed its matching lease release. Cross-process
+        # readers still rely on the atomic file plus the shared lease authority.
+        with self._lock:
+            if not path.is_file():
+                return None
+            data = json.loads(path.read_text(encoding="utf-8"))
+            self._validate_checkpoint(data, path)
+            return data
 
     def iter_checkpoints(self) -> Iterable[dict[str, Any]]:
         if not self.persistent:

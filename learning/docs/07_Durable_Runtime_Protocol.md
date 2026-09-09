@@ -190,10 +190,9 @@ verification. See
 
 1. Add connector-specific effect authorities and compensation protocols on top
    of the delivered generic effect ledger.
-2. Park generic long tool-job continuations using the delivered durable terminal
-   notification journal.
-3. Add distributed fenced task/consumer leases and shared event fan-out.
-4. Combine the delivered tool-output/process-tree matrix with real-provider
+2. Extend delivered task fencing to repository consumers, then implement a
+   production PostgreSQL/etcd lease backend and multi-host event fan-out.
+3. Combine the delivered tool-output/process-tree matrix with real-provider
    network loss and a frozen large-repository/context-overflow workload.
 
 Structured compaction, Git-HEAD/content-addressed repository snapshots, bounded

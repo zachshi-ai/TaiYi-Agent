@@ -1,0 +1,56 @@
+{
+  "digest": "sha256:c0b1c413643cc83d60dd819e335fb0ae13e686a276a8d0256b50612e4f6a3b48",
+  "payload": {
+    "assertions": {
+      "concurrent_audit_chain_verified": true,
+      "event_revisions_unique_and_increasing": true,
+      "fencing_token_strictly_advanced": true,
+      "full_suite_collected": 425,
+      "full_suite_passed": true,
+      "no_false_task_failure_from_stale_owner": true,
+      "one_recovery_event": true,
+      "one_settlement_event": true,
+      "stale_effect_absent": true,
+      "stale_model_response_fenced_before_tool_dispatch": true,
+      "two_independent_gateway_processes": true
+    },
+    "fault": {
+      "kind": "lease_heartbeat_partition_with_delayed_model_response",
+      "lease_seconds": 0.5,
+      "stale_response_released_after_replacement_settlement": true
+    },
+    "lease": {
+      "backend": "sqlite_reference",
+      "clock_authority": "database",
+      "old_fencing_token": 1,
+      "replacement_fencing_token": 2,
+      "stale_owner_audit_event": "run_fenced",
+      "stale_write_signal": "TaskLeaseLostError"
+    },
+    "limitations": {
+      "multi_host_qualified": false,
+      "reason": "SQLite reference validation does not prove arbitrary NFS or multi-region lease correctness.",
+      "remaining": [
+        "fenced repository consumer leases",
+        "PostgreSQL or etcd backend",
+        "multi-host event fan-out"
+      ]
+    },
+    "measurement_scope": "taiyi_fenced_task_ownership",
+    "observed_date": "2026-08-14",
+    "ranking_eligible": false,
+    "runtime": {
+      "attempts": 2,
+      "final_output": "replacement owner verified",
+      "final_phase": "SETTLED",
+      "final_state": "COMPLETED",
+      "measured_duration_seconds": 1.018153,
+      "process_count": 2,
+      "process_exitcodes": [
+        0,
+        0
+      ]
+    }
+  },
+  "schema_version": "taiyi.fenced-task-validation/v1"
+}
