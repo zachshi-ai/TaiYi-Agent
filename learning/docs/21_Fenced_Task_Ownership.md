@@ -65,6 +65,39 @@ correctly refused while the old token is active, then the shared Gateway wake
 loop rechecks the non-parked continuation and automatically retries recovery
 after database-authoritative expiry. No second manual restart is required.
 
+## Local ownership handoff
+
+CI subsequently exposed a same-RunStore handoff race. Recovery wrote
+`WAITING_INPUT` and released token A. An operator's effect resolution then
+acquired token B, but the old recovery thread's `finally` released ownership by
+task id and accidentally revoked B. The operator received HTTP 409 despite
+having acquired the task legitimately.
+
+Every Runtime cleanup now captures its execution receipt and supplies that
+receipt to release. The store compares namespace, task key, owner and token;
+expired cleanup cannot remove either the successor's local claim or its shared
+authority row. An explicitly missing receipt is a no-op. Unscoped release is
+reserved for administrative store close and controlled crash simulations.
+Contexts also retain a non-persisted write receipt, so an old context cannot
+borrow a new token from the same RunStore. Restored contexts must bind the exact
+receipt acquired by that execution before their first write; binding fails if
+that claim was already replaced. Creation binds atomically with its first claim.
+Approval resume restores a fresh
+context from the authoritative checkpoint before binding its new claim.
+
+Checkpoint scans are candidates rather than ownership proofs. After claiming a
+task, recovery re-reads the checkpoint and discards a scan whose digest has
+changed. Approval recovery likewise revalidates the snapshot. This prevents a
+delayed scan from resurrecting an already suspended or settled continuation.
+Recovery-thread cleanup removes its tracking entry only if it still names that
+same thread. A genuinely competing owner still produces HTTP 409.
+
+The deterministic Gateway regression holds old recovery after `WAITING_INPUT`,
+lets an operator acquire the successor lease, runs the old cleanup, and only
+then lets the operator continue. Agent and Workflow must preserve the successor
+claim and return HTTP 200 with one resolution event. A separate held scan must
+leave the newer checkpoint and event journal unchanged.
+
 ## Fault evidence
 
 Automated tests prove:

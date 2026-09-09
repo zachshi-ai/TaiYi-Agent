@@ -76,6 +76,81 @@ def test_released_task_gets_a_strictly_newer_fencing_token(tmp_path):
     second.close()
 
 
+def test_old_local_cleanup_cannot_release_a_new_execution_lease(tmp_path):
+    store = RunStore(tmp_path, task_lease_heartbeat=False)
+    ctx = _context("local-handoff")
+    store.record(ctx, RunPhase.READY, "run_created")
+    old = store.task_lease(ctx.task_id)
+    store.record(ctx, RunPhase.WAITING_INPUT, "waiting_for_operator")
+    assert store.acquire_task_lease(ctx.task_id, blocking=False)
+    replacement = store.task_lease(ctx.task_id)
+    assert old is not None and replacement is not None
+    assert replacement.token > old.token
+
+    store.release_task_lease(ctx.task_id, expected=old)
+    store.release_task_lease(ctx.task_id, expected=None)
+
+    assert store.task_lease(ctx.task_id) == replacement
+    assert store.shared_task_lease(ctx.task_id) == replacement
+    store.release_task_lease(ctx.task_id, expected=replacement)
+    assert store.shared_task_lease(ctx.task_id) is None
+    store.close()
+
+
+def test_old_context_cannot_borrow_new_local_lease_for_a_write(tmp_path):
+    store = RunStore(tmp_path, task_lease_heartbeat=False)
+    ctx = _context("stale-context")
+    store.record(ctx, RunPhase.READY, "run_created")
+    store.record(ctx, RunPhase.WAITING_INPUT, "waiting_for_operator")
+    frozen = store.load(ctx.task_id)
+    revision = ctx.checkpoint_revision
+    assert store.acquire_task_lease(ctx.task_id, blocking=False)
+
+    with pytest.raises(TaskLeaseLostError, match="earlier lease"):
+        store.record(ctx, RunPhase.SETTLED, "stale_cleanup")
+
+    assert ctx.checkpoint_revision == revision
+    assert store.load(ctx.task_id) == frozen
+    store.close()
+
+
+def test_receipt_for_another_task_cannot_release_same_numbered_token(tmp_path):
+    store = RunStore(tmp_path, task_lease_heartbeat=False)
+    assert store.acquire_task_lease("one", blocking=False)
+    assert store.acquire_task_lease("two", blocking=False)
+    one, two = store.task_lease("one"), store.task_lease("two")
+    assert one is not None and two is not None and one.token == two.token
+
+    store.release_task_lease("two", expected=one)
+
+    assert store.task_lease("two") == two
+    store.close()
+
+
+def test_fresh_context_cannot_borrow_successor_lease_before_first_write(tmp_path):
+    store = RunStore(tmp_path, task_lease_heartbeat=False)
+    ctx = _context("late-first-write")
+    store.record(ctx, RunPhase.READY, "run_created")
+    store.record(ctx, RunPhase.WAITING_INPUT, "waiting_for_operator")
+    checkpoint = store.load(ctx.task_id)
+    assert store.acquire_task_lease(ctx.task_id, blocking=False)
+    acquired = store.task_lease(ctx.task_id)
+    fresh = _context(ctx.task_id)
+    fresh.checkpoint_revision = ctx.checkpoint_revision
+    store.release_task_lease(ctx.task_id, expected=acquired)
+    assert store.acquire_task_lease(ctx.task_id, blocking=False)
+    successor = store.task_lease(ctx.task_id)
+
+    with pytest.raises(TaskLeaseLostError, match="replaced before binding"):
+        store.bind_task_context(fresh, expected=acquired)
+    with pytest.raises(TaskLeaseLostError, match="no bound write lease"):
+        store.record(fresh, RunPhase.RECOVERING, "stale_first_write")
+
+    assert store.load(ctx.task_id) == checkpoint
+    assert store.task_lease(ctx.task_id) == successor
+    store.close()
+
+
 def test_committed_fenced_task_validation_is_signed_and_fail_closed():
     path = Path(
         "research/benchmark/results/fenced-task-process-v1/validation.json"

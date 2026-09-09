@@ -626,6 +626,12 @@ with its observed timeout and exit facts intact; post-start supervisor errors
 are no longer mislabeled as startup failures. Deterministic delay and cleanup
 faults complement the existing real-process matrix. See
 `learning/docs/15_Tool_Process_Reliability.md`.
+The follow-up CI run also exposed old recovery cleanup revoking a newly acquired
+local lease during operator effect resolution. Runtime cleanup now releases its
+captured receipt only, contexts retain their execution write authority, and
+recovery revalidates each scanned checkpoint after claiming ownership. Controlled
+Agent/Workflow interleavings verify that stale cleanup and stale scans cannot
+disrupt a successor. See `learning/docs/21_Fenced_Task_Ownership.md`.
 
 **Remaining before M18 is complete.** Connector-specific refund/notification
 authorities and compensation; fenced repository-consumer leases; a production

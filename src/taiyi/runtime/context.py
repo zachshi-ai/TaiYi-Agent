@@ -11,6 +11,7 @@ from dataclasses import dataclass, field
 
 from taiyi.policy import EvidenceLedger, TaskContract, TaskPolicy
 from taiyi.runtime.effects import EffectRecord
+from taiyi.runtime.leases import FencedLease
 from taiyi.runtime.protocol import RunPhase
 from taiyi.runtime.state import TaskState
 from taiyi.scheduler import ExecutionPlan, PlanStep
@@ -103,6 +104,8 @@ class TaskContext:
     phase: RunPhase = RunPhase.READY
     attempt_id: int = 1
     checkpoint_revision: int = 0
+    # Execution-local authority, deliberately excluded from checkpoint payloads.
+    _write_lease: FencedLease | None = field(default=None, init=False, repr=False, compare=False)
     failure_kind: str | None = None
     plan: ExecutionPlan | None = None
     step_results: list[StepResult] = field(default_factory=list)

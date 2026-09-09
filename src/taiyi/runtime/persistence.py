@@ -31,6 +31,7 @@ CHECKPOINT_SCHEMA = "taiyi.run-checkpoint/v1"
 EVENT_SCHEMA = "taiyi.run-event/v1"
 _SAFE_ID = re.compile(r"[^A-Za-z0-9_.-]+")
 TASK_LEASE_NAMESPACE = "task"
+_UNSCOPED_RELEASE = object()
 
 
 def _step_to_dict(step: PlanStep) -> dict[str, Any]:
@@ -286,6 +287,7 @@ class RunStore:
             if event == "run_created":
                 if not self.acquire_task_lease(ctx.task_id, blocking=False):
                     raise RuntimeError(f"task {ctx.task_id} is already owned by another runtime")
+                ctx._write_lease = self._task_leases.get(ctx.task_id)
             if not self.persistent:
                 ctx.phase = phase
                 ctx.updated_at = time.time()
@@ -295,6 +297,15 @@ class RunStore:
             if lease is None or self._lease_store is None:
                 raise TaskLeaseLostError(
                     f"task {ctx.task_id} has no active fenced write lease"
+                )
+            if ctx._write_lease is None:
+                raise TaskLeaseLostError(f"task {ctx.task_id} context has no bound write lease")
+            elif (ctx._write_lease.namespace, ctx._write_lease.key,
+                  ctx._write_lease.owner_id, ctx._write_lease.token) != (
+                lease.namespace, lease.key, lease.owner_id, lease.token
+            ):
+                raise TaskLeaseLostError(
+                    f"task {ctx.task_id} context belongs to an earlier lease"
                 )
             try:
                 with self._lease_store.guard(lease) as refreshed:
@@ -340,7 +351,7 @@ class RunStore:
                 RunPhase.WAITING_INPUT,
             }
             if release_after:
-                self.release_task_lease(ctx.task_id)
+                self.release_task_lease(ctx.task_id, expected=lease)
 
     def acquire_task_lease(self, task_id: str, *, blocking: bool = True) -> bool:
         """Claim the sole right to advance a persisted task.
@@ -366,13 +377,37 @@ class RunStore:
                 return False
             time.sleep(min(0.1, self._task_lease_seconds / 3))
 
-    def release_task_lease(self, task_id: str) -> None:
+    def bind_task_context(self, ctx: TaskContext, *, expected: FencedLease | None) -> None:
+        """Bind restored state to the receipt this execution actually acquired."""
+
+        with self._lock:
+            lease = self._task_leases.get(ctx.task_id)
+            if self.persistent and (lease is None or expected is None or (
+                expected.namespace, expected.key, expected.owner_id, expected.token
+            ) != (lease.namespace, lease.key, lease.owner_id, lease.token)):
+                raise TaskLeaseLostError(f"task {ctx.task_id} acquired lease was replaced before binding")
+            ctx._write_lease = expected
+
+    def release_task_lease(
+        self, task_id: str, *, expected: FencedLease | None | object = _UNSCOPED_RELEASE
+    ) -> None:
+        """Release a claim, without letting old execution cleanup revoke its successor.
+
+        Runtime cleanup must pass its captured receipt. Omitting it is reserved
+        for store-wide administrative close and explicit claim management.
+        """
         if not self.persistent:
             return
         with self._lock:
-            lease = self._task_leases.pop(task_id, None)
+            lease = self._task_leases.get(task_id)
             if lease is None or self._lease_store is None:
                 return
+            if expected is not _UNSCOPED_RELEASE:
+                if not isinstance(expected, FencedLease) or (
+                    expected.namespace, expected.key, expected.owner_id, expected.token
+                ) != (lease.namespace, lease.key, lease.owner_id, lease.token):
+                    return
+            self._task_leases.pop(task_id, None)
             self._lease_store.release(lease)
             if not self._task_leases:
                 self._lease_stop.set()
