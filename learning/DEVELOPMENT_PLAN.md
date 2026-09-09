@@ -619,10 +619,19 @@ takes ownership. Persistent audit appends now lock and reload the latest chain
 head before fsync, so stale owners cannot fork the audit chain. See
 `learning/docs/21_Fenced_Task_Ownership.md`.
 
+**Phase 7B2.8 CI follow-up.** Durable-job result classification now distinguishes
+capture EOF from artifact finalization and keeps the original cancellation or
+deadline after successful cleanup. An unsettled process/capture is `TOOL_LOST`
+with its observed timeout and exit facts intact; post-start supervisor errors
+are no longer mislabeled as startup failures. Deterministic delay and cleanup
+faults complement the existing real-process matrix. See
+`learning/docs/15_Tool_Process_Reliability.md`.
+
 **Remaining before M18 is complete.** Connector-specific refund/notification
 authorities and compensation; fenced repository-consumer leases; a production
 PostgreSQL/etcd lease backend and multi-host event fan-out; provider-specific
-tokenizers; and live-provider/network verification.
+tokenizers; verified process-group liveness beyond output-pipe closure; and
+live-provider/network verification.
 Cross-harness cells require a portable
 controlled-tool interface before they can be scored.
 Ambiguous effects remain human-owned until those connector proofs exist. See

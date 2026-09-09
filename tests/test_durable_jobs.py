@@ -5,6 +5,7 @@ import hashlib
 import json
 import shlex
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -13,6 +14,7 @@ import pytest
 from taiyi.gateway import build_gateway
 from taiyi.llm import LLMResponse, ScriptedProvider, ToolCall
 from taiyi.runtime import FailureKind, JobRecord, JobStatus, RunPhase, TaskState
+from taiyi.runtime import _job_worker
 from taiyi.scheduler import PlanStep
 from taiyi.tools import SandboxExecutor
 
@@ -129,6 +131,71 @@ def test_hard_timeout_wins_even_while_command_is_producing_output(tmp_path):
     assert result.timeout_kind == "hard"
     assert result.failure_kind == FailureKind.TOOL_HARD_TIMEOUT.value
     assert result.output
+
+
+@pytest.mark.parametrize(
+    ("trigger", "status", "failure_kind", "timeout_kind"),
+    [
+        ("hard", "TIMED_OUT", "TOOL_HARD_TIMEOUT", "hard"),
+        ("idle", "TIMED_OUT", "TOOL_IDLE_TIMEOUT", "idle"),
+        ("cancel", "CANCELLED", "TOOL_CANCELLED", None),
+        ("natural", "SUCCEEDED", None, None),
+    ],
+)
+def test_termination_cause_survives_delayed_output_finalization(
+    tmp_path, monkeypatch, trigger, status, failure_kind, timeout_kind
+):
+    """Force the CI race with real pipes, without depending on runner load."""
+    request_path = tmp_path / "request.json"
+    request_path.write_text(json.dumps({
+        "schema_version": _job_worker.JOB_SCHEMA_VERSION,
+        "argv": [sys.executable, "-c", (
+            "print('finished')" if trigger == "natural"
+            else "import time; time.sleep(30)"
+        )],
+        "cwd": str(tmp_path),
+        "heartbeat_interval": 0.05,
+        "hard_timeout": 0.2 if trigger == "hard" else 10,
+        "idle_timeout": 0.2 if trigger == "idle" else None,
+    }), encoding="utf-8")
+    if trigger == "cancel":
+        (tmp_path / "cancel.request").touch()
+
+    release_capture = threading.Event()
+    finalization_grace_exceeded = threading.Event()
+    original_finalize = _job_worker._BoundedCapture._finalize_artifact
+    original_join = threading.Thread.join
+
+    def delayed_finalize(capture):
+        # The child and pipes are already closed. Delay artifact finalization
+        # until the supervisor has observed an unfinished drain after its grace.
+        release_capture.wait(timeout=10)
+        original_finalize(capture)
+
+    def join(thread, timeout=None):
+        if timeout == 2.0 and getattr(thread, "_target", None) is _job_worker._drain:
+            finalization_grace_exceeded.set()
+            release_capture.set()
+        return original_join(thread, timeout)
+
+    monkeypatch.setattr(_job_worker._BoundedCapture, "_finalize_artifact", delayed_finalize)
+    monkeypatch.setattr(threading.Thread, "join", join)
+    try:
+        assert _job_worker.supervise(request_path) == 0
+    finally:
+        release_capture.set()
+
+    terminal = json.loads((tmp_path / "result.json").read_text(encoding="utf-8"))
+    assert finalization_grace_exceeded.is_set()
+    assert terminal["status"] == status
+    assert terminal["failure_kind"] == failure_kind
+    assert terminal["timeout_kind"] == timeout_kind
+    assert terminal["termination_reason"] == (
+        None if trigger == "natural"
+        else "cancel" if trigger == "cancel" else f"{trigger}_timeout"
+    )
+    assert terminal["owned_process_group_settled"] is True
+    assert terminal["returncode"] is not None
 
 
 def test_exit_code_and_stderr_artifact_are_preserved(tmp_path):
