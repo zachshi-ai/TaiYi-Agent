@@ -22,7 +22,7 @@ model **cannot bypass**, rather than rules it is merely asked to remember.
 |---|---|
 | **Production (产)** — the Agent itself, stays at root | |
 | `src/taiyi/` | **Production code** — 17 modules, built module by module |
-| `tests/` | 263 tests covering governance, operating modes, and executable Skill gates |
+| `tests/` | 271 tests covering governance, operating modes, durable recovery, and executable Skill gates |
 | `web/` | Bundled React web UI (build output in `web/dist`) |
 | `deploy/` | Dockerfile + docker-compose |
 | `pyproject.toml` · `taiyi.example.yaml` | Packaging + config template |
@@ -96,6 +96,24 @@ Quality mode also requires at least one objective-specific checker. Baseline
 hygiene such as non-empty output cannot certify an unknown task as correct;
 low-risk efficiency work may use that path only with an explicit
 `coverage=baseline_only` label.
+
+### Durable run protocol
+
+All three modes share one persistence and recovery floor. `TaskState` describes
+the user-visible outcome while an independent `RunPhase` reports whether the
+harness is waiting for the model, requesting a permit, running a tool,
+validating, waiting for approval, recovering, or truly `SETTLED`. A timeout in
+`TOOL_RUNNING` therefore cannot be mislabeled as an LLM timeout, and a suspended
+approval cannot be mistaken for a fully finished run.
+
+With `base_dir` configured, every task writes fsync'd typed events and an atomic
+checkpoint. Workflow and ReAct approvals persist the frozen contract, prior
+steps, plan or conversation, and continuation point; a new process restores the
+approval queue and still re-checks governance before execution. TaiYi does not
+yet auto-rerun an operation found in `TOOL_RUNNING` after a crash because its
+external effect may be ambiguous. Durable job ids, idempotency, and post-crash
+authority verification are the next safety boundary. See
+[`learning/docs/07_Durable_Runtime_Protocol.md`](./learning/docs/07_Durable_Runtime_Protocol.md).
 
 With `executor: sandbox`, Taiyi can also enable a read-only Git authority. It
 snapshots HEAD and repository-local identity before execution, then independently

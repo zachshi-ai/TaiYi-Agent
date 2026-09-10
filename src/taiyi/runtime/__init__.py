@@ -9,6 +9,8 @@ from taiyi.runtime.state import TaskState
 from taiyi.runtime.context import TaskContext, StepResult
 from taiyi.runtime.executor import Executor, MockExecutor, ExecResult
 from taiyi.runtime.engine import TaskRuntime, replay_task
+from taiyi.runtime.persistence import RunStore
+from taiyi.runtime.protocol import FailureKind, RunPhase
 
 __all__ = [
     "TaskState",
@@ -19,4 +21,7 @@ __all__ = [
     "ExecResult",
     "TaskRuntime",
     "replay_task",
+    "RunStore",
+    "RunPhase",
+    "FailureKind",
 ]

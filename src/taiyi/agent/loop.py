@@ -30,6 +30,18 @@ from taiyi.policy import (
 )
 from taiyi.runtime.context import StepResult, TaskContext
 from taiyi.runtime.executor import Executor, MockExecutor
+from taiyi.runtime.persistence import (
+    RunStore,
+    agent_continuation,
+    deserialize_messages,
+    restore_context,
+)
+from taiyi.runtime.protocol import (
+    CheckpointIncompatibleError,
+    FailureKind,
+    RunPhase,
+    classify_exception,
+)
 from taiyi.runtime.quality import prepare_quality_contract
 from taiyi.runtime.state import TaskState
 from taiyi.scheduler import PlanStep, SchedulerEngine
@@ -83,6 +95,7 @@ class AgentRuntime:
         tool_names: list[str] | None = None,
         default_operating_mode: str | OperatingMode = OperatingMode.BALANCED,
         provider_router: ProviderRouter | None = None,
+        run_store: RunStore | None = None,
     ):
         self.scheduler = scheduler
         self.audit = audit_log
@@ -100,6 +113,7 @@ class AgentRuntime:
         self.history_limit = max(0, history_limit)
         self.default_operating_mode = OperatingMode.parse(default_operating_mode)
         self.completion = CompletionController()
+        self.run_store = run_store or RunStore()
         # Build the system prompt the model actually sees. The default prompt
         # alone is too vague for a real model — it must know the tool-call syntax
         # AND the exact tool ids (with prefixes) governance/executor expect, or it
@@ -133,6 +147,7 @@ class AgentRuntime:
         )
         ctx = TaskContext(
             task_id=f"a_{int(time.time() * 1000)}_{len(self.audit)}",
+            runtime_mode="agent",
             prompt=prompt,
             scenario=scenario,
             user_id=user_id,
@@ -155,6 +170,7 @@ class AgentRuntime:
             provider_route=ctx.provider_route,
             contract=contract.to_dict(),
         )
+        self._record(ctx, RunPhase.READY, "run_created")
 
         trace = self.obs.tracer.start(ctx.task_id) if self.obs else None
         if self.obs is not None:
@@ -166,7 +182,12 @@ class AgentRuntime:
                 self.memory.add_message(session_id, "user", prompt)
             ctx.error = capability_error
             ctx.final_output = capability_error
-            ctx.touch(TaskState.CAPABILITY_UNAVAILABLE)
+            self._record(
+                ctx,
+                RunPhase.SETTLED,
+                "run_settled",
+                state=TaskState.CAPABILITY_UNAVAILABLE,
+            )
             self.audit.append(
                 "capability_unavailable",
                 task_id=ctx.task_id,
@@ -210,9 +231,7 @@ class AgentRuntime:
             with self._span(trace, "agent_task"):
                 self._loop(ctx, messages, trace, provider_selection.provider)
         except Exception as e:  # noqa: BLE001
-            ctx.error = f"{type(e).__name__}: {e}"
-            ctx.touch(TaskState.FAILED)
-            self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+            self._fail(ctx, e)
 
         self._finish(ctx, start)
         return ctx
@@ -228,7 +247,13 @@ class AgentRuntime:
         step_limit = self.max_steps or ctx.policy.max_steps
         for step in range(1, step_limit + 1):
             ctx.round = step
-            ctx.touch(TaskState.PLANNING)
+            self._record(
+                ctx,
+                RunPhase.LLM_WAITING,
+                "llm_request_started",
+                state=TaskState.PLANNING,
+                step=step,
+            )
             with self._span(trace, "think"):
                 resp = provider.complete(messages, tools=self.tool_names)
             if ctx.provider_route is not None and resp.model:
@@ -238,7 +263,12 @@ class AgentRuntime:
             if not resp.tool_calls:
                 if (resp.text or "").strip().upper().startswith("QUESTION:"):
                     ctx.final_output = resp.text.strip()
-                    ctx.touch(TaskState.NEEDS_INPUT)
+                    self._record(
+                        ctx,
+                        RunPhase.WAITING_INPUT,
+                        "input_requested",
+                        state=TaskState.NEEDS_INPUT,
+                    )
                     self.audit.append(
                         "task_needs_input", task_id=ctx.task_id,
                         operating_mode=ctx.operating_mode, question=ctx.final_output,
@@ -270,7 +300,12 @@ class AgentRuntime:
                     ctx.final_output = (
                         f"QUESTION: Please review this validation result: {vr.repair_feedback}"
                     )
-                    ctx.touch(TaskState.NEEDS_INPUT)
+                    self._record(
+                        ctx,
+                        RunPhase.WAITING_INPUT,
+                        "input_requested",
+                        state=TaskState.NEEDS_INPUT,
+                    )
                     self.audit.append(
                         "validation_needs_human", task_id=ctx.task_id,
                         summary=ctx.validation_summary,
@@ -284,7 +319,8 @@ class AgentRuntime:
                         f"validation failed after {ctx.validation_attempts} attempt(s): "
                         f"{ctx.validation_summary}"
                     )
-                    ctx.touch(TaskState.FAILED)
+                    ctx.failure_kind = FailureKind.EXTERNAL_FAILURE.value
+                    self._record(ctx, RunPhase.SETTLED, "run_settled", state=TaskState.FAILED)
                     self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
                     return
                 messages.append(LLMMessage(
@@ -301,7 +337,14 @@ class AgentRuntime:
             from taiyi.tools.registry import normalize_tool_name
             normalized = normalize_tool_name(call.tool)
             step_obj = PlanStep(tool=normalized, args=list(call.args))
-            ctx.touch(TaskState.AWAITING_PERMIT)
+            self._record(
+                ctx,
+                RunPhase.AWAITING_PERMIT,
+                "permit_requested",
+                state=TaskState.AWAITING_PERMIT,
+                step=step,
+                tool=step_obj.tool,
+            )
             permit = self.scheduler.request_permit(
                 step_obj, ctx.scenario, user_id=ctx.user_id, task_id=ctx.task_id
             )
@@ -312,26 +355,49 @@ class AgentRuntime:
             ctx.step_results.append(sr)
 
             if permit.verdict is Verdict.DENY:
-                ctx.touch(TaskState.REJECTED)
                 ctx.final_output = f"rejected by governance: {permit.reason}"
+                self._record(
+                    ctx,
+                    RunPhase.SETTLED,
+                    "run_settled",
+                    state=TaskState.REJECTED,
+                    reason=permit.reason,
+                )
                 self.audit.append("task_rejected", task_id=ctx.task_id, tool=call.tool, reason=permit.reason)
                 return
             if permit.verdict is Verdict.NEEDS_REVIEW:
-                ctx.touch(TaskState.NEEDS_REVIEW)
                 ctx.approval_id = permit.approval_id
                 ctx.final_output = f"suspended for human review (approval_id={permit.approval_id}): {permit.reason}"
                 self.audit.append("task_needs_review", task_id=ctx.task_id, tool=call.tool, approval_id=permit.approval_id)
+                continuation = (
+                    agent_continuation(
+                        permit.approval_id,
+                        len(ctx.step_results) - 1,
+                        messages,
+                    )
+                    if permit.approval_id
+                    else None
+                )
+                self._record(
+                    ctx,
+                    RunPhase.WAITING_APPROVAL,
+                    "approval_requested",
+                    state=TaskState.NEEDS_REVIEW,
+                    continuation=continuation,
+                    tool=step_obj.tool,
+                )
                 if self.approvals is not None and permit.approval_id:
                     # Park the live context AND the conversation so resume can
                     # continue the ReAct loop from exactly here. The held step
                     # is the last one in ctx.step_results (the one that needed
                     # review); held_index records its position.
-                    self.approvals.add(PendingApproval(
+                    pending = PendingApproval(
                         approval_id=permit.approval_id, task_id=ctx.task_id,
                         tool=call.tool, reason=permit.reason, scenario=ctx.scenario,
                         ctx=ctx, held_index=len(ctx.step_results) - 1, steps=[],
                         messages=list(messages),
-                    ))
+                    )
+                    self.approvals.add(pending)
                 return
 
             # Governance allowed the step. Before executing, give the expert
@@ -343,28 +409,65 @@ class AgentRuntime:
                 # The committee escalated; update the step result and suspend.
                 sr.verdict = permit.verdict.value
                 sr.reason = permit.reason
-                ctx.touch(TaskState.NEEDS_REVIEW)
                 ctx.approval_id = permit.approval_id
                 ctx.final_output = (
                     f"suspended for human review (approval_id={permit.approval_id}): {permit.reason}"
                 )
                 self.audit.append("task_needs_review", task_id=ctx.task_id, tool=call.tool,
                                    approval_id=permit.approval_id, source="committee")
+                continuation = (
+                    agent_continuation(
+                        permit.approval_id,
+                        len(ctx.step_results) - 1,
+                        messages,
+                    )
+                    if permit.approval_id
+                    else None
+                )
+                self._record(
+                    ctx,
+                    RunPhase.WAITING_APPROVAL,
+                    "approval_requested",
+                    state=TaskState.NEEDS_REVIEW,
+                    continuation=continuation,
+                    tool=step_obj.tool,
+                )
                 if self.approvals is not None and permit.approval_id:
-                    self.approvals.add(PendingApproval(
+                    pending = PendingApproval(
                         approval_id=permit.approval_id, task_id=ctx.task_id,
                         tool=call.tool, reason=permit.reason, scenario=ctx.scenario,
                         ctx=ctx, held_index=len(ctx.step_results) - 1, steps=[],
                         messages=list(messages),
-                    ))
+                    )
+                    self.approvals.add(pending)
                 return
 
-            ctx.touch(TaskState.EXECUTING)
+            self._record(
+                ctx,
+                RunPhase.TOOL_RUNNING,
+                "tool_started",
+                state=TaskState.EXECUTING,
+                continuation={
+                    "kind": "tool_operation",
+                    "step_index": len(ctx.step_results) - 1,
+                    "tool": step_obj.tool,
+                    "args": list(step_obj.args),
+                },
+                tool=step_obj.tool,
+            )
             with self._span(trace, "act", tool=step_obj.tool):
                 result = self.executor.execute(step_obj)
             sr.executed = True
             sr.output = result.output
             ctx.executed_action_count += 1
+            self._record(
+                ctx,
+                RunPhase.TOOL_RESULT,
+                "tool_finished",
+                state=TaskState.EXECUTING,
+                tool=step_obj.tool,
+                ok=result.ok,
+            )
             self.audit.append("step_executed", task_id=ctx.task_id, tool=step_obj.tool, ok=result.ok)
             # Feed the observation back to the model. OpenAI/Ollama reject a bare
             # `role: "tool"` message (it requires a tool_call_id we don't carry),
@@ -373,13 +476,16 @@ class AgentRuntime:
             messages.append(LLMMessage("assistant", f"tool_call: {step_obj.tool} {call.args}"))
             messages.append(LLMMessage("user", f"[tool result] {step_obj.tool}\n{result.output}"))
             if not result.ok:
-                ctx.error = f"step failed: {step_obj.tool}: {result.output}"
-                ctx.touch(TaskState.FAILED)
-                self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+                self._fail(
+                    ctx,
+                    f"step failed: {step_obj.tool}: {result.output}",
+                    kind=FailureKind.TOOL_EXIT_NONZERO,
+                )
                 return
 
         ctx.error = f"step budget ({step_limit}) exhausted"
-        ctx.touch(TaskState.FAILED)
+        ctx.failure_kind = FailureKind.BUDGET_EXHAUSTED.value
+        self._record(ctx, RunPhase.SETTLED, "run_settled", state=TaskState.FAILED)
         self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
 
     def _second_opinion(self, permit, step_obj, ctx):
@@ -425,8 +531,14 @@ class AgentRuntime:
         self.approvals.remove(approval_id)
 
         if not approve:
-            ctx.touch(TaskState.REJECTED)
             ctx.final_output = f"rejected by human reviewer (approval_id={approval_id})"
+            self._record(
+                ctx,
+                RunPhase.SETTLED,
+                "run_settled",
+                state=TaskState.REJECTED,
+                approval_id=approval_id,
+            )
             self.audit.append("human_rejected", task_id=ctx.task_id, approval_id=approval_id)
             self._finish(ctx, time.time())
             return ctx
@@ -435,6 +547,13 @@ class AgentRuntime:
         held_sr = ctx.step_results[pending.held_index]
         held_step = held_sr.step
         self.audit.append("human_approved", task_id=ctx.task_id, approval_id=approval_id)
+        self._record(
+            ctx,
+            RunPhase.RECOVERING,
+            "approval_resolved",
+            state=TaskState.AWAITING_PERMIT,
+            approval_id=approval_id,
+        )
         repermit = self.scheduler.request_permit(
             held_step, ctx.scenario, user_id=ctx.user_id, task_id=ctx.task_id
         )
@@ -446,10 +565,16 @@ class AgentRuntime:
             held_sr.verdict = "DENY(human-resubmit)"
             held_sr.reason = repermit.reason
             held_sr.matched_rule_id = repermit.matched_rule_id
-            ctx.touch(TaskState.REJECTED)
             ctx.final_output = (
                 f"human approved, but governance now denies {held_step.tool!r} "
                 f"({repermit.reason}); step not executed"
+            )
+            self._record(
+                ctx,
+                RunPhase.SETTLED,
+                "run_settled",
+                state=TaskState.REJECTED,
+                reason=repermit.reason,
             )
             self.audit.append("task_rejected", task_id=ctx.task_id, tool=held_step.tool,
                               reason=repermit.reason)
@@ -458,19 +583,42 @@ class AgentRuntime:
 
         # Re-check passed (ALLOW or still NEEDS_REVIEW-but-human-overrode). Execute
         # the held step, feed its result back, and let the loop continue reasoning.
-        ctx.touch(TaskState.EXECUTING)
+        self._record(
+            ctx,
+            RunPhase.TOOL_RUNNING,
+            "tool_started",
+            state=TaskState.EXECUTING,
+            continuation={
+                "kind": "tool_operation",
+                "step_index": pending.held_index,
+                "tool": held_step.tool,
+                "args": list(held_step.args),
+                "approved_by": "human",
+            },
+            tool=held_step.tool,
+        )
         result = self.executor.execute(held_step)
         held_sr.verdict = "ALLOW(human)"
         held_sr.executed = True
         held_sr.output = result.output
         ctx.executed_action_count += 1
+        self._record(
+            ctx,
+            RunPhase.TOOL_RESULT,
+            "tool_finished",
+            state=TaskState.EXECUTING,
+            tool=held_step.tool,
+            ok=result.ok,
+        )
         self.audit.append("step_executed", task_id=ctx.task_id, tool=held_step.tool,
                           ok=result.ok, approved_by="human")
 
         if not result.ok:
-            ctx.error = f"step failed: {held_step.tool}: {result.output}"
-            ctx.touch(TaskState.FAILED)
-            self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+            self._fail(
+                ctx,
+                f"step failed: {held_step.tool}: {result.output}",
+                kind=FailureKind.TOOL_EXIT_NONZERO,
+            )
             self._finish(ctx, time.time())
             return ctx
 
@@ -489,9 +637,7 @@ class AgentRuntime:
             with self._span(trace, "agent_task"):
                 self._loop(ctx, messages, trace, provider_selection.provider)
         except Exception as e:  # noqa: BLE001
-            ctx.error = f"{type(e).__name__}: {e}"
-            ctx.touch(TaskState.FAILED)
-            self.audit.append("task_failed", task_id=ctx.task_id, error=ctx.error)
+            self._fail(ctx, e)
 
         self._finish(ctx, time.time())
         return ctx
@@ -501,12 +647,130 @@ class AgentRuntime:
     def _span(trace, name, **attrs):
         return trace.span(name, **attrs) if trace is not None else nullcontext()
 
+    def _record(
+        self,
+        ctx: TaskContext,
+        phase: RunPhase,
+        event: str,
+        *,
+        state: TaskState | None = None,
+        continuation: dict | None = None,
+        **payload,
+    ) -> None:
+        if state is not None:
+            ctx.touch(state)
+        self.run_store.record(ctx, phase, event, continuation=continuation, **payload)
+
+    def _fail(
+        self,
+        ctx: TaskContext,
+        error: BaseException | str,
+        *,
+        kind: FailureKind | None = None,
+    ) -> None:
+        phase = ctx.phase
+        ctx.error = (
+            f"{type(error).__name__}: {error}" if isinstance(error, BaseException) else str(error)
+        )
+        resolved = kind or classify_exception(error, phase)
+        ctx.failure_kind = resolved.value
+        self._record(
+            ctx,
+            RunPhase.SETTLED,
+            "run_failed",
+            state=TaskState.FAILED,
+            failed_phase=phase.value,
+            failure_kind=resolved.value,
+        )
+        self.audit.append(
+            "task_failed",
+            task_id=ctx.task_id,
+            error=ctx.error,
+            failed_phase=phase.value,
+            failure_kind=resolved.value,
+        )
+
+    def recover_pending(self) -> int:
+        """Rehydrate ReAct approvals and their conversation after restart."""
+
+        if self.approvals is None:
+            return 0
+        recovered = 0
+        for checkpoint in self.run_store.iter_checkpoints():
+            snapshot = checkpoint.get("context") or {}
+            if checkpoint.get("_load_error"):
+                self.audit.append(
+                    "run_recovery_failed",
+                    task_id=snapshot.get("task_id"),
+                    error=checkpoint["_load_error"],
+                )
+                continue
+            continuation = checkpoint.get("continuation") or {}
+            if snapshot.get("runtime_mode") != "agent":
+                continue
+            if snapshot.get("phase") != RunPhase.WAITING_APPROVAL.value:
+                continue
+            if continuation.get("kind") != "agent_approval":
+                continue
+            approval_id = str(continuation.get("approval_id", ""))
+            if not approval_id or self.approvals.get(approval_id) is not None:
+                continue
+            try:
+                ctx = restore_context(
+                    snapshot,
+                    validator=self.validator,
+                    value_stream=self.value_stream,
+                )
+                held_index = int(continuation["held_index"])
+                held = ctx.step_results[held_index].step
+                messages = deserialize_messages(continuation.get("messages", []))
+                if ctx.approval_id != approval_id:
+                    raise CheckpointIncompatibleError("approval id differs from checkpoint context")
+                if not messages:
+                    raise CheckpointIncompatibleError("agent continuation has no conversation")
+            except (
+                CheckpointIncompatibleError,
+                KeyError,
+                IndexError,
+                TypeError,
+                ValueError,
+            ) as exc:
+                self.audit.append(
+                    "run_recovery_failed",
+                    task_id=snapshot.get("task_id"),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                continue
+            previous_attempt = ctx.attempt_id
+            ctx.attempt_id += 1
+            self.approvals.add(PendingApproval(
+                approval_id=approval_id,
+                task_id=ctx.task_id,
+                tool=held.tool,
+                reason=ctx.step_results[held_index].reason,
+                scenario=ctx.scenario,
+                ctx=ctx,
+                held_index=held_index,
+                steps=[],
+                messages=messages,
+            ))
+            self._record(
+                ctx,
+                RunPhase.WAITING_APPROVAL,
+                "run_recovered",
+                state=TaskState.NEEDS_REVIEW,
+                continuation=continuation,
+                previous_attempt=previous_attempt,
+            )
+            recovered += 1
+        return recovered
+
     def _validate(self, ctx: TaskContext):
         if self.validator is None:
             return None
         if ctx.validation_checklist is None:
             raise RuntimeError("validator configured without a frozen validation checklist")
-        ctx.touch(TaskState.VALIDATING)
+        self._record(ctx, RunPhase.VALIDATING, "validation_started", state=TaskState.VALIDATING)
         vctx = ValidationContext(
             prompt=ctx.prompt,
             scenario=ctx.scenario,
@@ -557,7 +821,7 @@ class AgentRuntime:
             execution_environment=ctx.execution_environment,
             executed_actions=ctx.executed_action_count,
         )
-        ctx.touch(state)
+        self._record(ctx, RunPhase.SETTLED, "run_settled", state=state)
         self.audit.append(
             "task_simulated" if state is TaskState.SIMULATED else "task_completed",
             task_id=ctx.task_id,

@@ -54,6 +54,7 @@ Phase 0 left us at **L1→L2**; this plan drives toward **L4 (closed loop)**.
 | **M15** | **Configuration & deployment (taiyi.yaml + Docker)** | ✅ **Done** | L4 | No |
 | **M16** | **Iterative agent loop (reason → act → observe)** | ✅ **Done** | L4 | No (live LLM = opt-in) |
 | **M17** | **Human approval & resume (HITL)** | ✅ **Done** | L4 | No |
+| **M18** | **Durable Runtime Protocol** | 🟡 **Phase 1 delivered** | L4 | No |
 
 > Rough phase mapping: **M1–M5 = Phase 1** (trustworthy single-task vertical
 > slice with a real model), **M6–M9 = Phase 2**, **M10–M12 = Phase 3**,
@@ -390,8 +391,9 @@ false-pass/false-block tracking. **Maturity → L4 (closed loop, 周行不殆).*
 and **resumed from where it stopped**, not just abandoned.
 
 **Delivered.**
-- `taiyi.approvals` — `ApprovalStore` + `PendingApproval` (in-memory; no runtime
-  import, so no cycle). The runtime parks a suspended task here keyed by approval id.
+- `taiyi.approvals` — `ApprovalStore` + `PendingApproval` live queue. When a
+  persistence root is configured, the durable runtime rebuilds this queue from
+  versioned checkpoints after restart.
 - `TaskRuntime.resume(approval_id, approve=…)` — on approve, executes the held step
   (a human override of the review), then continues gating the remaining steps and
   validates → COMPLETED; on reject, marks REJECTED. Steps already done are kept.
@@ -403,8 +405,39 @@ and **resumed from where it stopped**, not just abandoned.
 the completed query), shows up in the pending list, and resumes to COMPLETED on
 approval; rejection marks it REJECTED; an unknown approval id errors; the full
 flow works over the gateway endpoints.
-**Note.** In-process store; persisting approvals to disk for resume-across-restart
-is a small later refinement. **Depends on.** M3, M9.
+**Note.** Resume-across-restart is now delivered by M18; approvals remain live
+objects only while the process runs, with checkpoints as the persistence
+authority. **Depends on.** M3, M9, M18.
+
+### M18 — Durable Runtime Protocol 🟡 Phase 1 delivered
+**Goal.** Make long-running tasks observable and recoverable without conflating
+model, tool, validation, approval, and overall task lifecycles.
+
+**Delivered in Phase 1.**
+- `RunPhase` is independent from `TaskState`, with explicit model-wait, tool-run,
+  validation, approval, recovery, and `SETTLED` phases.
+- `FailureKind` attributes timeouts to the active phase. A tool timeout cannot
+  trigger or masquerade as an LLM timeout.
+- `RunStore` writes fsync'd JSONL events and atomic, versioned checkpoints under
+  `base_dir/runs/<task_id>/`.
+- Both Workflow and ReAct runtimes persist approval continuations and restore
+  them after process restart. Frozen contract drift fails closed; a resumed
+  action still obtains a fresh governance permit.
+- Fault-oriented tests cover both runtime shapes, restart recovery, contract
+  drift, phase-correct timeout attribution, and the invariant that all three
+  operating modes share this protocol.
+
+**Acceptance (Phase 1 met).** A process can be destroyed while a task waits for
+approval; a new process rebuilds its typed context, completed steps, ReAct
+conversation, and approval queue; approval continues the same task; completion
+writes `SETTLED`, preventing duplicate re-enqueue on another restart.
+
+**Remaining before M18 is complete.** Durable background jobs and heartbeats;
+phase-specific LLM/tool idle and hard deadlines; operation ids and side-effect
+classes; idempotent or authority-verified retry; output artifacts; structured
+compaction; and fault injection for crashes during `TOOL_RUNNING`. An ambiguous
+side effect is never auto-rerun before those controls exist. See
+`learning/docs/07_Durable_Runtime_Protocol.md`. **Depends on.** M3–M6, M17.
 
 ### M16 — Iterative agent loop ✅ Done
 **Goal.** Turn plan-once execution into a real agent: reason → act → observe →

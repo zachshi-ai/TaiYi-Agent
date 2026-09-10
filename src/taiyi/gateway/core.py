@@ -23,7 +23,7 @@ from taiyi.multi_agent import ExpertCommittee
 from taiyi.observability import Observability
 from taiyi.policy import OperatingMode
 from taiyi.agent import AgentRuntime
-from taiyi.runtime import TaskContext, TaskRuntime
+from taiyi.runtime import RunStore, TaskContext, TaskRuntime
 from taiyi.runtime.executor import Executor
 from taiyi.scenarios import DEFAULT_SCENARIOS_DIR, ScenarioMatcher, ScenarioRegistry
 from taiyi.scheduler import LLMPlanner, SchedulerEngine
@@ -136,6 +136,7 @@ def build_gateway(
 ) -> Gateway:
     base = Path(base_dir) if base_dir else None
     audit = AuditLog(base / "audit.jsonl") if base else AuditLog()
+    run_store = RunStore(base)
 
     # OODA outer loop: trajectories + the human-review queue persist under base/.
     # Approved suggestions land in base/rules/auto and base/skills/auto, which we
@@ -195,6 +196,7 @@ def build_gateway(
             approvals=approvals,
             committee=committee,
             default_operating_mode=operating_mode,
+            run_store=run_store,
         )
     else:
         workflow_router = provider_router or (
@@ -214,7 +216,13 @@ def build_gateway(
             max_rounds=max_rounds,
             default_operating_mode=operating_mode,
             provider_router=workflow_router,
+            run_store=run_store,
         )
+
+    # A task waiting for human approval is not settled. Rehydrate its frozen
+    # context and continuation before accepting traffic so a process restart does
+    # not silently discard the user's pending work.
+    runtime.recover_pending()
 
     if extra_scenarios_dirs:
         scenarios = ScenarioRegistry.load_dirs([DEFAULT_SCENARIOS_DIR, *extra_scenarios_dirs])
